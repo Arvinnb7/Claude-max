@@ -1,0 +1,75 @@
+"""پروفایل کیفیت داده: درصد گمشدگی، بازه‌ی زمانی، شکاف‌ها و هشدارها."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+import pandas as pd
+
+from .schema import ColumnRole, standard_column
+
+_DATE = standard_column(ColumnRole.DATE)
+_REVENUE = standard_column(ColumnRole.REVENUE)
+
+
+@dataclass
+class DataQualityReport:
+    """گزارش کیفیت داده برای نمایش در UI و ارسال فشرده به مدل."""
+
+    n_rows: int = 0
+    n_cols: int = 0
+    date_min: str | None = None
+    date_max: str | None = None
+    span_days: int | None = None
+    missing_pct: dict[str, float] = field(default_factory=dict)
+    dropped_invalid: int = 0
+    dropped_duplicates: int = 0
+    warnings: list[str] = field(default_factory=list)
+
+    def to_compact(self) -> dict:
+        """نمایش فشرده برای ارسال به مدل (بدون داده‌ی خام)."""
+        return {
+            "تعداد_ردیف": self.n_rows,
+            "بازه_تاریخ": [self.date_min, self.date_max],
+            "طول_دوره_روز": self.span_days,
+            "هشدارها": self.warnings,
+        }
+
+
+def profile_frame(df: pd.DataFrame) -> DataQualityReport:
+    """تولید گزارش کیفیت از یک DataFrame پاک‌شده."""
+    rep = DataQualityReport(n_rows=len(df), n_cols=df.shape[1])
+    rep.dropped_invalid = int(df.attrs.get("dropped_invalid_rows", 0))
+    rep.dropped_duplicates = int(df.attrs.get("dropped_duplicate_rows", 0))
+
+    # گمشدگی
+    if len(df) > 0:
+        miss = (df.isna().mean() * 100).round(1)
+        rep.missing_pct = {str(k): float(v) for k, v in miss.items() if v > 0}
+
+    # بازه‌ی زمانی و شکاف
+    if _DATE in df.columns and df[_DATE].notna().any():
+        dmin, dmax = df[_DATE].min(), df[_DATE].max()
+        rep.date_min = dmin.date().isoformat()
+        rep.date_max = dmax.date().isoformat()
+        rep.span_days = int((dmax - dmin).days)
+        if rep.span_days is not None and rep.span_days < 60:
+            rep.warnings.append("بازه‌ی زمانی داده کوتاه است (کمتر از ۶۰ روز)؛ پیش‌بینی و تحلیل فصلی کم‌دقت‌تر خواهد بود.")
+
+    # حجم کم
+    if rep.n_rows < 100:
+        rep.warnings.append("تعداد رکورد کم است؛ نتایج آماری با احتیاط تفسیر شوند.")
+
+    # نبود ستون‌های مفید
+    if _REVENUE in df.columns and df[_REVENUE].sum() == 0:
+        rep.warnings.append("مجموع درآمد صفر است؛ نگاشت ستون درآمد را بررسی کنید.")
+
+    if rep.dropped_invalid > 0:
+        rep.warnings.append(f"{rep.dropped_invalid} ردیف نامعتبر (بدون تاریخ/درآمد) حذف شد.")
+    if rep.dropped_duplicates > 0:
+        rep.warnings.append(f"{rep.dropped_duplicates} ردیف تکراری حذف شد.")
+
+    return rep
+
+
+__all__ = ["DataQualityReport", "profile_frame"]

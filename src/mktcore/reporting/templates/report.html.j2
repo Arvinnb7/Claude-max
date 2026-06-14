@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8">
+<title>گزارش تحلیل فروش و استراتژی مارکتینگ</title>
+<style>{{ css }}</style>
+</head>
+<body>
+  <header>
+    <h1>گزارش تحلیل فروش و استراتژی مارکتینگ</h1>
+    <p class="date">تاریخ تولید: {{ generated_at }}</p>
+  </header>
+
+  <section>
+    <h2>شاخص‌های کلیدی عملکرد</h2>
+    <table>
+      <tr><th>شاخص</th><th>مقدار</th></tr>
+      {% for label, value in kpis %}
+      <tr><td>{{ label }}</td><td>{{ value }}</td></tr>
+      {% endfor %}
+    </table>
+  </section>
+
+  {% if targets %}
+  <section>
+    <h2>تارگت پیشنهادی</h2>
+    <p>مجموع پیش‌بینی برای {{ targets.horizon }} دوره‌ی آینده: <strong>{{ targets.forecast_total }} {{ currency }}</strong></p>
+    <table>
+      <tr><th>سناریو</th><th>مجموع هدف</th><th>رشد نسبت به پیش‌بینی</th></tr>
+      {% for sc in targets.scenarios %}
+      <tr><td>{{ sc.name_fa }}</td><td>{{ sc.total }} {{ currency }}</td><td>{{ sc.uplift }}٪</td></tr>
+      {% endfor %}
+    </table>
+  </section>
+  {% endif %}
+
+  {% if segments %}
+  <section>
+    <h2>سگمنت‌بندی مشتریان (RFM)</h2>
+    <table>
+      <tr><th>سگمنت</th><th>تعداد مشتری</th><th>درآمد</th></tr>
+      {% for seg in segments %}
+      <tr><td>{{ seg.name }}</td><td>{{ seg.size }}</td><td>{{ seg.revenue }} {{ currency }}</td></tr>
+      {% endfor %}
+    </table>
+  </section>
+  {% endif %}
+
+  {% if strategy %}
+  <section class="strategy">
+    <h2>استراتژی مارکتینگ</h2>
+    <h3>خلاصه‌ی مدیریتی</h3>
+    <p>{{ strategy.executive_summary }}</p>
+
+    {% if strategy.factor_analysis %}
+    <h3>تحلیل عوامل مؤثر بر فروش</h3>
+    <ul>
+      {% for f in strategy.factor_analysis %}
+      <li><strong>{{ f.factor }}:</strong> {{ f.finding }} <em>(تأثیر: {{ f.impact }})</em></li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+
+    <h3>توجیه تارگت</h3>
+    <p>{{ strategy.target_rationale }}</p>
+
+    {% if strategy.recommendations %}
+    <h3>توصیه‌های عملیاتی</h3>
+    <table>
+      <tr><th>عنوان</th><th>اولویت</th><th>اثر مورد انتظار</th><th>تلاش</th></tr>
+      {% for r in strategy.recommendations %}
+      <tr><td>{{ r.title }}</td><td>{{ r.priority }}</td><td>{{ r.expected_impact }}</td><td>{{ r.effort }}</td></tr>
+      {% endfor %}
+    </table>
+    <ul>
+      {% for r in strategy.recommendations %}
+      <li><strong>{{ r.title }}</strong> — {{ r.rationale }}</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+
+    {% if strategy.risks %}
+    <h3>ریسک‌ها و نکات احتیاطی</h3>
+    <ul>{% for risk in strategy.risks %}<li>{{ risk }}</li>{% endfor %}</ul>
+    {% endif %}
+  </section>
+  {% endif %}
+</body>
+</html>

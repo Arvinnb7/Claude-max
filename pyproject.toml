@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mktcore"
+version = "0.1.0"
+description = "سیستم اتوماسیون مارکتینگ و تحلیل داده — تحلیل، پیش‌بینی، تارگت‌گذاری و استراتژی فروش با خروجی فارسی"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Claude-max" }]
+dependencies = [
+    "pandas>=2.0",
+    "numpy>=1.24",
+    "scikit-learn>=1.3",
+    "statsmodels>=0.14",
+    "anthropic>=0.40",
+    "pydantic>=2.5",
+    "pydantic-settings>=2.1",
+    "openpyxl>=3.1",
+    "jinja2>=3.1",
+    "jdatetime>=4.1",
+    "plotly>=5.18",
+    "streamlit>=1.31",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+forecast = ["prophet>=1.1"]
+connectors = ["sqlalchemy>=2.0", "httpx>=0.27"]
+pdf = ["weasyprint>=60"]
+xls = ["xlrd>=2.0"]
+dev = ["pytest>=8.0", "pytest-cov>=4.1", "ruff>=0.3", "mypy>=1.8"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+mktcore = ["reporting/templates/*.j2", "reporting/templates/*.css"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+src = ["src", "app", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+packages = ["mktcore"]
