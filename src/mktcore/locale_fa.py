@@ -32,6 +32,10 @@ ROLE_LABELS_FA: dict[str, str] = {
     "COST": "هزینه",
     "ORDER_ID": "شماره سفارش",
     "DISCOUNT": "تخفیف",
+    "SALESPERSON": "فروشنده",
+    "BRANCH": "شعبه",
+    "PHONE": "تلفن/موبایل",
+    "EMAIL": "ایمیل",
 }
 
 # مترادف‌های نام ستون‌ها (فارسی + انگلیسی) برای تشخیص خودکار نگاشت.
@@ -85,6 +89,22 @@ COLUMN_SYNONYMS: dict[str, list[str]] = {
     "DISCOUNT": [
         "تخفیف", "مبلغ تخفیف", "درصد تخفیف",
         "discount", "off", "promo",
+    ],
+    "SALESPERSON": [
+        "فروشنده", "کارشناس فروش", "ویزیتور", "نام فروشنده", "کد فروشنده", "بازاریاب",
+        "salesperson", "sales rep", "rep", "agent", "seller", "sales agent", "staff",
+    ],
+    "BRANCH": [
+        "شعبه", "شعبه فروش", "نمایندگی", "فروشگاه", "مرکز فروش", "دفتر",
+        "branch", "store", "outlet", "location", "shop", "office",
+    ],
+    "PHONE": [
+        "تلفن", "موبایل", "شماره تماس", "شماره موبایل", "همراه", "تلفن همراه",
+        "phone", "mobile", "cell", "tel", "contact", "msisdn",
+    ],
+    "EMAIL": [
+        "ایمیل", "پست الکترونیک", "رایانامه",
+        "email", "e-mail", "mail",
     ],
 }
 

@@ -112,12 +112,9 @@ def clean_frame(df: pd.DataFrame) -> pd.DataFrame:
         out = out[out[_REVENUE].notna() & (out[_REVENUE] >= 0)]
     out.attrs["dropped_invalid_rows"] = before - len(out)
 
-    # حذف سفارش‌های تکراری کامل
+    # حذف ردیف‌های کاملاً تکراری (نه بر اساس order_id؛ هر سفارش می‌تواند چند قلم داشته باشد)
     dup_before = len(out)
-    if _ORDER_ID in out.columns:
-        out = out.drop_duplicates(subset=[_ORDER_ID])
-    else:
-        out = out.drop_duplicates()
+    out = out.drop_duplicates()
     out.attrs["dropped_duplicate_rows"] = dup_before - len(out)
 
     out = out.sort_values(_DATE).reset_index(drop=True) if _DATE in out.columns else out.reset_index(drop=True)

@@ -20,6 +20,10 @@ class ColumnRole(str, Enum):
     COST = "COST"
     ORDER_ID = "ORDER_ID"
     DISCOUNT = "DISCOUNT"
+    SALESPERSON = "SALESPERSON"
+    BRANCH = "BRANCH"
+    PHONE = "PHONE"
+    EMAIL = "EMAIL"
 
 
 # نام ستون استاندارد در StandardSalesFrame برای هر نقش (lowercase snake_case)
@@ -36,6 +40,10 @@ ROLE_TO_COLUMN: dict[ColumnRole, str] = {
     ColumnRole.COST: "cost",
     ColumnRole.ORDER_ID: "order_id",
     ColumnRole.DISCOUNT: "discount",
+    ColumnRole.SALESPERSON: "salesperson",
+    ColumnRole.BRANCH: "branch",
+    ColumnRole.PHONE: "phone",
+    ColumnRole.EMAIL: "email",
 }
 
 # نقش‌هایی که برای انجام هر تحلیلی ضروری‌اند
@@ -56,6 +64,8 @@ CATEGORICAL_ROLES: tuple[ColumnRole, ...] = (
     ColumnRole.CATEGORY,
     ColumnRole.CHANNEL,
     ColumnRole.REGION,
+    ColumnRole.SALESPERSON,
+    ColumnRole.BRANCH,
 )
 
 

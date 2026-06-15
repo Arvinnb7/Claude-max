@@ -8,13 +8,22 @@ import pandas as pd
 
 from .analysis.anomalies import AnomalyResult, detect_anomalies
 from .analysis.cohorts import CohortResult, compute_cohorts
+from .analysis.diagnostics import DiagnosticsReport, diagnose
+from .analysis.inventory import InventoryAnalysis, analyze_inventory
 from .analysis.kpis import KPISet, compute_kpis
+from .analysis.market_basket import BasketAnalysis, analyze_basket
+from .analysis.next_purchase import NextPurchaseAnalysis, predict_next_purchases
+from .analysis.performance import PerformanceAnalysis, analyze_performance
+from .analysis.products import ProductAnalysis, analyze_products
 from .analysis.seasonality import SeasonalityResult, compute_seasonality
 from .analysis.segmentation import SegmentationResult, compute_segmentation
+from .analysis.sequence import SequenceAnalysis, analyze_sequences
 from .analysis.trends import TrendResult, compute_trends
 from .forecasting.base import ForecastResult
 from .forecasting.selector import choose_and_forecast
 from .ingest.profiler import DataQualityReport, profile_frame
+from .targets.allocation import TargetAllocation, allocate_targets
+from .targets.pacing import PacingPlan, build_pacing_plan
 from .targets.target_setter import TargetProposal, propose_targets
 
 
@@ -28,8 +37,18 @@ class MetricsBundle:
     anomalies: AnomalyResult = field(default_factory=AnomalyResult)
     cohorts: CohortResult = field(default_factory=CohortResult)
     seasonality: SeasonalityResult = field(default_factory=SeasonalityResult)
+    products: ProductAnalysis = field(default_factory=ProductAnalysis)
+    basket: BasketAnalysis = field(default_factory=BasketAnalysis)
+    sequences: SequenceAnalysis = field(default_factory=SequenceAnalysis)
+    next_purchase: NextPurchaseAnalysis = field(default_factory=NextPurchaseAnalysis)
+    performance: PerformanceAnalysis = field(default_factory=PerformanceAnalysis)
+    inventory: InventoryAnalysis = field(default_factory=InventoryAnalysis)
+    diagnostics: DiagnosticsReport = field(default_factory=DiagnosticsReport)
     forecast: ForecastResult | None = None
     targets: TargetProposal | None = None
+    branch_targets: TargetAllocation | None = None
+    salesperson_targets: TargetAllocation | None = None
+    pacing: PacingPlan | None = None
     quality: DataQualityReport = field(default_factory=DataQualityReport)
     meta: dict = field(default_factory=dict)
 
@@ -55,15 +74,51 @@ def run_analysis(
     bundle.anomalies = detect_anomalies(df)
     bundle.cohorts = compute_cohorts(df)
     bundle.seasonality = compute_seasonality(df)
+    bundle.products = analyze_products(df)
+    bundle.basket = analyze_basket(df)
+    bundle.sequences = analyze_sequences(df)
+    bundle.next_purchase = predict_next_purchases(df, bundle.basket)
+    bundle.performance = analyze_performance(df)
+    bundle.inventory = analyze_inventory(df)
+    bundle.diagnostics = diagnose(df)
 
     if with_forecast and not df.empty:
         try:
             bundle.forecast = choose_and_forecast(df, horizon=horizon, freq=freq)
             bundle.targets = propose_targets(bundle.forecast, bundle.kpis, balanced_uplift=balanced_uplift)
+            _allocate_entity_targets(bundle, df)
+            _build_pacing(bundle, df)
         except Exception as e:  # pragma: no cover - مقاوم در برابر داده‌ی کم
             bundle.meta["forecast_error"] = str(e)
 
     return bundle
+
+
+def _allocate_entity_targets(bundle: MetricsBundle, df: pd.DataFrame) -> None:
+    """تخصیص تارگت دوره‌ی پیش‌بینی به شعب و فروشنده‌ها."""
+    if bundle.targets is None:
+        return
+    # تارگت سناریوی متعادل به‌عنوان مبنای تخصیص
+    total_target = bundle.targets.scenarios["balanced"].total
+    baseline_total = bundle.targets.forecast_total
+    perf = bundle.performance
+    if perf.has_branch:
+        bundle.branch_targets = allocate_targets(
+            perf.by_branch, total_target, dimension="شعبه", baseline_total=baseline_total,
+        )
+    if perf.has_salesperson:
+        bundle.salesperson_targets = allocate_targets(
+            perf.by_salesperson, total_target, dimension="فروشنده", baseline_total=baseline_total,
+        )
+
+
+def _build_pacing(bundle: MetricsBundle, df: pd.DataFrame) -> None:
+    """برنامه‌ی pacing ماه جاری بر اساس تارگت ماهانه‌ی متعادل."""
+    if bundle.targets is None or bundle.forecast is None:
+        return
+    horizon = max(bundle.forecast.horizon, 1)
+    monthly_target = bundle.targets.scenarios["balanced"].total / horizon
+    bundle.pacing = build_pacing_plan(df, monthly_target, bundle.seasonality)
 
 
 __all__ = ["MetricsBundle", "run_analysis"]
