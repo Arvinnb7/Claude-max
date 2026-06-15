@@ -50,3 +50,40 @@ def test_strategy_without_key_or_analysis():
     # بدون تحلیل قبلی → 404
     r = client.post("/api/strategy", json={"session_id": "nope"})
     assert r.status_code == 404
+
+
+def test_analyze_includes_advanced_sections():
+    data = client.post("/api/sample").json()
+    sid = data["session_id"]
+    roles = {x["role"]: x["suggested"] for x in data["roles"]}
+    mapping = {role: col for role, col in roles.items() if col}
+    payload = client.post(
+        "/api/analyze", json={"session_id": sid, "mapping": mapping, "horizon": 4}
+    ).json()
+    # بخش‌های پیشرفته باید در خروجی باشند
+    assert "products" in payload
+    assert "basket" in payload
+    assert "performance" in payload
+    assert "inventory" in payload
+    assert "branch_targets" in payload
+    assert "pacing" in payload
+
+
+def test_audience_kinds_and_sms_dry_run():
+    kinds = client.get("/api/audience-kinds").json()
+    assert any(k["key"] == "سررسیدشده" for k in kinds["kinds"])
+
+    data = client.post("/api/sample").json()
+    sid = data["session_id"]
+    roles = {x["role"]: x["suggested"] for x in data["roles"]}
+    mapping = {role: col for role, col in roles.items() if col}
+    client.post("/api/analyze", json={"session_id": sid, "mapping": mapping, "horizon": 4})
+
+    r = client.post("/api/sms/send", json={
+        "session_id": sid, "kind": "سررسیدشده",
+        "template": "سلام {نام}، پیشنهاد: {سبد_پیشنهادی}", "limit": 30, "dry_run": True,
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["حالت_آزمایشی"] is True
+    assert body["audience_size"] >= 1

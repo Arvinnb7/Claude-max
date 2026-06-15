@@ -16,6 +16,8 @@ from pydantic import BaseModel  # noqa: E402
 from mktcore.ai.client import api_key_available  # noqa: E402
 from mktcore.config import get_settings  # noqa: E402
 from mktcore.connectors import ExcelCsvConnector  # noqa: E402
+from mktcore.execution import build_audience, render_messages, send_campaign  # noqa: E402
+from mktcore.execution.audience import AUDIENCE_KINDS  # noqa: E402
 from mktcore.ingest.cleaning import clean_frame  # noqa: E402
 from mktcore.ingest.mapper import SchemaMapper  # noqa: E402
 from mktcore.ingest.profiler import profile_frame  # noqa: E402
@@ -24,7 +26,7 @@ from mktcore.locale_fa import ROLE_LABELS_FA  # noqa: E402
 from mktcore.pipeline import run_analysis  # noqa: E402
 from mktcore.synthetic import generate_synthetic_sales  # noqa: E402
 
-from .serialize import bundle_to_dict, strategy_to_dict  # noqa: E402
+from .serialize import bundle_to_dict, campaign_to_dict, strategy_to_dict  # noqa: E402
 from .store import store  # noqa: E402
 
 app = FastAPI(title="Marketing Analytics API", version="0.1.0")
@@ -139,6 +141,52 @@ def strategy(req: StrategyRequest = Body(...)) -> dict:
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"خطا در تولید استراتژی: {e}") from e
     return strategy_to_dict(report)
+
+
+@app.post("/api/campaign")
+def campaign(req: StrategyRequest = Body(...)) -> dict:
+    """تولید برنامه‌ی کمپین و پیام‌های شخصی‌سازی‌شده‌ی چندکاناله."""
+    session = store.get(req.session_id)
+    if session is None or session.bundle is None:
+        raise HTTPException(status_code=404, detail="ابتدا تحلیل را اجرا کنید.")
+    if not api_key_available():
+        raise HTTPException(status_code=503, detail="کلید ANTHROPIC_API_KEY تنظیم نشده است.")
+    try:
+        from mktcore.ai.campaign import generate_campaigns
+
+        plan = generate_campaigns(session.bundle)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"خطا در تولید کمپین: {e}") from e
+    return campaign_to_dict(plan)
+
+
+@app.get("/api/audience-kinds")
+def audience_kinds() -> dict:
+    return {"kinds": [{"key": k, "label": v} for k, v in AUDIENCE_KINDS.items()]}
+
+
+class SMSRequest(BaseModel):
+    session_id: str
+    kind: str  # نوع مخاطب (از /api/audience-kinds)
+    template: str  # قالب پیام با متغیرهای {نام} و …
+    limit: int = 100
+    dry_run: bool = True  # امن: پیش‌فرض فقط پیش‌نمایش
+
+
+@app.post("/api/sms/send")
+def sms_send(req: SMSRequest) -> dict:
+    """ساخت مخاطب، شخصی‌سازی پیام و ارسال (پیش‌فرض dry-run؛ بدون ارسال واقعی)."""
+    session = store.get(req.session_id)
+    if session is None or session.bundle is None or session.clean_df is None:
+        raise HTTPException(status_code=404, detail="ابتدا تحلیل را اجرا کنید.")
+    if req.kind not in AUDIENCE_KINDS:
+        raise HTTPException(status_code=400, detail="نوع مخاطب نامعتبر است.")
+
+    recipients = build_audience(session.bundle, req.kind, df=session.clean_df, limit=req.limit)
+    messages = render_messages(req.template, recipients)
+    # ارسال واقعی نیازمند کلید پنل است؛ این endpoint فقط dry-run را پشتیبانی می‌کند.
+    result = send_campaign(messages, dry_run=True)
+    return {"audience_size": len(recipients), **result.to_dict()}
 
 
 __all__ = ["app"]

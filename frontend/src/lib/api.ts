@@ -1,6 +1,9 @@
 import type {
   AnalyzeResponse,
+  AudienceKind,
+  CampaignResponse,
   HealthResponse,
+  SMSResult,
   StrategyResponse,
   UploadResponse,
 } from "./types";
@@ -59,6 +62,37 @@ export async function getStrategy(session_id: string): Promise<StrategyResponse>
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ session_id }),
+    }),
+  );
+}
+
+export async function getCampaign(session_id: string): Promise<CampaignResponse> {
+  return handle<CampaignResponse>(
+    await fetch(`${BASE}/api/campaign`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id }),
+    }),
+  );
+}
+
+export async function getAudienceKinds(): Promise<{ kinds: AudienceKind[] }> {
+  return handle<{ kinds: AudienceKind[] }>(
+    await fetch(`${BASE}/api/audience-kinds`, { cache: "no-store" }),
+  );
+}
+
+export async function sendSMS(params: {
+  session_id: string;
+  kind: string;
+  template: string;
+  limit?: number;
+}): Promise<SMSResult> {
+  return handle<SMSResult>(
+    await fetch(`${BASE}/api/sms/send`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...params, dry_run: true }),
     }),
   );
 }

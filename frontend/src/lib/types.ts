@@ -107,6 +107,132 @@ export interface AnalyzeResponse {
     recommended: string;
     scenarios: Scenario[];
   };
+  products?: {
+    product: string;
+    revenue: number;
+    quantity: number;
+    orders: number;
+    share: number;
+    abc_class: string;
+    growth: number | null;
+  }[];
+  basket?: {
+    avg_basket_size: number;
+    rules: {
+      antecedent: string;
+      consequent: string;
+      confidence: number;
+      lift: number;
+      support: number;
+      pair_count: number;
+    }[];
+  };
+  sequences?: {
+    antecedent: string;
+    consequent: string;
+    completion_rate: number;
+    median_lag_days: number;
+    n_antecedent_buyers: number;
+    incomplete_count: number;
+  }[];
+  next_purchase?: {
+    customer_id: string;
+    predicted_next_date: string | null;
+    status: string;
+    overdue_days: number;
+    likely_products: string[];
+    expected_value: number;
+  }[];
+  performance?: {
+    branches: EntityPerf[];
+    salespeople: EntityPerf[];
+  };
+  inventory?: {
+    product: string;
+    recommendation: string;
+    growth: number | null;
+    revenue_share: number;
+    margin: number | null;
+    reason: string;
+  }[];
+  diagnostics?: {
+    overall_pct: number | null;
+    period_label: string;
+    is_declining: boolean;
+    drivers: { dimension: string; label: string; pct_change: number | null; contribution: number }[];
+  };
+  branch_targets?: TargetAlloc;
+  salesperson_targets?: TargetAlloc;
+  pacing?: {
+    monthly_target: number;
+    achieved: number;
+    gap: number;
+    days_remaining: number;
+    required_daily: number;
+    on_track: boolean;
+    pace_ratio: number;
+    week_plan: { date: string; weekday: string; target_revenue: number; emphasis: string }[];
+  };
+}
+
+export interface EntityPerf {
+  name: string;
+  revenue: number;
+  orders: number;
+  customers: number;
+  aov: number;
+  share: number;
+  growth: number | null;
+  rank: number;
+}
+
+export interface TargetAlloc {
+  dimension: string;
+  total_target: number;
+  entities: {
+    name: string;
+    target: number;
+    growth_required: number;
+    reward_tiers: { آستانه: string; پاداش: string }[];
+  }[];
+}
+
+export interface ChannelMessage {
+  channel: string;
+  subject: string | null;
+  body: string;
+  call_script: string | null;
+  timing: string;
+  personalization_vars: string[];
+}
+
+export interface CampaignResponse {
+  summary: string;
+  audiences: {
+    segment_name: string;
+    audience_definition: string;
+    objective: string;
+    offer: string;
+    estimated_size: number | null;
+    success_kpi: string;
+    channels: ChannelMessage[];
+  }[];
+  weekly_actions: { day: string; focus: string; actions: string[] }[];
+}
+
+export interface SMSResult {
+  audience_size: number;
+  تعداد_کل: number;
+  ارسال‌شده: number;
+  ناموفق: number;
+  حالت_آزمایشی: boolean;
+  ارائه‌دهنده: string;
+  نمونه: { مشتری: string; گیرنده: string; متن: string; وضعیت: string }[];
+}
+
+export interface AudienceKind {
+  key: string;
+  label: string;
 }
 
 export interface StrategyResponse {

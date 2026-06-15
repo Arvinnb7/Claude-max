@@ -128,6 +128,104 @@ def bundle_to_dict(bundle: MetricsBundle, *, currency: str = "تومان") -> di
             ],
         }
 
+    # --- تحلیل‌های پیشرفته ---
+    if bundle.products.available:
+        data["products"] = [
+            {"product": p.product, "revenue": p.revenue, "quantity": p.quantity,
+             "orders": p.orders, "share": p.share, "abc_class": p.abc_class, "growth": p.growth}
+            for p in bundle.products.top(15)
+        ]
+
+    if bundle.basket.available:
+        data["basket"] = {
+            "avg_basket_size": bundle.basket.avg_basket_size,
+            "rules": [
+                {"antecedent": r.antecedent, "consequent": r.consequent,
+                 "confidence": r.confidence, "lift": r.lift, "support": r.support,
+                 "pair_count": r.pair_count}
+                for r in bundle.basket.top(12)
+            ],
+        }
+
+    if bundle.sequences.available:
+        data["sequences"] = [
+            {"antecedent": p.antecedent, "consequent": p.consequent,
+             "completion_rate": p.completion_rate, "median_lag_days": p.median_lag_days,
+             "n_antecedent_buyers": p.n_antecedent_buyers,
+             "incomplete_count": len(p.incomplete_customers)}
+            for p in bundle.sequences.top(8)
+        ]
+
+    if bundle.next_purchase.available:
+        data["next_purchase"] = [
+            {"customer_id": c.customer_id, "predicted_next_date": c.predicted_next_date,
+             "status": c.status, "overdue_days": c.overdue_days,
+             "likely_products": c.likely_products, "expected_value": c.expected_value}
+            for c in bundle.next_purchase.due_now(30)
+        ]
+
+    perf = bundle.performance
+    if perf.has_branch or perf.has_salesperson:
+        def _ent(items):
+            return [
+                {"name": e.name, "revenue": e.revenue, "orders": e.orders,
+                 "customers": e.customers, "aov": e.aov, "share": e.share,
+                 "growth": e.growth, "rank": e.rank}
+                for e in items
+            ]
+        data["performance"] = {
+            "branches": _ent(perf.by_branch) if perf.has_branch else [],
+            "salespeople": _ent(perf.by_salesperson) if perf.has_salesperson else [],
+        }
+
+    if bundle.inventory.available:
+        data["inventory"] = [
+            {"product": i.product, "recommendation": i.recommendation,
+             "growth": i.growth, "revenue_share": i.revenue_share,
+             "margin": i.margin, "reason": i.reason}
+            for i in bundle.inventory.items
+        ]
+
+    if bundle.diagnostics.period_label:
+        d = bundle.diagnostics
+        data["diagnostics"] = {
+            "overall_pct": d.overall_pct,
+            "period_label": d.period_label,
+            "is_declining": d.is_declining,
+            "drivers": [
+                {"dimension": dr.dimension, "label": dr.label, "pct_change": dr.pct_change,
+                 "contribution": dr.contribution_to_decline}
+                for dr in d.drivers
+            ],
+        }
+
+    def _alloc(a):
+        return {
+            "dimension": a.dimension, "total_target": a.total_target,
+            "entities": [
+                {"name": e.name, "target": e.target, "growth_required": e.growth_required,
+                 "reward_tiers": e.reward_tiers}
+                for e in a.entities
+            ],
+        }
+    if bundle.branch_targets is not None:
+        data["branch_targets"] = _alloc(bundle.branch_targets)
+    if bundle.salesperson_targets is not None:
+        data["salesperson_targets"] = _alloc(bundle.salesperson_targets)
+
+    if bundle.pacing is not None:
+        p = bundle.pacing
+        data["pacing"] = {
+            "monthly_target": p.monthly_target, "achieved": p.achieved, "gap": p.gap,
+            "days_remaining": p.days_remaining, "required_daily": p.required_daily,
+            "on_track": p.on_track, "pace_ratio": p.pace_ratio,
+            "week_plan": [
+                {"date": d.date, "weekday": d.weekday, "target_revenue": d.target_revenue,
+                 "emphasis": d.emphasis}
+                for d in p.week_plan
+            ],
+        }
+
     return data
 
 
@@ -149,4 +247,32 @@ def strategy_to_dict(report: StrategyReport) -> dict:
     }
 
 
-__all__ = ["bundle_to_dict", "strategy_to_dict", "kpis_to_dict"]
+def campaign_to_dict(plan) -> dict:
+    """تبدیل CampaignPlan به دیکشنری برای فرانت."""
+    return {
+        "summary": plan.summary,
+        "audiences": [
+            {
+                "segment_name": a.segment_name,
+                "audience_definition": a.audience_definition,
+                "objective": a.objective,
+                "offer": a.offer,
+                "estimated_size": a.estimated_size,
+                "success_kpi": a.success_kpi,
+                "channels": [
+                    {"channel": c.channel, "subject": c.subject, "body": c.body,
+                     "call_script": c.call_script, "timing": c.timing,
+                     "personalization_vars": c.personalization_vars}
+                    for c in a.channels
+                ],
+            }
+            for a in plan.audiences
+        ],
+        "weekly_actions": [
+            {"day": w.day, "focus": w.focus, "actions": w.actions}
+            for w in plan.weekly_actions
+        ],
+    }
+
+
+__all__ = ["bundle_to_dict", "strategy_to_dict", "kpis_to_dict", "campaign_to_dict"]

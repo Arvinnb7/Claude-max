@@ -3,15 +3,21 @@
 import { useMemo, useState } from "react";
 import {
   AlertTriangle,
+  Boxes,
   BrainCircuit,
   Download,
   LineChart as LineIcon,
+  Megaphone,
   Repeat,
   ShoppingCart,
+  Stethoscope,
+  Store,
   Target,
   TrendingUp,
   Users,
 } from "lucide-react";
+
+import { CampaignTab, DiagnosticsTab, PerformanceTab, ProductsTab } from "./AdvancedTabs";
 
 import { getStrategy } from "@/lib/api";
 import { compact, num, pct, toFa } from "@/lib/format";
@@ -26,14 +32,27 @@ import {
 } from "./charts";
 import { Alert, Badge, Button, Card, SectionTitle, Spinner, StatCard } from "./ui";
 
-type Tab = "kpi" | "segments" | "forecast" | "targets" | "ai";
+type Tab =
+  | "kpi"
+  | "segments"
+  | "products"
+  | "performance"
+  | "forecast"
+  | "targets"
+  | "diagnostics"
+  | "ai"
+  | "campaign";
 
 const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
   { id: "kpi", label: "شاخص‌ها", icon: <TrendingUp size={16} /> },
   { id: "segments", label: "سگمنت‌بندی", icon: <Users size={16} /> },
+  { id: "products", label: "محصولات و سبد", icon: <Boxes size={16} /> },
+  { id: "performance", label: "فروشنده و شعبه", icon: <Store size={16} /> },
   { id: "forecast", label: "پیش‌بینی", icon: <LineIcon size={16} /> },
   { id: "targets", label: "تارگت", icon: <Target size={16} /> },
-  { id: "ai", label: "استراتژی هوش مصنوعی", icon: <BrainCircuit size={16} /> },
+  { id: "diagnostics", label: "تشخیص و تأمین", icon: <Stethoscope size={16} /> },
+  { id: "ai", label: "استراتژی AI", icon: <BrainCircuit size={16} /> },
+  { id: "campaign", label: "کمپین و پیام‌ها", icon: <Megaphone size={16} /> },
 ];
 
 const DIM_LABELS: Record<string, string> = {
@@ -104,11 +123,13 @@ export default function Dashboard({
 
       {tab === "kpi" && <KpiTab data={data} unit={unit} />}
       {tab === "segments" && <SegmentsTab data={data} unit={unit} />}
+      {tab === "products" && <ProductsTab data={data} unit={unit} />}
+      {tab === "performance" && <PerformanceTab data={data} unit={unit} />}
       {tab === "forecast" && <ForecastTab data={data} unit={unit} />}
       {tab === "targets" && <TargetsTab data={data} unit={unit} />}
-      {tab === "ai" && (
-        <AiTab sessionId={sessionId} aiAvailable={aiAvailable} />
-      )}
+      {tab === "diagnostics" && <DiagnosticsTab data={data} unit={unit} />}
+      {tab === "ai" && <AiTab sessionId={sessionId} aiAvailable={aiAvailable} />}
+      {tab === "campaign" && <CampaignTab sessionId={sessionId} aiAvailable={aiAvailable} />}
     </div>
   );
 }
