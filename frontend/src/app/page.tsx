@@ -7,6 +7,7 @@ import { analyze, getHealth } from "@/lib/api";
 import type { AnalyzeResponse, UploadResponse } from "@/lib/types";
 import Dashboard from "@/components/Dashboard";
 import { MappingStep, Stepper, UploadStep } from "@/components/steps";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import { Alert } from "@/components/ui";
 
 type Stage = "upload" | "mapping" | "dashboard";
@@ -57,7 +58,7 @@ export default function Home() {
 
   return (
     <main className="min-h-screen">
-      <header className="hero-gradient border-b border-ink-200">
+      <header className="hero-gradient border-b" style={{ borderColor: "var(--border)" }}>
         <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-4">
           <div className="flex items-center gap-3">
             <span className="grid h-10 w-10 place-items-center rounded-2xl bg-brand-600 text-white shadow">
@@ -70,19 +71,22 @@ export default function Home() {
               </p>
             </div>
           </div>
-          <div
-            className="hidden items-center gap-4 text-sm sm:flex"
-            style={{ color: "var(--muted)" }}
-          >
-            <span className="flex items-center gap-1.5">
-              <BarChart3 size={16} className="text-brand-500" /> تحلیل آماری
-            </span>
-            <span className="flex items-center gap-1.5">
-              <Target size={16} className="text-accent-500" /> تارگت‌گذاری
-            </span>
-            <span className="flex items-center gap-1.5">
-              <BrainCircuit size={16} className="text-emerald-500" /> استراتژی AI
-            </span>
+          <div className="flex items-center gap-4">
+            <div
+              className="hidden items-center gap-4 text-sm md:flex"
+              style={{ color: "var(--muted)" }}
+            >
+              <span className="flex items-center gap-1.5">
+                <BarChart3 size={16} className="text-brand-500" /> تحلیل آماری
+              </span>
+              <span className="flex items-center gap-1.5">
+                <Target size={16} className="text-accent-500" /> تارگت‌گذاری
+              </span>
+              <span className="flex items-center gap-1.5">
+                <BrainCircuit size={16} className="text-emerald-500" /> استراتژی AI
+              </span>
+            </div>
+            <ThemeToggle />
           </div>
         </div>
       </header>
@@ -153,8 +157,8 @@ export default function Home() {
       </div>
 
       <footer
-        className="mt-10 border-t border-ink-200 py-6 text-center text-xs"
-        style={{ color: "var(--muted)" }}
+        className="mt-10 border-t py-6 text-center text-xs"
+        style={{ color: "var(--muted)", borderColor: "var(--border)" }}
       >
         ساخته‌شده با هسته‌ی تحلیل mktcore + هوش مصنوعی Claude
       </footer>

@@ -1,5 +1,8 @@
 @import "tailwindcss";
 
+/* فعال‌سازی حالت تاریک مبتنی بر کلاس (html.dark) به‌جای prefers-color-scheme */
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme {
   --font-sans: var(--font-vazir), Tahoma, sans-serif;
 
@@ -44,6 +47,7 @@ html.dark {
   --text: #e2e8f0;
   --muted: #94a3b8;
   --border: #233048;
+  color-scheme: dark;
 }
 
 body {

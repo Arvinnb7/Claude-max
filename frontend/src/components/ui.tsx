@@ -26,10 +26,10 @@ export function StatCard({
   tone?: "brand" | "accent" | "green" | "rose";
 }) {
   const toneMap: Record<string, string> = {
-    brand: "bg-brand-50 text-brand-600",
-    accent: "bg-orange-50 text-accent-600",
-    green: "bg-emerald-50 text-emerald-600",
-    rose: "bg-rose-50 text-rose-600",
+    brand: "bg-brand-50 text-brand-600 dark:bg-brand-500/15 dark:text-brand-300",
+    accent: "bg-orange-50 text-accent-600 dark:bg-accent-500/15 dark:text-accent-400",
+    green: "bg-emerald-50 text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-300",
+    rose: "bg-rose-50 text-rose-600 dark:bg-rose-500/15 dark:text-rose-300",
   };
   return (
     <div className="card p-5 animate-fade-up">
@@ -72,8 +72,9 @@ export function Button({
     "inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed";
   const styles: Record<string, string> = {
     primary: "bg-brand-600 text-white hover:bg-brand-700 shadow-sm",
-    ghost: "text-brand-600 hover:bg-brand-50",
-    outline: "border border-ink-200 text-ink-700 hover:bg-ink-50",
+    ghost: "text-brand-600 hover:bg-brand-50 dark:hover:bg-brand-500/10",
+    outline:
+      "border border-ink-200 text-ink-700 hover:bg-ink-50 dark:border-ink-700 dark:text-ink-200 dark:hover:bg-ink-800",
   };
   return (
     <button
@@ -95,11 +96,11 @@ export function Badge({
   tone?: "brand" | "accent" | "green" | "rose" | "gray";
 }) {
   const map: Record<string, string> = {
-    brand: "bg-brand-50 text-brand-700",
-    accent: "bg-orange-50 text-accent-600",
-    green: "bg-emerald-50 text-emerald-700",
-    rose: "bg-rose-50 text-rose-700",
-    gray: "bg-ink-100 text-ink-600",
+    brand: "bg-brand-50 text-brand-700 dark:bg-brand-500/15 dark:text-brand-300",
+    accent: "bg-orange-50 text-accent-600 dark:bg-accent-500/15 dark:text-accent-400",
+    green: "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300",
+    rose: "bg-rose-50 text-rose-700 dark:bg-rose-500/15 dark:text-rose-300",
+    gray: "bg-ink-100 text-ink-600 dark:bg-ink-700 dark:text-ink-300",
   };
   return (
     <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${map[tone]}`}>
@@ -142,9 +143,9 @@ export function Alert({
   tone?: "info" | "warn" | "error";
 }) {
   const map: Record<string, string> = {
-    info: "bg-brand-50 text-brand-800 border-brand-200",
-    warn: "bg-amber-50 text-amber-800 border-amber-200",
-    error: "bg-rose-50 text-rose-800 border-rose-200",
+    info: "bg-brand-50 text-brand-800 border-brand-200 dark:bg-brand-500/10 dark:text-brand-200 dark:border-brand-500/30",
+    warn: "bg-amber-50 text-amber-800 border-amber-200 dark:bg-amber-500/10 dark:text-amber-200 dark:border-amber-500/30",
+    error: "bg-rose-50 text-rose-800 border-rose-200 dark:bg-rose-500/10 dark:text-rose-200 dark:border-rose-500/30",
   };
   return (
     <div className={`rounded-xl border px-4 py-3 text-sm ${map[tone]}`}>{children}</div>

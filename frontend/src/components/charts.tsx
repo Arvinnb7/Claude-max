@@ -21,7 +21,8 @@ import type { BreakdownRow, Point } from "@/lib/types";
 
 const BRAND = "#2563eb";
 const ACCENT = "#f97316";
-const GRID = "#e2e8f0";
+// خاکستری نیمه‌شفاف تا روی تم روشن و تاریک خوانا بماند
+const GRID = "rgba(148, 163, 184, 0.22)";
 const AXIS = "#94a3b8";
 
 const axisProps = {
@@ -238,7 +239,15 @@ export function WeekdayChart({ index }: { index: Record<string, number> }) {
         <YAxis {...axisProps} tickFormatter={(v) => toFa(v.toFixed(1))} width={40} />
         <Tooltip
           formatter={(v) => [toFa(Number(v).toFixed(2)), "شاخص فروش"]}
-          contentStyle={{ fontFamily: "var(--font-vazir)", direction: "rtl", fontSize: 12 }}
+          contentStyle={{
+            fontFamily: "var(--font-vazir)",
+            direction: "rtl",
+            fontSize: 12,
+            background: "var(--surface)",
+            border: "1px solid var(--border)",
+            borderRadius: 12,
+            color: "var(--text)",
+          }}
         />
         <Bar dataKey="شاخص" fill={ACCENT} radius={[6, 6, 0, 0]} />
       </BarChart>

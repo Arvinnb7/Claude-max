@@ -18,7 +18,9 @@ export function Stepper({ active }: { active: number }) {
           <div className="flex items-center gap-2">
             <span
               className={`grid h-8 w-8 place-items-center rounded-full text-sm font-bold ${
-                i <= active ? "bg-brand-600 text-white" : "bg-ink-100 text-ink-400"
+                i <= active
+                  ? "bg-brand-600 text-white"
+                  : "bg-ink-100 text-ink-400 dark:bg-ink-800 dark:text-ink-500"
               }`}
             >
               {toFa(i + 1)}
@@ -31,7 +33,9 @@ export function Stepper({ active }: { active: number }) {
             </span>
           </div>
           {i < STEPS.length - 1 && (
-            <span className={`mx-2 h-px w-8 ${i < active ? "bg-brand-400" : "bg-ink-200"}`} />
+            <span
+              className={`mx-2 h-px w-8 ${i < active ? "bg-brand-400" : "bg-ink-200 dark:bg-ink-700"}`}
+            />
           )}
         </div>
       ))}
@@ -82,7 +86,7 @@ export function UploadStep({ onLoaded }: { onLoaded: (r: UploadResponse) => void
             const f = e.dataTransfer.files?.[0];
             if (f) handleFile(f);
           }}
-          className="flex flex-1 cursor-pointer flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-ink-200 py-12 text-center transition hover:border-brand-400 hover:bg-brand-50/40"
+          className="flex flex-1 cursor-pointer flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-ink-200 py-12 text-center transition hover:border-brand-400 hover:bg-brand-50/40 dark:border-ink-700 dark:hover:border-brand-500 dark:hover:bg-brand-500/10"
         >
           <span className="grid h-14 w-14 place-items-center rounded-2xl bg-brand-50 text-brand-600">
             <Upload size={26} />
@@ -185,7 +189,7 @@ export function MappingStep({
               <select
                 value={mapping[r.role] ?? ""}
                 onChange={(e) => setRole(r.role, e.target.value)}
-                className="w-full rounded-xl border border-ink-200 bg-white px-3 py-2 text-sm outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-100"
+                className="w-full rounded-xl border border-ink-200 bg-white px-3 py-2 text-sm outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-100 dark:border-ink-700 dark:bg-ink-800 dark:text-ink-100 dark:focus:ring-brand-500/30"
               >
                 <option value="">— انتخاب نشده —</option>
                 {data.columns.map((c) => (
@@ -204,7 +208,7 @@ export function MappingStep({
         <div className="scrollbar-thin overflow-x-auto">
           <table className="w-full text-right text-sm">
             <thead>
-              <tr className="border-b border-ink-200 text-ink-500">
+              <tr className="border-b border-ink-200 text-ink-500 dark:border-ink-700 dark:text-ink-400">
                 {data.columns.map((c) => (
                   <th key={c} className="whitespace-nowrap px-3 py-2 font-medium">
                     {c}
@@ -214,7 +218,7 @@ export function MappingStep({
             </thead>
             <tbody>
               {data.preview.slice(0, 8).map((row, i) => (
-                <tr key={i} className="border-b border-ink-100">
+                <tr key={i} className="border-b border-ink-100 dark:border-ink-800">
                   {data.columns.map((c) => (
                     <td key={c} className="whitespace-nowrap px-3 py-2 tnum">
                       {row[c]}

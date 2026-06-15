@@ -85,15 +85,15 @@ export default function Dashboard({
         </Alert>
       )}
 
-      <div className="scrollbar-thin flex gap-2 overflow-x-auto border-b border-ink-200 pb-px">
+      <div className="scrollbar-thin flex gap-2 overflow-x-auto border-b border-ink-200 pb-px dark:border-ink-700">
         {TABS.map((t) => (
           <button
             key={t.id}
             onClick={() => setTab(t.id)}
             className={`flex items-center gap-2 whitespace-nowrap rounded-t-xl px-4 py-2.5 text-sm font-medium transition ${
               tab === t.id
-                ? "border-b-2 border-brand-600 text-brand-700"
-                : "text-ink-500 hover:text-ink-700"
+                ? "border-b-2 border-brand-600 text-brand-700 dark:text-brand-300"
+                : "text-ink-500 hover:text-ink-700 dark:text-ink-400 dark:hover:text-ink-200"
             }`}
           >
             {t.icon}
@@ -107,7 +107,7 @@ export default function Dashboard({
       {tab === "forecast" && <ForecastTab data={data} unit={unit} />}
       {tab === "targets" && <TargetsTab data={data} unit={unit} />}
       {tab === "ai" && (
-        <AiTab data={data} sessionId={sessionId} aiAvailable={aiAvailable} />
+        <AiTab sessionId={sessionId} aiAvailable={aiAvailable} />
       )}
     </div>
   );
@@ -186,7 +186,7 @@ function SegmentsTab({ data, unit }: { data: AnalyzeResponse; unit: string }) {
             <SectionTitle title="جزئیات سگمنت‌ها" />
             <table className="w-full text-right text-sm">
               <thead>
-                <tr className="border-b border-ink-200 text-ink-500">
+                <tr className="border-b border-ink-200 text-ink-500 dark:border-ink-700 dark:text-ink-400">
                   <th className="px-3 py-2 font-medium">سگمنت</th>
                   <th className="px-3 py-2 font-medium">تعداد مشتری</th>
                   <th className="px-3 py-2 font-medium">درآمد</th>
@@ -196,7 +196,7 @@ function SegmentsTab({ data, unit }: { data: AnalyzeResponse; unit: string }) {
                 {[...seg.segments]
                   .sort((a, b) => b.revenue - a.revenue)
                   .map((s) => (
-                    <tr key={s.name} className="border-b border-ink-100">
+                    <tr key={s.name} className="border-b border-ink-100 dark:border-ink-800">
                       <td className="px-3 py-2">
                         <Badge tone="brand">{s.name}</Badge>
                       </td>
@@ -224,7 +224,9 @@ function SegmentsTab({ data, unit }: { data: AnalyzeResponse; unit: string }) {
                   key={d}
                   onClick={() => setDim(d)}
                   className={`rounded-lg px-3 py-1.5 text-sm transition ${
-                    dim === d ? "bg-brand-600 text-white" : "bg-ink-100 text-ink-600"
+                    dim === d
+                      ? "bg-brand-600 text-white"
+                      : "bg-ink-100 text-ink-600 dark:bg-ink-800 dark:text-ink-300"
                   }`}
                 >
                   {DIM_LABELS[d] ?? d}
@@ -317,11 +319,9 @@ function TargetsTab({ data, unit }: { data: AnalyzeResponse; unit: string }) {
 }
 
 function AiTab({
-  data,
   sessionId,
   aiAvailable,
 }: {
-  data: AnalyzeResponse;
   sessionId: string;
   aiAvailable: boolean;
 }) {
@@ -405,7 +405,7 @@ function AiTab({
               <SectionTitle title="تحلیل عوامل مؤثر بر فروش" />
               <div className="space-y-3">
                 {report.factor_analysis.map((f, i) => (
-                  <div key={i} className="rounded-xl bg-ink-50 p-4">
+                  <div key={i} className="rounded-xl bg-ink-50 p-4 dark:bg-ink-800/60">
                     <div className="flex items-center gap-2">
                       <Badge tone="brand">{f.factor}</Badge>
                     </div>
@@ -429,7 +429,7 @@ function AiTab({
               <SectionTitle title="توصیه‌های عملیاتی اولویت‌بندی‌شده" />
               <div className="space-y-3">
                 {report.recommendations.map((r, i) => (
-                  <div key={i} className="rounded-xl border border-ink-200 p-4">
+                  <div key={i} className="rounded-xl border border-ink-200 p-4 dark:border-ink-700">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <h4 className="font-semibold">{r.title}</h4>
                       <div className="flex gap-2">
