@@ -53,6 +53,30 @@ def build_payload(bundle: MetricsBundle, *, currency: str = "تومان") -> dic
     if bundle.targets is not None:
         payload["تارگت"] = bundle.targets.compact()
 
+    # تحلیل‌های پیشرفته
+    if getattr(bundle, "products", None) and bundle.products.available:
+        payload["محصولات"] = bundle.products.compact()
+    if getattr(bundle, "basket", None) and bundle.basket.available:
+        payload["محصولات_مکمل"] = bundle.basket.compact()
+    if getattr(bundle, "sequences", None) and bundle.sequences.available:
+        payload["الگوهای_توالی"] = bundle.sequences.compact()
+    if getattr(bundle, "next_purchase", None) and bundle.next_purchase.available:
+        payload["خرید_بعدی_سررسیدشده"] = bundle.next_purchase.compact(8)
+    if getattr(bundle, "performance", None):
+        perf = bundle.performance.compact()
+        if perf:
+            payload["عملکرد"] = perf
+    if getattr(bundle, "inventory", None) and bundle.inventory.available:
+        payload["تأمین_کالا"] = bundle.inventory.compact()
+    if getattr(bundle, "diagnostics", None) and bundle.diagnostics.period_label:
+        payload["تشخیص_افت"] = bundle.diagnostics.compact()
+    if getattr(bundle, "branch_targets", None) and bundle.branch_targets is not None:
+        payload["تارگت_شعب"] = bundle.branch_targets.compact()
+    if getattr(bundle, "salesperson_targets", None) and bundle.salesperson_targets is not None:
+        payload["تارگت_فروشندگان"] = bundle.salesperson_targets.compact()
+    if getattr(bundle, "pacing", None) and bundle.pacing is not None:
+        payload["pacing_ماهانه"] = bundle.pacing.compact()
+
     return payload
 
 
