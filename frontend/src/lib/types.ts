@@ -161,6 +161,29 @@ export interface AnalyzeResponse {
     is_declining: boolean;
     drivers: { dimension: string; label: string; pct_change: number | null; contribution: number }[];
   };
+  purchase_cycle?: {
+    products: {
+      product: string;
+      product_type: string;
+      repurchase_rate: number;
+      median_cycle_days: number | null;
+      n_buyers: number;
+    }[];
+    notifications: {
+      customer_id: string;
+      product: string;
+      cycle_days: number;
+      days_offset: number;
+      status: string;
+      message: string;
+    }[];
+    onetime_targets: {
+      product: string;
+      gateway_products: string[];
+      potential_count: number;
+      existing_buyers: number;
+    }[];
+  };
   branch_targets?: TargetAlloc;
   salesperson_targets?: TargetAlloc;
   pacing?: {

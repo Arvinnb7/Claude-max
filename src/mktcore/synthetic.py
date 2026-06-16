@@ -14,11 +14,12 @@ import pandas as pd
 
 PRODUCTS = ["پرو", "استاندارد", "لایت", "کلاسیک", "ویژه"]
 CATEGORIES = {"پرو": "نرم‌افزار", "استاندارد": "نرم‌افزار", "لایت": "نرم‌افزار",
-              "کلاسیک": "سخت‌افزار", "ویژه": "سخت‌افزار"}
+              "کلاسیک": "سخت‌افزار", "ویژه": "سخت‌افزار", "باکس حمل": "لوازم جانبی"}
 CHANNELS = ["وب‌سایت", "اینستاگرام", "فروش مستقیم", "نمایندگی"]
 REGIONS = ["تهران", "اصفهان", "مشهد", "شیراز", "تبریز"]
 BASE_PRICE = {"پرو": 2_500_000, "استاندارد": 1_500_000, "لایت": 800_000,
-              "کلاسیک": 3_200_000, "ویژه": 5_000_000}
+              "کلاسیک": 3_200_000, "ویژه": 5_000_000, "باکس حمل": 1_200_000}
+# «باکس حمل» محصول تک‌خریدی است (هر مشتری حداکثر یک‌بار) برای آزمایش تشخیص مصرفی/تک‌خریدی
 
 # فروشنده‌ها به تفکیک شعبه (هر شعبه = یک منطقه)
 SALESPEOPLE = {
@@ -73,6 +74,7 @@ def generate_synthetic_sales(
     order_counter = 1
     # صف توالی: (تاریخ سررسید, مشتری, محصول هدف)
     pending: dict[int, list[tuple[str, str]]] = {}
+    bought_onetime: set[str] = set()  # مشتریانی که محصول تک‌خریدی را گرفته‌اند
 
     def _add_line(date, order_id, customer, product, qty, region):
         unit_price = BASE_PRICE[product] * (1 + rng.normal(0, 0.05))
@@ -127,5 +129,10 @@ def generate_synthetic_sales(
                 due = day_i + int(max(7, rng.normal(30, 7)))
                 if due < days:
                     pending.setdefault(due, []).append((customer, "ویژه"))
+
+            # محصول تک‌خریدی «باکس حمل»: هر مشتری حداکثر یک‌بار
+            if customer not in bought_onetime and rng.random() < 0.12:
+                bought_onetime.add(customer)
+                _add_line(date, oid, customer, "باکس حمل", 1, region)
 
     return pd.DataFrame(rows)

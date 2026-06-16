@@ -164,6 +164,27 @@ def bundle_to_dict(bundle: MetricsBundle, *, currency: str = "تومان") -> di
             for c in bundle.next_purchase.due_now(30)
         ]
 
+    pc = bundle.purchase_cycle
+    if pc.available:
+        data["purchase_cycle"] = {
+            "products": [
+                {"product": c.product, "product_type": c.product_type,
+                 "repurchase_rate": c.repurchase_rate, "median_cycle_days": c.median_cycle_days,
+                 "n_buyers": c.n_buyers}
+                for c in pc.product_cycles
+            ],
+            "notifications": [
+                {"customer_id": n.customer_id, "product": n.product, "cycle_days": n.cycle_days,
+                 "days_offset": n.days_offset, "status": n.status, "message": n.message()}
+                for n in pc.overdue(40)
+            ],
+            "onetime_targets": [
+                {"product": t.product, "gateway_products": t.gateway_products,
+                 "potential_count": len(t.potential_customers), "existing_buyers": t.existing_buyers}
+                for t in pc.onetime_targets
+            ],
+        }
+
     perf = bundle.performance
     if perf.has_branch or perf.has_salesperson:
         def _ent(items):

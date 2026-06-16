@@ -11,6 +11,7 @@ sys.path.insert(0, str(_ROOT / "src"))
 
 from fastapi import Body, FastAPI, File, HTTPException, UploadFile  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+from fastapi.responses import HTMLResponse, Response  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
 from mktcore.ai.client import api_key_available  # noqa: E402
@@ -138,6 +139,7 @@ def strategy(req: StrategyRequest = Body(...)) -> dict:
         from mktcore.ai.strategist import generate_strategy
 
         report = generate_strategy(session.bundle)
+        session.strategy = report
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"خطا در تولید استراتژی: {e}") from e
     return strategy_to_dict(report)
@@ -155,6 +157,7 @@ def campaign(req: StrategyRequest = Body(...)) -> dict:
         from mktcore.ai.campaign import generate_campaigns
 
         plan = generate_campaigns(session.bundle)
+        session.campaign = plan
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"خطا در تولید کمپین: {e}") from e
     return campaign_to_dict(plan)
@@ -163,6 +166,30 @@ def campaign(req: StrategyRequest = Body(...)) -> dict:
 @app.get("/api/audience-kinds")
 def audience_kinds() -> dict:
     return {"kinds": [{"key": k, "label": v} for k, v in AUDIENCE_KINDS.items()]}
+
+
+@app.get("/api/report")
+def report(session_id: str, fmt: str = "pdf"):
+    """خروجی گزارش جامع (تحلیل + استراتژی + کمپین) به‌صورت PDF یا HTML.
+
+    استراتژی/کمپین اگر قبلاً تولید شده باشند در گزارش گنجانده می‌شوند.
+    """
+    session = store.get(session_id)
+    if session is None or session.bundle is None:
+        raise HTTPException(status_code=404, detail="ابتدا تحلیل را اجرا کنید.")
+    strategy = getattr(session, "strategy", None)
+    campaign = getattr(session, "campaign", None)
+
+    from mktcore.reporting.pdf_report import build_pdf, render_html, weasyprint_available
+
+    if fmt == "html" or not weasyprint_available():
+        html = render_html(session.bundle, strategy, campaign)
+        return HTMLResponse(content=html)
+    pdf = build_pdf(session.bundle, strategy, campaign)
+    return Response(
+        content=pdf, media_type="application/pdf",
+        headers={"Content-Disposition": "attachment; filename=marketing_report.pdf"},
+    )
 
 
 class SMSRequest(BaseModel):

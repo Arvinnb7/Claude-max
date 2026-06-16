@@ -15,6 +15,7 @@ from .analysis.market_basket import BasketAnalysis, analyze_basket
 from .analysis.next_purchase import NextPurchaseAnalysis, predict_next_purchases
 from .analysis.performance import PerformanceAnalysis, analyze_performance
 from .analysis.products import ProductAnalysis, analyze_products
+from .analysis.purchase_cycle import PurchaseCycleAnalysis, analyze_purchase_cycles
 from .analysis.seasonality import SeasonalityResult, compute_seasonality
 from .analysis.segmentation import SegmentationResult, compute_segmentation
 from .analysis.sequence import SequenceAnalysis, analyze_sequences
@@ -41,6 +42,7 @@ class MetricsBundle:
     basket: BasketAnalysis = field(default_factory=BasketAnalysis)
     sequences: SequenceAnalysis = field(default_factory=SequenceAnalysis)
     next_purchase: NextPurchaseAnalysis = field(default_factory=NextPurchaseAnalysis)
+    purchase_cycle: PurchaseCycleAnalysis = field(default_factory=PurchaseCycleAnalysis)
     performance: PerformanceAnalysis = field(default_factory=PerformanceAnalysis)
     inventory: InventoryAnalysis = field(default_factory=InventoryAnalysis)
     diagnostics: DiagnosticsReport = field(default_factory=DiagnosticsReport)
@@ -78,6 +80,7 @@ def run_analysis(
     bundle.basket = analyze_basket(df)
     bundle.sequences = analyze_sequences(df)
     bundle.next_purchase = predict_next_purchases(df, bundle.basket)
+    bundle.purchase_cycle = analyze_purchase_cycles(df, bundle.basket)
     bundle.performance = analyze_performance(df)
     bundle.inventory = analyze_inventory(df)
     bundle.diagnostics = diagnose(df)

@@ -282,6 +282,86 @@ export function DiagnosticsTab({ data, unit }: { data: AnalyzeResponse; unit: st
   );
 }
 
+/* ---------- چرخه خرید و اعلان‌ها ---------- */
+const TYPE_TONE: Record<string, "green" | "accent" | "gray"> = {
+  "مصرفی": "green",
+  "تک‌خریدی": "accent",
+  "نامشخص": "gray",
+};
+
+export function CycleTab({ data }: { data: AnalyzeResponse }) {
+  const pc = data.purchase_cycle;
+  if (!pc) return <Alert tone="info">داده‌ی کافی برای تحلیل چرخه‌ی خرید موجود نیست.</Alert>;
+  return (
+    <div className="space-y-6">
+      <Card>
+        <SectionTitle
+          title="چرخه‌ی خرید محصولات و تشخیص مصرفی/تک‌خریدی"
+          subtitle="کالای «مصرفی» چرخه‌ی بازخرید دارد؛ کالای «تک‌خریدی» معمولاً یک‌بار خریده می‌شود"
+        />
+        <table className="w-full text-right text-sm">
+          <thead>
+            <tr className="border-b border-ink-200 text-ink-500 dark:border-ink-700 dark:text-ink-400">
+              <th className="px-3 py-2 font-medium">محصول</th>
+              <th className="px-3 py-2 font-medium">نوع</th>
+              <th className="px-3 py-2 font-medium">نرخ بازخرید</th>
+              <th className="px-3 py-2 font-medium">چرخه (روز)</th>
+              <th className="px-3 py-2 font-medium">خریداران</th>
+            </tr>
+          </thead>
+          <tbody>
+            {pc.products.map((p) => (
+              <tr key={p.product} className="border-b border-ink-100 dark:border-ink-800">
+                <td className="px-3 py-2 font-medium">{p.product}</td>
+                <td className="px-3 py-2"><Badge tone={TYPE_TONE[p.product_type] ?? "gray"}>{p.product_type}</Badge></td>
+                <td className="px-3 py-2 tnum">{pct(p.repurchase_rate)}</td>
+                <td className="px-3 py-2 tnum">{p.median_cycle_days === null ? "—" : toFa(Math.round(p.median_cycle_days))}</td>
+                <td className="px-3 py-2 tnum">{toFa(num(p.n_buyers))}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Card>
+
+      {pc.notifications.length > 0 && (
+        <Card>
+          <SectionTitle title="اعلان‌های چرخه‌ی خرید مشتریان" subtitle="چقدر از چرخه‌ی هر مشتری عقب افتاده یا چقدر مانده" />
+          <div className="space-y-2">
+            {pc.notifications.slice(0, 25).map((n, i) => (
+              <div key={i} className="flex items-center justify-between rounded-lg bg-ink-50 px-3 py-2 text-sm dark:bg-ink-800/60">
+                <span>{n.message}</span>
+                <Badge tone={n.status === "عقب‌افتاده" ? "rose" : "accent"}>{n.status}</Badge>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {pc.onetime_targets.length > 0 && (
+        <Card>
+          <SectionTitle
+            title="هدف‌گیری کالاهای تک‌خریدی"
+            subtitle="مشتریان بالقوه که کالای مرتبط را خریده‌اند ولی خودِ کالای تک‌خریدی را نه (خریداران فعلی حذف شده‌اند)"
+          />
+          <div className="grid gap-3 sm:grid-cols-2">
+            {pc.onetime_targets.map((t, i) => (
+              <div key={i} className="rounded-xl border border-ink-200 p-3 dark:border-ink-700">
+                <div className="flex items-center justify-between">
+                  <span className="font-medium">{t.product}</span>
+                  <Badge tone="accent">{toFa(num(t.potential_count))} بالقوه</Badge>
+                </div>
+                <p className="mt-1 text-xs" style={{ color: "var(--muted)" }}>
+                  کالاهای مرتبط: {t.gateway_products.join("، ") || "—"} · خریداران فعلی: {toFa(num(t.existing_buyers))} (حذف‌شده از هدف)
+                </p>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+    </div>
+  );
+}
+
 /* ---------- کمپین و پیام‌ها ---------- */
 const CHANNEL_ICON: Record<string, string> = {
   "پیامک": "✉️", "ایمیل": "📧", "مسنجر": "💬", "تماس تلفنی": "📞",
@@ -387,7 +467,7 @@ export function CampaignTab({ sessionId, aiAvailable }: { sessionId: string; aiA
         <SectionTitle title="اجرای پیامکی روی مخاطب هدف (پیش‌نمایش امن)" subtitle="مخاطب از تحلیل ساخته می‌شود و پیام شخصی‌سازی می‌گردد؛ ارسال واقعی نیازمند اتصال پنل پیامکی است." />
         <div className="flex flex-col gap-3">
           <div className="flex flex-wrap gap-2">
-            {[["سررسیدشده", "سررسیدشده برای خرید"], ["ناتمام_الگو", "ناتمام در الگوی خرید"], ["در_معرض_ریزش", "در معرض ریزش"]].map(([k, lbl]) => (
+            {[["سررسیدشده", "سررسیدشده برای خرید"], ["چرخه_عقب‌افتاده", "عقب از چرخه‌ی مصرفی"], ["تارگت_تک‌خریدی", "بالقوه‌ی تک‌خریدی"], ["ناتمام_الگو", "ناتمام در الگوی خرید"], ["در_معرض_ریزش", "در معرض ریزش"]].map(([k, lbl]) => (
               <button key={k} onClick={() => setKind(k)}
                 className={`rounded-lg px-3 py-1.5 text-sm transition ${kind === k ? "bg-brand-600 text-white" : "bg-ink-100 text-ink-600 dark:bg-ink-800 dark:text-ink-300"}`}>{lbl}</button>
             ))}

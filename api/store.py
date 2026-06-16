@@ -16,6 +16,8 @@ class Session:
     created_at: float = field(default_factory=time.time)
     clean_df: pd.DataFrame | None = None
     bundle: Any = None
+    strategy: Any = None
+    campaign: Any = None
 
 
 class SessionStore:

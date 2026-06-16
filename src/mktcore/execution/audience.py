@@ -30,6 +30,8 @@ AUDIENCE_KINDS = {
     "سررسیدشده": "مشتریانی که خرید بعدی‌شان سررسید شده است",
     "ناتمام_الگو": "مشتریانی که الگوی خرید توالی را کامل نکرده‌اند",
     "در_معرض_ریزش": "مشتریان سگمنت در معرض ریزش",
+    "چرخه_عقب‌افتاده": "مشتریانی که از چرخه‌ی خرید یک کالای مصرفی عقب افتاده‌اند",
+    "تارگت_تک‌خریدی": "بالقوه‌های یک کالای تک‌خریدی (هنوز نخریده‌اند)",
 }
 
 
@@ -84,6 +86,26 @@ def build_audience(
                     break
             if len(recipients) >= limit:
                 break
+
+    elif kind == "چرخه_عقب‌افتاده" and bundle.purchase_cycle.available:
+        for note in bundle.purchase_cycle.overdue(limit):
+            recipients.append(Recipient(
+                customer_id=note.customer_id,
+                phone=phones.get(note.customer_id),
+                vars={"نام": note.customer_id, "محصول": note.product,
+                      "روز_عقب": str(max(note.days_offset, 0))},
+            ))
+
+    elif kind == "تارگت_تک‌خریدی" and bundle.purchase_cycle.onetime_targets:
+        # پرجمعیت‌ترین هدف تک‌خریدی را انتخاب کن
+        target = max(bundle.purchase_cycle.onetime_targets,
+                     key=lambda t: len(t.potential_customers))
+        for cust in target.potential_customers[:limit]:
+            recipients.append(Recipient(
+                customer_id=cust,
+                phone=phones.get(cust),
+                vars={"نام": cust, "محصول": target.product},
+            ))
 
     elif kind == "در_معرض_ریزش" and not bundle.segmentation.rfm_table.empty:
         rfm = bundle.segmentation.rfm_table

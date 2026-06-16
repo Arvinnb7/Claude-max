@@ -24,6 +24,7 @@ dependencies = [
     "plotly>=5.18",
     "streamlit>=1.31",
     "python-dotenv>=1.0",
+    "markdown>=3.5",
 ]
 
 [project.optional-dependencies]

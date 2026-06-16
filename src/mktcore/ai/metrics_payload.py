@@ -62,6 +62,8 @@ def build_payload(bundle: MetricsBundle, *, currency: str = "تومان") -> dic
         payload["الگوهای_توالی"] = bundle.sequences.compact()
     if getattr(bundle, "next_purchase", None) and bundle.next_purchase.available:
         payload["خرید_بعدی_سررسیدشده"] = bundle.next_purchase.compact(8)
+    if getattr(bundle, "purchase_cycle", None) and bundle.purchase_cycle.available:
+        payload["چرخه_خرید"] = bundle.purchase_cycle.compact()
     if getattr(bundle, "performance", None):
         perf = bundle.performance.compact()
         if perf:

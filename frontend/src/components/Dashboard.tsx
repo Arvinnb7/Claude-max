@@ -6,9 +6,11 @@ import {
   Boxes,
   BrainCircuit,
   Download,
+  FileText,
   LineChart as LineIcon,
   Megaphone,
   Repeat,
+  RefreshCw,
   ShoppingCart,
   Stethoscope,
   Store,
@@ -17,7 +19,8 @@ import {
   Users,
 } from "lucide-react";
 
-import { CampaignTab, DiagnosticsTab, PerformanceTab, ProductsTab } from "./AdvancedTabs";
+import { reportUrl } from "@/lib/api";
+import { CampaignTab, CycleTab, DiagnosticsTab, PerformanceTab, ProductsTab } from "./AdvancedTabs";
 
 import { getStrategy } from "@/lib/api";
 import { compact, num, pct, toFa } from "@/lib/format";
@@ -36,6 +39,7 @@ type Tab =
   | "kpi"
   | "segments"
   | "products"
+  | "cycle"
   | "performance"
   | "forecast"
   | "targets"
@@ -47,6 +51,7 @@ const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
   { id: "kpi", label: "شاخص‌ها", icon: <TrendingUp size={16} /> },
   { id: "segments", label: "سگمنت‌بندی", icon: <Users size={16} /> },
   { id: "products", label: "محصولات و سبد", icon: <Boxes size={16} /> },
+  { id: "cycle", label: "چرخه و اعلان‌ها", icon: <RefreshCw size={16} /> },
   { id: "performance", label: "فروشنده و شعبه", icon: <Store size={16} /> },
   { id: "forecast", label: "پیش‌بینی", icon: <LineIcon size={16} /> },
   { id: "targets", label: "تارگت", icon: <Target size={16} /> },
@@ -86,9 +91,16 @@ export default function Dashboard({
             {toFa(num(data.quality.n_rows))} رکورد
           </p>
         </div>
-        <Button variant="outline" onClick={onReset}>
-          داده‌ی جدید
-        </Button>
+        <div className="flex gap-2">
+          <a href={reportUrl(sessionId, "pdf")} target="_blank" rel="noopener noreferrer">
+            <Button variant="primary">
+              <FileText size={16} /> دانلود گزارش جامع PDF
+            </Button>
+          </a>
+          <Button variant="outline" onClick={onReset}>
+            داده‌ی جدید
+          </Button>
+        </div>
       </div>
 
       {data.quality.warnings.length > 0 && (
@@ -124,6 +136,7 @@ export default function Dashboard({
       {tab === "kpi" && <KpiTab data={data} unit={unit} />}
       {tab === "segments" && <SegmentsTab data={data} unit={unit} />}
       {tab === "products" && <ProductsTab data={data} unit={unit} />}
+      {tab === "cycle" && <CycleTab data={data} />}
       {tab === "performance" && <PerformanceTab data={data} unit={unit} />}
       {tab === "forecast" && <ForecastTab data={data} unit={unit} />}
       {tab === "targets" && <TargetsTab data={data} unit={unit} />}

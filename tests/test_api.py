@@ -87,3 +87,34 @@ def test_audience_kinds_and_sms_dry_run():
     body = r.json()
     assert body["حالت_آزمایشی"] is True
     assert body["audience_size"] >= 1
+
+
+def test_report_pdf_endpoint():
+    data = client.post("/api/sample").json()
+    sid = data["session_id"]
+    roles = {x["role"]: x["suggested"] for x in data["roles"]}
+    mapping = {role: col for role, col in roles.items() if col}
+    client.post("/api/analyze", json={"session_id": sid, "mapping": mapping, "horizon": 4})
+
+    # HTML همیشه کار می‌کند
+    r_html = client.get(f"/api/report?session_id={sid}&fmt=html")
+    assert r_html.status_code == 200
+    assert "گزارش جامع" in r_html.text
+
+    # PDF (در صورت نصب WeasyPrint)
+    r_pdf = client.get(f"/api/report?session_id={sid}&fmt=pdf")
+    assert r_pdf.status_code == 200
+    assert r_pdf.content[:4] in (b"%PDF", b"<!DO")  # PDF یا fallback HTML
+
+
+def test_purchase_cycle_in_analyze():
+    data = client.post("/api/sample").json()
+    sid = data["session_id"]
+    roles = {x["role"]: x["suggested"] for x in data["roles"]}
+    mapping = {role: col for role, col in roles.items() if col}
+    payload = client.post(
+        "/api/analyze", json={"session_id": sid, "mapping": mapping, "horizon": 4}
+    ).json()
+    assert "purchase_cycle" in payload
+    types = {p["product"]: p["product_type"] for p in payload["purchase_cycle"]["products"]}
+    assert types.get("باکس حمل") == "تک‌خریدی"

@@ -82,6 +82,10 @@ export async function getAudienceKinds(): Promise<{ kinds: AudienceKind[] }> {
   );
 }
 
+export function reportUrl(session_id: string, fmt: "pdf" | "html" = "pdf"): string {
+  return `${BASE}/api/report?session_id=${encodeURIComponent(session_id)}&fmt=${fmt}`;
+}
+
 export async function sendSMS(params: {
   session_id: string;
   kind: string;

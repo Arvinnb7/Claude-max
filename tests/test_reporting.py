@@ -34,11 +34,14 @@ def strategy():
 
 def test_markdown_has_persian_sections(bundle, strategy):
     md = build_markdown(bundle, strategy)
-    assert "# گزارش تحلیل فروش و استراتژی مارکتینگ" in md
+    assert "# گزارش جامع تحلیل فروش و استراتژی مارکتینگ" in md
     assert "## شاخص‌های کلیدی عملکرد" in md
     assert "## تارگت پیشنهادی" in md
     assert "## استراتژی مارکتینگ" in md
     assert "کمپین وفاداری" in md
+    # بخش‌های پیشرفته‌ی جدید
+    assert "## محصولات پرفروش و تحلیل ABC" in md
+    assert "## چرخه‌ی خرید محصولات" in md
 
 
 def test_markdown_without_strategy(bundle):
@@ -57,9 +60,18 @@ def test_render_html(bundle, strategy):
 def test_pdf_when_available(bundle, strategy):
     if not weasyprint_available():
         pytest.skip("WeasyPrint نصب نیست")
+    from mktcore.ai.schemas import AudienceCampaign, CampaignPlan, ChannelMessage
     from mktcore.reporting.pdf_report import build_pdf
 
-    pdf = build_pdf(bundle, strategy)
+    campaign = CampaignPlan(
+        summary="کمپین آزمایشی",
+        audiences=[AudienceCampaign(
+            segment_name="تست", audience_definition="—", objective="—", offer="—",
+            success_kpi="—",
+            channels=[ChannelMessage(channel="پیامک", body="سلام {نام}", timing="عصر")],
+        )],
+    )
+    pdf = build_pdf(bundle, strategy, campaign)
     assert isinstance(pdf, bytes)
     assert len(pdf) > 1000
     assert pdf[:4] == b"%PDF"
