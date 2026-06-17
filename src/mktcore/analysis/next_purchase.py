@@ -81,11 +81,14 @@ def predict_next_purchases(
     top_products = list(df.groupby(_PRODUCT)[_REVENUE].sum().sort_values(ascending=False).index[:3])
 
     for cust, g in df.groupby(_CUSTOMER):
-        if order_col:
+        if order_col and g[order_col].notna().any():
             dates = g.groupby(order_col)[_DATE].min().sort_values()
         else:
             dates = g[_DATE].sort_values()
-        unique_dates = pd.Series(sorted(dates.unique()))
+        valid = pd.Series(pd.to_datetime(dates, errors="coerce")).dropna()
+        unique_dates = pd.Series(sorted(valid.unique()))
+        if unique_dates.empty:
+            continue
         last = pd.Timestamp(unique_dates.iloc[-1])
 
         if len(unique_dates) >= 2:

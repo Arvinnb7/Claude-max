@@ -16,8 +16,12 @@ class StatsForecaster(Forecaster):
     name = "ETS (statsmodels)"
 
     def fit_predict(self, series: pd.Series, horizon: int, *, freq: str = "ME") -> ForecastResult:
+        if series is None or len(series) == 0:
+            return ForecastResult(model_name="بدون داده", freq=freq)
         series = series.astype(float).asfreq(freq) if series.index.freq is None else series
         series = series.fillna(0.0)
+        if len(series) == 0:
+            return ForecastResult(model_name="بدون داده", freq=freq)
         idx_future = pd.date_range(series.index[-1], periods=horizon + 1, freq=freq)[1:]
 
         seasonal_periods = 12 if freq in ("M", "ME") else (7 if freq == "D" else None)

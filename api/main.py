@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import logging
 import sys
+import traceback
 from pathlib import Path
 
 # دسترسی به mktcore بدون نصب
 _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT / "src"))
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
+logger = logging.getLogger("mktcore.api")
 
 from fastapi import Body, FastAPI, File, HTTPException, UploadFile  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
@@ -22,7 +27,7 @@ from mktcore.execution.audience import AUDIENCE_KINDS  # noqa: E402
 from mktcore.ingest.cleaning import clean_frame  # noqa: E402
 from mktcore.ingest.mapper import SchemaMapper  # noqa: E402
 from mktcore.ingest.profiler import profile_frame  # noqa: E402
-from mktcore.ingest.schema import REQUIRED_ROLES, ColumnRole  # noqa: E402
+from mktcore.ingest.schema import REQUIRED_ROLES, ColumnRole, standard_column  # noqa: E402
 from mktcore.locale_fa import ROLE_LABELS_FA  # noqa: E402
 from mktcore.pipeline import run_analysis  # noqa: E402
 from mktcore.synthetic import generate_synthetic_sales  # noqa: E402
@@ -93,28 +98,86 @@ class AnalyzeRequest(BaseModel):
     balanced_uplift: float = 0.10
 
 
+def _validate_clean(clean) -> str | None:
+    """اعتبارسنجی داده‌ی پاک‌شده؛ پیام خطای فارسی یا None برمی‌گرداند."""
+    date_col = standard_column(ColumnRole.DATE)
+    rev_col = standard_column(ColumnRole.REVENUE)
+    if clean is None or len(clean) == 0:
+        return ("بعد از پاک‌سازی داده‌ها هیچ ردیف معتبری باقی نمانده است. لطفاً ستون‌های "
+                "تاریخ، مبلغ، محصول و مشتری/موبایل را بررسی کنید.")
+    if date_col not in clean.columns or clean[date_col].notna().sum() == 0:
+        return "ستون اجباری «تاریخ» پیدا نشد یا داده‌ی معتبر (قابل‌تبدیل به تاریخ) ندارد."
+    if rev_col not in clean.columns or clean[rev_col].notna().sum() == 0:
+        return "ستون اجباری «مبلغ/درآمد» پیدا نشد یا داده‌ی عددی معتبر ندارد."
+    return None
+
+
 @app.post("/api/analyze")
 def analyze(req: AnalyzeRequest) -> dict:
     session = store.get(req.session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="نشست یافت نشد یا منقضی شده است.")
 
+    logger.info("analyze: session=%s mapping=%s horizon=%s", req.session_id, req.mapping, req.horizon)
+
     # تبدیل نگاشت به ColumnRole
     try:
-        mapping = {ColumnRole(role): col for role, col in req.mapping.items()}
+        mapping = {ColumnRole(role): col for role, col in req.mapping.items() if col}
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=f"نقش نامعتبر: {e}") from e
+        raise HTTPException(status_code=400, detail=f"نقش نامعتبر در نگاشت: {e}") from e
 
+    # نقش‌های ضروری
     missing = [ROLE_LABELS_FA[r.value] for r in REQUIRED_ROLES if r not in mapping]
     if missing:
-        raise HTTPException(status_code=400, detail=f"نگاشت ناقص: {', '.join(missing)}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"نگاشت ناقص: ستون‌های اجباری انتخاب نشده‌اند: {', '.join(missing)}",
+        )
 
+    # بررسی وجود ستون‌های نگاشت‌شده در داده‌ی خام
+    for role, col in mapping.items():
+        if col not in session.raw_df.columns:
+            raise HTTPException(
+                status_code=400,
+                detail=f"ستون «{col}» برای نقش «{ROLE_LABELS_FA.get(role.value, role.value)}» در فایل وجود ندارد.",
+            )
+
+    # مرحله ۱: اعمال نگاشت
     try:
         std = SchemaMapper().apply(session.raw_df, mapping)
-        clean = clean_frame(std)
-        bundle = run_analysis(clean, horizon=req.horizon, balanced_uplift=req.balanced_uplift)
+        logger.info("analyze: after apply -> %d rows, cols=%s", len(std), list(std.columns))
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"خطا در تحلیل: {e}") from e
+        logger.error("analyze apply failed: %s\n%s", e, traceback.format_exc())
+        raise HTTPException(status_code=400, detail=f"خطا در اعمال نگاشت ستون‌ها: {e}") from e
+
+    # مرحله ۲: پاک‌سازی
+    try:
+        clean = clean_frame(std)
+        logger.info(
+            "analyze: after clean -> %d rows, cols=%s, dropped_invalid=%s, dropped_dup=%s",
+            len(clean), list(clean.columns),
+            clean.attrs.get("dropped_invalid_rows"), clean.attrs.get("dropped_duplicate_rows"),
+        )
+    except Exception as e:
+        logger.error("analyze clean failed: %s\n%s", e, traceback.format_exc())
+        raise HTTPException(status_code=400, detail=f"خطا در پاک‌سازی داده‌ها: {e}") from e
+
+    # مرحله ۳: اعتبارسنجی
+    err = _validate_clean(clean)
+    if err:
+        logger.warning("analyze validation failed: %s", err)
+        raise HTTPException(status_code=400, detail=err)
+
+    # مرحله ۴: تحلیل
+    try:
+        bundle = run_analysis(clean, horizon=req.horizon, balanced_uplift=req.balanced_uplift)
+        logger.info("analyze: run_analysis OK (revenue=%s)", bundle.kpis.total_revenue)
+    except Exception as e:
+        logger.error("analyze run_analysis failed: %s\n%s", e, traceback.format_exc())
+        raise HTTPException(
+            status_code=400,
+            detail=f"خطا در مرحله‌ی تحلیل ({type(e).__name__}): {e}",
+        ) from e
 
     session.clean_df = clean
     session.bundle = bundle
