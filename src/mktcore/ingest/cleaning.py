@@ -89,10 +89,10 @@ def clean_frame(df: pd.DataFrame) -> pd.DataFrame:
     if _DATE in out.columns:
         out[_DATE] = _parse_dates(out[_DATE])
 
-    # اعداد
+    # اعداد: تبدیل به عدد و سپس تضمین نوع عددی (جلوگیری از مقایسه‌ی str با int)
     for col in _NUMERIC_COLS:
         if col in out.columns:
-            out[col] = out[col].map(_to_number)
+            out[col] = pd.to_numeric(out[col].map(_to_number), errors="coerce")
 
     # مشتق درآمد در صورت نبود مقدار ولی وجود تعداد و قیمت واحد
     if _REVENUE in out.columns and _QUANTITY in out.columns and _UNIT_PRICE in out.columns:

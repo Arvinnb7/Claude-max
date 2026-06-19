@@ -5,6 +5,9 @@ export interface RoleInfo {
   label: string;
   required: boolean;
   suggested: string | null;
+  confidence: number;
+  reason: string;
+  low_confidence: boolean;
 }
 
 export interface UploadResponse {

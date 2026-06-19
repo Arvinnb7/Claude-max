@@ -156,10 +156,20 @@ export function MappingStep({
   const init: Record<string, string> = {};
   for (const r of data.roles) if (r.suggested) init[r.role] = r.suggested;
   const [mapping, setMapping] = useState<Record<string, string>>(init);
+  const [ackLowConf, setAckLowConf] = useState(false);
 
   const requiredMissing = data.roles
     .filter((r) => r.required && !mapping[r.role])
     .map((r) => r.label);
+
+  // ستون‌هایی که سیستم با اطمینان پایین حدس زده (و کاربر تغییرشان نداده)
+  const lowConfFields = data.roles.filter(
+    (r) => r.low_confidence && !mapping[r.role],
+  );
+  // فیلدهای الزامی که فقط با حدس کم‌اطمینان پر می‌شوند
+  const requiredLowConf = data.roles.filter(
+    (r) => r.required && !mapping[r.role] && r.confidence > 0 && r.confidence < 0.65,
+  );
 
   function setRole(role: string, col: string) {
     setMapping((m) => {
@@ -180,26 +190,54 @@ export function MappingStep({
           )} ستون را حدس زده است؛ در صورت نیاز اصلاح کنید. ستون‌های ستاره‌دار الزامی‌اند.`}
         />
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {data.roles.map((r) => (
-            <div key={r.role}>
-              <label className="mb-1 block text-sm font-medium">
-                {r.label}
-                {r.required && <span className="text-rose-500"> *</span>}
-              </label>
-              <select
-                value={mapping[r.role] ?? ""}
-                onChange={(e) => setRole(r.role, e.target.value)}
-                className="w-full rounded-xl border border-ink-200 bg-white px-3 py-2 text-sm outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-100 dark:border-ink-700 dark:bg-ink-800 dark:text-ink-100 dark:focus:ring-brand-500/30"
-              >
-                <option value="">— انتخاب نشده —</option>
-                {data.columns.map((c) => (
-                  <option key={c} value={c}>
-                    {c}
-                  </option>
-                ))}
-              </select>
-            </div>
-          ))}
+          {data.roles.map((r) => {
+            const selected = !!mapping[r.role];
+            const conf = Math.round(r.confidence * 100);
+            const tone =
+              selected && r.confidence >= 0.65
+                ? "text-emerald-600"
+                : r.confidence >= 0.65
+                  ? "text-emerald-600"
+                  : r.confidence > 0
+                    ? "text-amber-600"
+                    : "text-ink-400";
+            return (
+              <div key={r.role}>
+                <label className="mb-1 flex items-center justify-between text-sm font-medium">
+                  <span>
+                    {r.label}
+                    {r.required && <span className="text-rose-500"> *</span>}
+                  </span>
+                  {r.confidence > 0 && (
+                    <span className={`text-xs tnum ${tone}`}>اطمینان {toFa(conf)}٪</span>
+                  )}
+                </label>
+                <select
+                  value={mapping[r.role] ?? ""}
+                  onChange={(e) => setRole(r.role, e.target.value)}
+                  className="w-full rounded-xl border border-ink-200 bg-white px-3 py-2 text-sm outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-100 dark:border-ink-700 dark:bg-ink-800 dark:text-ink-100 dark:focus:ring-brand-500/30"
+                >
+                  <option value="">— انتخاب نشده —</option>
+                  {data.columns.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </select>
+                {!selected && r.low_confidence && (
+                  <p className="mt-1 text-xs text-amber-600">
+                    ⚠️ این ستون با اطمینان پایین حدس زده شده؛ لطفاً بررسی و دستی انتخاب کنید.
+                    {r.reason ? ` (${r.reason})` : ""}
+                  </p>
+                )}
+                {selected && r.reason && (
+                  <p className="mt-1 text-xs" style={{ color: "var(--muted)" }}>
+                    {r.reason}
+                  </p>
+                )}
+              </div>
+            );
+          })}
         </div>
       </Card>
 
@@ -233,7 +271,26 @@ export function MappingStep({
 
       {requiredMissing.length > 0 && (
         <Alert tone="warn">
-          نقش‌های الزامی انتخاب نشده‌اند: {requiredMissing.join("، ")}
+          نقش‌های الزامی انتخاب نشده‌اند: {requiredMissing.join("، ")}. لطفاً ستون درست را
+          دستی انتخاب کنید تا تحلیل کورکورانه اجرا نشود.
+        </Alert>
+      )}
+
+      {requiredMissing.length === 0 && lowConfFields.length > 0 && (
+        <Alert tone="warn">
+          <label className="flex cursor-pointer items-start gap-2">
+            <input
+              type="checkbox"
+              checked={ackLowConf}
+              onChange={(e) => setAckLowConf(e.target.checked)}
+              className="mt-1"
+            />
+            <span>
+              برخی ستون‌ها با اطمینان پایین حدس زده شده‌اند (
+              {lowConfFields.map((r) => r.label).join("، ")}). نگاشت را بررسی کردم و تأیید
+              می‌کنم.
+            </span>
+          </label>
         </Alert>
       )}
 
@@ -243,7 +300,12 @@ export function MappingStep({
         </Button>
         <Button
           onClick={() => onConfirm(mapping)}
-          disabled={requiredMissing.length > 0 || loading}
+          disabled={
+            requiredMissing.length > 0 ||
+            loading ||
+            (lowConfFields.length > 0 && !ackLowConf) ||
+            requiredLowConf.length > 0
+          }
         >
           {loading ? "در حال تحلیل…" : "تأیید و تحلیل"}
         </Button>

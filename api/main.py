@@ -46,21 +46,28 @@ app.add_middleware(
 
 
 def _columns_payload(df) -> dict:
-    """نگاشت پیشنهادی + پیش‌نمایش + فهرست نقش‌ها."""
+    """نگاشت پیشنهادی + اطمینان + دلیل + پیش‌نمایش + فهرست نقش‌ها."""
     mapper = SchemaMapper()
     suggestion = mapper.auto_detect(df)
-    roles = [
-        {"role": r.value, "label": ROLE_LABELS_FA.get(r.value, r.value),
-         "required": r in REQUIRED_ROLES,
-         "suggested": suggestion.mapping.get(r)}
-        for r in ColumnRole
-    ]
+    roles = []
+    for r in ColumnRole:
+        g = suggestion.guesses.get(r)
+        roles.append({
+            "role": r.value,
+            "label": ROLE_LABELS_FA.get(r.value, r.value),
+            "required": r in REQUIRED_ROLES,
+            "suggested": suggestion.mapping.get(r),
+            "confidence": round(g.confidence, 2) if g else 0.0,
+            "reason": g.reason if g else "",
+            "low_confidence": bool(g and not g.auto and g.confidence > 0),
+        })
     preview = df.head(15).astype(str).to_dict(orient="records")
     return {
         "columns": [str(c) for c in df.columns],
         "roles": roles,
         "preview": preview,
         "n_rows": int(len(df)),
+        "missing_required": [ROLE_LABELS_FA[r.value] for r in suggestion.missing_required],
     }
 
 
