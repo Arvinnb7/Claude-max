@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-import numpy as np
 import pandas as pd
 
 from ..ingest.schema import ColumnRole, standard_column
@@ -60,49 +59,57 @@ def analyze_sequences(
     window_days: int = 45,
     min_completion: float = 0.25,
     min_buyers: int = 20,
+    top_products: int = 25,
+    max_incomplete: int = 1000,
 ) -> SequenceAnalysis:
     """کشف الگوهای توالی A→B و فهرست مشتریان ناتمام برای هدف‌گیری.
 
-    منطق: برای هر جفت، نگاه می‌کنیم خریداران A چه نسبتی بعد از اولین خرید A و در
-    بازه‌ی `window_days` محصول B را هم خریده‌اند. مشتریان ناتمام = کسانی که A را
-    خریده‌اند، B را هنوز نخریده‌اند و هنوز در پنجره‌ی فرصت قرار دارند.
+    برای مقیاس‌پذیری، تحلیل فقط روی پرتکرارترین محصولات (top_products) و به‌صورت
+    وکتورایز انجام می‌شود تا روی داده‌های بزرگ (ده‌ها هزار مشتری و محصول) هم سریع باشد.
     """
     res = SequenceAnalysis()
     if _CUSTOMER not in df.columns or _PRODUCT not in df.columns or df.empty:
         return res
 
+    df = df.dropna(subset=[_CUSTOMER, _PRODUCT, _DATE])
+    if df.empty:
+        return res
     data_max = df[_DATE].max()
-    # اولین تاریخ خرید هر (مشتری، محصول)
-    first_buy = df.groupby([_CUSTOMER, _PRODUCT])[_DATE].min().reset_index()
-    pivot = first_buy.pivot(index=_CUSTOMER, columns=_PRODUCT, values=_DATE)
-    products = list(pivot.columns)
 
-    for a in products:
-        buyers_a = pivot[pivot[a].notna()]
-        n_a = len(buyers_a)
+    # محدودسازی به پرتکرارترین محصولات بر اساس تعداد خریدار یکتا
+    buyers_per_product = df.groupby(_PRODUCT)[_CUSTOMER].nunique().sort_values(ascending=False)
+    keep = [p for p in buyers_per_product.index[:top_products]
+            if buyers_per_product[p] >= min_buyers]
+    if len(keep) < 2:
+        return res
+
+    sub = df[df[_PRODUCT].isin(keep)]
+    first_buy = sub.groupby([_CUSTOMER, _PRODUCT])[_DATE].min().reset_index()
+    pivot = first_buy.pivot(index=_CUSTOMER, columns=_PRODUCT, values=_DATE)
+
+    for a in keep:
+        if a not in pivot.columns:
+            continue
+        mask_a = pivot[a].notna()
+        n_a = int(mask_a.sum())
         if n_a < min_buyers:
             continue
-        for b in products:
-            if a == b:
+        a_dates = pivot.loc[mask_a, a]
+        days_since_a = (data_max - a_dates).dt.days
+        for b in keep:
+            if a == b or b not in pivot.columns:
                 continue
-            lags = (buyers_a[b] - buyers_a[a]).dt.days
-            # تکمیل‌شده: B بعد از A و در بازه
-            completed = lags[(lags > 0) & (lags <= window_days)]
-            completion_rate = len(completed) / n_a
-            if completion_rate < min_completion or len(completed) < 5:
+            b_dates = pivot.loc[mask_a, b]
+            lag = (b_dates - a_dates).dt.days
+            in_window = b_dates.notna() & (lag > 0) & (lag <= window_days)
+            n_completed = int(in_window.sum())
+            completion_rate = n_completed / n_a
+            if completion_rate < min_completion or n_completed < 5:
                 continue
-            median_lag = float(np.median(completed)) if len(completed) else float(window_days)
-
-            # مشتریان ناتمام: A خریده، B نخریده (یا بعد از پنجره)، و هنوز در پنجره‌ی فرصت
-            incomplete = []
-            for cust, row in buyers_a.iterrows():
-                a_date = row[a]
-                b_date = row[b]
-                days_since_a = (data_max - a_date).days
-                bought_b_in_window = pd.notna(b_date) and 0 < (b_date - a_date).days <= window_days
-                if not bought_b_in_window and days_since_a <= window_days:
-                    incomplete.append(str(cust))
-
+            median_lag = float(lag[in_window].median())
+            # مشتریان ناتمام: B را در بازه نخریده‌اند ولی هنوز در پنجره‌ی فرصت‌اند
+            incomplete_mask = (~in_window) & (days_since_a <= window_days)
+            incomplete = [str(c) for c in a_dates.index[incomplete_mask][:max_incomplete]]
             res.patterns.append(SequencePattern(
                 antecedent=str(a), consequent=str(b), completion_rate=completion_rate,
                 median_lag_days=median_lag, n_antecedent_buyers=n_a,

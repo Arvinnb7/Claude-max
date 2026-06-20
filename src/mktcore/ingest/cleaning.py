@@ -19,6 +19,26 @@ _DISCOUNT = standard_column(ColumnRole.DISCOUNT)
 _ORDER_ID = standard_column(ColumnRole.ORDER_ID)
 
 _NUMERIC_COLS = (_REVENUE, _QUANTITY, _UNIT_PRICE, _COST, _DISCOUNT)
+# ستون‌هایی که باید برچسب رشته‌ای یکدست داشته باشند (جلوگیری از مخلوط str/float)
+_LABEL_COLS = tuple(
+    standard_column(r) for r in (
+        ColumnRole.CUSTOMER_ID, ColumnRole.PRODUCT, ColumnRole.ORDER_ID,
+        ColumnRole.SALESPERSON, ColumnRole.BRANCH, ColumnRole.CHANNEL,
+        ColumnRole.REGION, ColumnRole.CATEGORY, ColumnRole.EMAIL, ColumnRole.PHONE,
+    )
+)
+# ستون‌های مبلغی که ممکن است با «قرارداد علامت منفی» حسابداری ذخیره شده باشند
+_SIGN_COLS = (_REVENUE, _UNIT_PRICE, _QUANTITY, _COST)
+
+
+def _clean_label(x: object) -> object:
+    """تبدیل برچسب به رشته‌ی تمیز یا NaN (برای یکدست‌سازی ستون‌های شناسه/متنی)."""
+    if x is None or (isinstance(x, float) and np.isnan(x)):
+        return np.nan
+    s = str(x).strip()
+    if s == "" or s.lower() in ("nan", "none", "null", "<na>"):
+        return np.nan
+    return s
 
 
 def _to_number(value: object) -> float:
@@ -93,6 +113,22 @@ def clean_frame(df: pd.DataFrame) -> pd.DataFrame:
     for col in _NUMERIC_COLS:
         if col in out.columns:
             out[col] = pd.to_numeric(out[col].map(_to_number), errors="coerce")
+
+    # نرمال‌سازی «قرارداد علامت منفی» حسابداری: اگر یک ستون مبلغی عمدتاً منفی باشد
+    # (خروجی نرم‌افزارهای حسابداری ایرانی)، علامتش برگردانده می‌شود تا فروش مثبت شود.
+    sign_flipped: list[str] = []
+    for col in _SIGN_COLS:
+        if col in out.columns:
+            s = out[col].dropna()
+            if len(s) >= 10 and (s < 0).mean() > 0.6:
+                out[col] = -out[col]
+                sign_flipped.append(col)
+    out.attrs["sign_flipped"] = sign_flipped
+
+    # یکدست‌سازی ستون‌های برچسبی به رشته (یا NaN) تا مخلوط str/float رخ ندهد
+    for col in _LABEL_COLS:
+        if col in out.columns:
+            out[col] = out[col].map(_clean_label)
 
     # مشتق درآمد در صورت نبود مقدار ولی وجود تعداد و قیمت واحد
     if _REVENUE in out.columns and _QUANTITY in out.columns and _UNIT_PRICE in out.columns:

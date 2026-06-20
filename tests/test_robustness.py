@@ -71,6 +71,46 @@ def test_api_empty_after_clean_message():
     assert "معتبر" in r.json()["detail"]
 
 
+def test_accounting_negative_sign_convention():
+    """درآمد منفی (قرارداد حسابداری) باید اصلاح شود نه اینکه ۹۸٪ ردیف حذف شود."""
+    n = 200
+    raw = pd.DataFrame({
+        "تاریخ": pd.date_range("2024-01-01", periods=n, freq="D").strftime("%Y-%m-%d"),
+        "نام مشتری": [f"م{i%30}" for i in range(n)],
+        "شرح کالا": ["غذای سگ", "قلاده"] * (n // 2),
+        "قابل پرداخت": [-(100000 + i * 1000) for i in range(n)],  # همه منفی
+    })
+    m = SchemaMapper()
+    clean = clean_frame(m.apply(raw, m.auto_detect(raw).mapping))
+    # تقریباً همه‌ی ردیف‌ها باید بمانند (نه حذف)
+    assert len(clean) >= n - 5
+    assert (clean["revenue"] > 0).all()
+    bundle = run_analysis(clean, with_forecast=False)
+    assert bundle.kpis.total_revenue > 0
+
+
+def test_mixed_type_ids_do_not_crash():
+    """شناسه‌ی مشتری/محصول با نوع مختلط (عدد + متن) نباید با float<str بشکند."""
+    raw = pd.DataFrame({
+        "تاریخ": pd.date_range("2024-01-01", periods=60, freq="2D").strftime("%Y-%m-%d"),
+        "نام مشتری": ([101, 102, 103] * 20),  # عددی (float پس از خواندن)
+        "شرح کالا": (["الف", "ب", 9001] * 20),  # مختلط
+        "قابل پرداخت": list(range(100000, 100000 + 60 * 1000, 1000)),
+    })
+    m = SchemaMapper()
+    clean = clean_frame(m.apply(raw, m.auto_detect(raw).mapping))
+    bundle = run_analysis(clean, with_forecast=True)  # نباید استثنا بدهد
+    assert bundle.kpis.total_revenue > 0
+
+
+def test_xlsb_engine_selection():
+    from mktcore.connectors.excel_csv import _excel_engine
+
+    assert _excel_engine(".xlsb") == "pyxlsb"
+    assert _excel_engine(".xls") == "xlrd"
+    assert _excel_engine(".xlsx") == "openpyxl"
+
+
 def test_api_missing_required_message():
     """نگاشت بدون ستون اجباری → پیام دقیق."""
     up = client.post("/api/sample").json()

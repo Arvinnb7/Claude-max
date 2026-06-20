@@ -10,8 +10,17 @@ import pandas as pd
 
 from .base import ConnectorResult, DataConnector
 
-_EXCEL_EXT = {".xlsx", ".xlsm", ".xls"}
+_EXCEL_EXT = {".xlsx", ".xlsm", ".xls", ".xlsb"}
 _CSV_EXT = {".csv", ".txt", ".tsv"}
+
+
+def _excel_engine(ext: str) -> str:
+    """انتخاب موتور مناسب خواندن اکسل بر اساس پسوند."""
+    if ext == ".xls":
+        return "xlrd"
+    if ext == ".xlsb":
+        return "pyxlsb"  # اکسل باینری (نیازمند بسته‌ی pyxlsb)
+    return "openpyxl"
 
 
 def _sniff_csv(raw: bytes) -> tuple[str, str]:
@@ -58,8 +67,7 @@ class ExcelCsvConnector(DataConnector):
     def list_sources(self) -> list[str]:
         """نام شیت‌ها (اکسل) یا نام فایل (CSV)."""
         if self._ext in _EXCEL_EXT:
-            engine = "xlrd" if self._ext == ".xls" else "openpyxl"
-            xls = pd.ExcelFile(io.BytesIO(self._bytes()), engine=engine)
+            xls = pd.ExcelFile(io.BytesIO(self._bytes()), engine=_excel_engine(self._ext))
             return list(xls.sheet_names)
         return [self.filename]
 
@@ -72,12 +80,11 @@ class ExcelCsvConnector(DataConnector):
         """
         raw = self._bytes()
         if self._ext in _EXCEL_EXT:
-            engine = "xlrd" if self._ext == ".xls" else "openpyxl"
             df = pd.read_excel(
                 io.BytesIO(raw),
                 sheet_name=source if source else 0,
                 header=header_row,
-                engine=engine,
+                engine=_excel_engine(self._ext),
             )
             meta = {"format": "excel", "sheet": source}
         elif self._ext in _CSV_EXT:

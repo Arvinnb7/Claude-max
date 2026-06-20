@@ -64,6 +64,12 @@ def profile_frame(df: pd.DataFrame) -> DataQualityReport:
     if _REVENUE in df.columns and df[_REVENUE].sum() == 0:
         rep.warnings.append("مجموع درآمد صفر است؛ نگاشت ستون درآمد را بررسی کنید.")
 
+    if df.attrs.get("sign_flipped"):
+        rep.warnings.append(
+            "ستون‌های مبلغی با «قرارداد علامت منفی» (خروجی حسابداری) شناسایی و علامت‌شان "
+            "اصلاح شد تا فروش مثبت محاسبه شود."
+        )
+
     if rep.dropped_invalid > 0:
         rep.warnings.append(f"{rep.dropped_invalid} ردیف نامعتبر (بدون تاریخ/درآمد) حذف شد.")
     if rep.dropped_duplicates > 0:

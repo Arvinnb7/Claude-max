@@ -37,7 +37,7 @@ source = st.radio(
 raw_df = None
 
 if source == "اکسل / CSV":
-    uploaded = st.file_uploader("فایل اکسل یا CSV فروش را بارگذاری کنید", type=["xlsx", "xls", "csv", "txt", "tsv"])
+    uploaded = st.file_uploader("فایل اکسل یا CSV فروش را بارگذاری کنید", type=["xlsx", "xls", "xlsb", "csv", "txt", "tsv"])
     if uploaded is not None:
         connector = ExcelCsvConnector(content=uploaded.getvalue(), filename=uploaded.name)
         sheets = connector.list_sources()

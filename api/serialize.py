@@ -171,7 +171,7 @@ def bundle_to_dict(bundle: MetricsBundle, *, currency: str = "تومان") -> di
                 {"product": c.product, "product_type": c.product_type,
                  "repurchase_rate": c.repurchase_rate, "median_cycle_days": c.median_cycle_days,
                  "n_buyers": c.n_buyers}
-                for c in pc.product_cycles
+                for c in pc.product_cycles[:150]
             ],
             "notifications": [
                 {"customer_id": n.customer_id, "product": n.product, "cycle_days": n.cycle_days,
@@ -204,7 +204,7 @@ def bundle_to_dict(bundle: MetricsBundle, *, currency: str = "تومان") -> di
             {"product": i.product, "recommendation": i.recommendation,
              "growth": i.growth, "revenue_share": i.revenue_share,
              "margin": i.margin, "reason": i.reason}
-            for i in bundle.inventory.items
+            for i in bundle.inventory.items[:150]
         ]
 
     if bundle.diagnostics.period_label:

@@ -98,7 +98,7 @@ export function UploadStep({ onLoaded }: { onLoaded: (r: UploadResponse) => void
           <input
             ref={fileRef}
             type="file"
-            accept=".xlsx,.xls,.csv,.txt,.tsv"
+            accept=".xlsx,.xls,.xlsb,.csv,.txt,.tsv"
             className="hidden"
             onChange={(e) => {
               const f = e.target.files?.[0];

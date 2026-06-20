@@ -69,7 +69,7 @@ def build_markdown(
         lines.append("## چرخه‌ی خرید محصولات\n")
         lines.append("| محصول | نوع | نرخ بازخرید | چرخه (روز) |")
         lines.append("|---|---|---|---|")
-        for c in bundle.purchase_cycle.product_cycles:
+        for c in bundle.purchase_cycle.product_cycles[:25]:
             cyc = "—" if c.median_cycle_days is None else format_number_fa(round(c.median_cycle_days))
             lines.append(f"| {c.product} | {c.product_type} | {_pct(c.repurchase_rate)} | {cyc} |")
         lines.append("")
@@ -141,7 +141,7 @@ def build_markdown(
         lines.append("## پیشنهاد تأمین کالا\n")
         lines.append("| محصول | توصیه | دلیل |")
         lines.append("|---|---|---|")
-        for it in bundle.inventory.items:
+        for it in bundle.inventory.items[:25]:
             lines.append(f"| {it.product} | {it.recommendation} | {it.reason} |")
         lines.append("")
 

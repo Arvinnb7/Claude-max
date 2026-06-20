@@ -74,8 +74,11 @@ def analyze_basket(
     else:
         return res
 
-    # مجموعه‌ی محصولات هر سبد
-    baskets = df.groupby(basket_key)[_PRODUCT].apply(lambda s: sorted(set(s)))
+    # مجموعه‌ی محصولات هر سبد (حذف مقادیر تهی و یکدست‌سازی به رشته)
+    def _unique_items(s: pd.Series) -> list[str]:
+        return sorted({str(x) for x in s if pd.notna(x)})
+
+    baskets = df.groupby(basket_key)[_PRODUCT].apply(_unique_items)
     n_baskets = len(baskets)
     if n_baskets == 0:
         return res

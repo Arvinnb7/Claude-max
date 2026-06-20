@@ -61,77 +61,82 @@ def predict_next_purchases(
     basket: BasketAnalysis | None = None,
     *,
     near_window: int = 14,
+    max_basket_customers: int = 1500,
 ) -> NextPurchaseAnalysis:
-    """پیش‌بینی زمان و سبد خرید بعدی برای هر مشتری."""
+    """پیش‌بینی زمان و سبد خرید بعدی برای هر مشتری (وکتورایز و مقیاس‌پذیر)."""
     res = NextPurchaseAnalysis()
     if _CUSTOMER not in df.columns or df.empty:
         return res
 
-    data_max = df[_DATE].max()
-    order_col = _ORDER if _ORDER in df.columns else None
+    d = df.dropna(subset=[_CUSTOMER, _DATE]).copy()
+    if d.empty:
+        return res
+    data_max = d[_DATE].max()
+    order_col = _ORDER if (_ORDER in d.columns and d[_ORDER].notna().any()) else None
 
-    # میانگین ارزش هر سفارش مشتری (برای ارزش مورد انتظار)
+    # آماره‌های هر مشتری به‌صورت وکتورایز
+    g = d.groupby(_CUSTOMER)
+    last = g[_DATE].max()
+    first = g[_DATE].min()
+    n_dates = g[_DATE].nunique()
     if order_col:
-        order_value = df.groupby([_CUSTOMER, order_col])[_REVENUE].sum()
-        avg_order_value = order_value.groupby(level=0).mean()
+        ov = d.groupby([_CUSTOMER, order_col])[_REVENUE].sum().groupby(level=0).mean()
     else:
-        avg_order_value = df.groupby(_CUSTOMER)[_REVENUE].mean()
+        ov = g[_REVENUE].mean()
 
-    # پرفروش‌های کلی (برای پیشنهاد به مشتریان کم‌سابقه)
-    top_products = list(df.groupby(_PRODUCT)[_REVENUE].sum().sort_values(ascending=False).index[:3])
+    span_days = (last - first).dt.days
+    avg_interval = (span_days / (n_dates - 1).where(n_dates > 1)).astype(float)
+    predicted = last + pd.to_timedelta(avg_interval.fillna(0), unit="D")
+    overdue = (data_max - predicted).dt.days
 
-    for cust, g in df.groupby(_CUSTOMER):
-        if order_col and g[order_col].notna().any():
-            dates = g.groupby(order_col)[_DATE].min().sort_values()
+    top_products = list(d.groupby(_PRODUCT)[_REVENUE].sum().sort_values(ascending=False).index[:3]) \
+        if _PRODUCT in d.columns else []
+
+    customers = list(last.index)
+    np_by_id: dict[str, NextPurchase] = {}
+    for cust in customers:
+        nd = int(n_dates[cust])
+        if nd >= 2:
+            ov_days = int(overdue[cust]) if pd.notna(overdue[cust]) else 0
+            status = ("سررسیدشده" if ov_days >= 0 else
+                      ("نزدیک" if ov_days >= -near_window else "زود"))
+            pred_str = predicted[cust].date().isoformat() if pd.notna(predicted[cust]) else None
+            ai = float(avg_interval[cust]) if pd.notna(avg_interval[cust]) else None
         else:
-            dates = g[_DATE].sort_values()
-        valid = pd.Series(pd.to_datetime(dates, errors="coerce")).dropna()
-        unique_dates = pd.Series(sorted(valid.unique()))
-        if unique_dates.empty:
-            continue
-        last = pd.Timestamp(unique_dates.iloc[-1])
-
-        if len(unique_dates) >= 2:
-            intervals = unique_dates.diff().dropna().dt.days
-            avg_interval = float(intervals.mean())
-            predicted = last + pd.Timedelta(days=avg_interval)
-            overdue = int((data_max - predicted).days)
-            if overdue >= 0:
-                status = "سررسیدشده"
-            elif overdue >= -near_window:
-                status = "نزدیک"
-            else:
-                status = "زود"
-            predicted_str = predicted.date().isoformat()
-        else:
-            avg_interval = None
-            predicted_str = None
-            overdue = 0
-            status = "نامشخص"
-
-        # سبد محتمل: مکمل‌های محصولات تاریخچه + پرفروش‌هایی که نخریده
-        bought = set(g[_PRODUCT].unique())
-        likely: list[str] = []
-        if basket is not None and basket.available:
-            for p in bought:
-                for rule in basket.complements_for(p, n=2):
-                    if rule.consequent not in bought and rule.consequent not in likely:
-                        likely.append(rule.consequent)
-        for p in top_products:
-            if p not in bought and p not in likely:
-                likely.append(p)
-        likely = likely[:3]
-
-        res.customers.append(NextPurchase(
+            ov_days, status, pred_str, ai = 0, "نامشخص", None, None
+        npr = NextPurchase(
             customer_id=str(cust),
-            last_purchase=last.date().isoformat(),
-            avg_interval_days=avg_interval,
-            predicted_next_date=predicted_str,
-            status=status,
-            overdue_days=overdue,
-            likely_products=likely,
-            expected_value=float(avg_order_value.get(cust, 0.0)),
-        ))
+            last_purchase=last[cust].date().isoformat(),
+            avg_interval_days=ai, predicted_next_date=pred_str, status=status,
+            overdue_days=ov_days, likely_products=[],
+            expected_value=float(ov.get(cust, 0.0)),
+        )
+        np_by_id[str(cust)] = npr
+        res.customers.append(npr)
+
+    # سبد محتمل فقط برای مشتریان سررسیدشده/نزدیک (محدود برای کارایی)
+    due = sorted([c for c in res.customers if c.status in ("سررسیدشده", "نزدیک")],
+                 key=lambda c: -c.overdue_days)[:max_basket_customers]
+    if due and _PRODUCT in d.columns:
+        due_ids = {c.customer_id for c in due}
+        bought_map = (
+            d[d[_CUSTOMER].astype(str).isin(due_ids)]
+            .groupby(_CUSTOMER)[_PRODUCT]
+            .agg(lambda s: {str(x) for x in s if pd.notna(x)})
+        )
+        for c in due:
+            bought = bought_map.get(c.customer_id, set())
+            likely: list[str] = []
+            if basket is not None and basket.available:
+                for p in bought:
+                    for rule in basket.complements_for(p, n=2):
+                        if rule.consequent not in bought and rule.consequent not in likely:
+                            likely.append(rule.consequent)
+            for p in top_products:
+                ps = str(p)
+                if ps not in bought and ps not in likely:
+                    likely.append(ps)
+            c.likely_products = likely[:3]
 
     return res
 
