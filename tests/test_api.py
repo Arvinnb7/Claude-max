@@ -99,6 +99,44 @@ def test_job_not_found():
     assert r.status_code == 404
 
 
+def _backdate_job(jid: str, seconds: float) -> None:
+    import sqlite3
+    import time as _t
+
+    from api.persistence import store as _store
+
+    with sqlite3.connect(_store.db_path) as c:
+        c.execute("UPDATE jobs SET updated_at = ? WHERE id = ?",
+                  (_t.time() - seconds, jid))
+
+
+def test_watchdog_marks_silent_running_job_as_error():
+    """job زنده‌ای که مدت‌ها ضربان نداشته باید با پیام شفاف خطا شود."""
+    from api.persistence import store as _store
+
+    jid = _store.create_job("upload")
+    _store.update_job(jid, status="running", progress=15, stage="خواندن اکسل")
+    _backdate_job(jid, 10_000)
+
+    r = client.get(f"/api/jobs/{jid}")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "error"
+    assert "پاسخ نمی‌دهد" in body["error"]
+
+
+def test_watchdog_leaves_done_jobs_alone():
+    from api.persistence import store as _store
+
+    jid = _store.create_job("upload")
+    _store.update_job(jid, status="done", progress=100, stage="پایان",
+                      result={"ok": True})
+    _backdate_job(jid, 10_000)
+
+    r = client.get(f"/api/jobs/{jid}")
+    assert r.json()["status"] == "done"
+
+
 def test_sms_dry_run_and_outbox():
     data = _sample_ready()
     sid = data["session_id"]

@@ -330,6 +330,16 @@ class PersistentStore:
             created_at=row["created_at"], updated_at=row["updated_at"],
         )
 
+    def mark_stale_job(self, jid: str, message: str) -> bool:
+        """اگر job هنوز غیرنهایی است آن را خطا علامت بزن (race-safe با شرط status)."""
+        with self._conn() as c:
+            cur = c.execute(
+                "UPDATE jobs SET status='error', error=?, updated_at=? "
+                "WHERE id=? AND status IN ('queued','running')",
+                (message, time.time(), jid),
+            )
+            return cur.rowcount > 0
+
     def recover_stale_jobs(self) -> int:
         """jobهایی که هنگام ری‌استارت سرور queued/running مانده‌اند → خطای شفاف."""
         with self._conn() as c:

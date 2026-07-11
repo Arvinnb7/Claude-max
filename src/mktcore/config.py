@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     mkt_data_dir: Path = Path("data")
     mkt_session_ttl_hours: int = 72
     mkt_max_upload_mb: int = 100
+    # سقف ردیف خواندن فایل (محافظ حافظه در برابر used-range بادکرده)
+    mkt_max_rows: int = 400_000
+    # اگر job در حال اجرا این‌قدر ثانیه بدون ضربان بماند → خطای شفاف (watchdog)
+    mkt_job_stale_seconds: int = 300
 
     # امنیت شبکه
     mkt_cors_origins: str = "http://localhost:3000"

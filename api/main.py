@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -28,7 +29,7 @@ from mktcore.ingest.cleaning import clean_frame  # noqa: E402
 from mktcore.ingest.mapper import SchemaMapper  # noqa: E402
 from mktcore.ingest.profiler import profile_frame  # noqa: E402
 from mktcore.ingest.schema import REQUIRED_ROLES, ColumnRole, standard_column  # noqa: E402
-from mktcore.locale_fa import ROLE_LABELS_FA  # noqa: E402
+from mktcore.locale_fa import ROLE_LABELS_FA, format_number_fa  # noqa: E402
 from mktcore.pipeline import run_analysis  # noqa: E402
 from mktcore.synthetic import generate_synthetic_sales  # noqa: E402
 
@@ -48,8 +49,15 @@ async def lifespan(app: FastAPI):
     recovered = store.recover_stale_jobs()
     if recovered:
         logger.warning("recovered %d stale jobs after restart", recovered)
-    store.cleanup_expired()
-    start_scheduler()
+    # هیچ‌کدام از کارهای startup نباید بتوانند بالا آمدن API را متوقف کنند
+    try:
+        store.cleanup_expired()
+    except Exception:
+        logger.exception("پاکسازی نشست‌های منقضی ناموفق بود؛ API ادامه می‌دهد")
+    try:
+        start_scheduler()
+    except Exception:
+        logger.exception("زمان‌بند اجرا نشد؛ API بدون زمان‌بند ادامه می‌دهد")
     yield
     stop_scheduler()
 
@@ -128,11 +136,28 @@ async def upload(file: UploadFile = File(...)) -> dict:
 
     def _job(progress) -> dict:
         progress(5, "خواندن فایل")
+
+        # progress زنده‌ی خواندن: نگاشت ۱۵→۶۵٪ + throttle (حداکثر ~۲ نوشتن در ثانیه)
+        last_write = [0.0]
+
+        def _read_progress(done: int, total_rows: int | None) -> None:
+            now = time.monotonic()
+            if now - last_write[0] < 0.5:
+                return
+            last_write[0] = now
+            if total_rows and total_rows > 0:
+                pct = 15.0 + 50.0 * min(done / total_rows, 1.0)
+                progress(pct, f"خواندن فایل — {format_number_fa(done)} از حدود "
+                              f"{format_number_fa(total_rows)} ردیف")
+            else:
+                progress(20.0, f"خواندن فایل — {format_number_fa(done)} ردیف خوانده شد")
+
         try:
             connector = ExcelCsvConnector(content=content, filename=filename)
             sheets = connector.list_sources()
-            progress(15, "خواندن اکسل (فایل‌های بزرگ ممکن است تا یک دقیقه طول بکشد)")
-            df = connector.read(sheets[0]).dataframe
+            progress(15, "خواندن اکسل")
+            result = connector.read(sheets[0], progress=_read_progress)
+            df = result.dataframe
         except Exception as e:
             raise JobError(f"خطا در خواندن فایل: {e}") from e
         progress(70, "ذخیره‌ی داده")
@@ -141,6 +166,7 @@ async def upload(file: UploadFile = File(...)) -> dict:
         payload = _columns_payload(df)
         payload["session_id"] = sid
         payload["sheets"] = sheets
+        payload["warnings"] = result.meta.get("warnings", [])
         store.set_columns_payload(sid, payload)
         return payload
 
@@ -258,11 +284,28 @@ def analyze(req: AnalyzeRequest) -> dict:
 
 
 # ---------------------------------------------------------- job و بازیابی نشست
+# watchdog: اگر job زنده این‌قدر ثانیه بدون ضربان بماند → خطای شفاف به‌جای انتظار ابدی.
+# strategy/campaign یک فراخوانی AI تک‌مرحله‌ای چنددقیقه‌ای دارند و analyze در طول
+# run_analysis ساکت است؛ upload با progress استریمی هر ≤۰٫۵ ثانیه ضربان دارد.
+_STALE_BY_KIND = {"analyze": 900, "strategy": 900, "campaign": 900}
+_STALE_ERROR_FA = (
+    "پردازش پاسخ نمی‌دهد؛ احتمالاً حافظه‌ی سرور پر شده یا سرور ری‌استارت شده است. "
+    "سرور را بررسی کنید و دوباره تلاش کنید."
+)
+
+
 @app.get("/api/jobs/{job_id}")
 def job_status(job_id: str) -> dict:
     job = store.get_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="job یافت نشد.")
+    if job.status in ("queued", "running"):
+        stale_after = _STALE_BY_KIND.get(job.kind, get_settings().mkt_job_stale_seconds)
+        if time.time() - job.updated_at > stale_after:
+            if store.mark_stale_job(job.id, _STALE_ERROR_FA):
+                logger.warning("watchdog: job %s(%s) بدون ضربان بود و خطا علامت خورد",
+                               job.kind, job.id)
+            job = store.get_job(job.id) or job
     out: dict = {
         "id": job.id, "kind": job.kind, "status": job.status,
         "progress": round(job.progress, 1), "stage": job.stage,

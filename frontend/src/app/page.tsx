@@ -48,6 +48,7 @@ export default function Home() {
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [serverDown, setServerDown] = useState(false);
   const [bannerDismissed, setBannerDismissed] = useState(false);
+  const [restoreNotice, setRestoreNotice] = useState<string | null>(null);
 
   // سلامت سرور با retry — تا یک قطعی لحظه‌ای بنر خطا نیاورد
   useEffect(() => {
@@ -80,7 +81,15 @@ export default function Home() {
       ? getSessionInfo(sid)
           .then((info) => {
             if (cancelled) return;
-            if (!info.exists || !info.columns_payload) {
+            if (!info.exists) {
+              saveStage(null, "upload");
+              return;
+            }
+            if (!info.columns_payload) {
+              // آپلود قبلی هرگز کامل نشد (مثلاً سرور وسط کار متوقف شد)
+              setRestoreNotice(
+                "پردازش قبلی فایل ناتمام ماند (احتمالاً سرور در میانه‌ی کار متوقف شد)؛ لطفاً فایل را دوباره بارگذاری کنید.",
+              );
               saveStage(null, "upload");
               return;
             }
@@ -206,6 +215,23 @@ export default function Home() {
           <>
             {stage !== "dashboard" && <Stepper active={stepIndex} />}
 
+            {restoreNotice && (
+              <div className="mb-6">
+                <Alert tone="warn">
+                  <div className="flex items-start justify-between gap-3">
+                    <span>{restoreNotice}</span>
+                    <button
+                      onClick={() => setRestoreNotice(null)}
+                      className="shrink-0 rounded-lg p-1 hover:bg-amber-100 dark:hover:bg-ink-800"
+                      aria-label="بستن"
+                    >
+                      <X size={16} />
+                    </button>
+                  </div>
+                </Alert>
+              </div>
+            )}
+
             {error && (
               <div className="mb-6">
                 <Alert tone="error">{error}</Alert>
@@ -227,6 +253,7 @@ export default function Home() {
                   </p>
                 </div>
                 <UploadStep
+                  onSession={(sid) => saveStage(sid, "upload")}
                   onLoaded={(r) => {
                     setUpload(r);
                     setStage("mapping");

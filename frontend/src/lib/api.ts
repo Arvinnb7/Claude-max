@@ -54,15 +54,32 @@ export async function getJob(jobId: string): Promise<JobStatus> {
 
 /**
  * poll کردن یک job تا اتمام. onProgress با (درصد، متن مرحله) صدا زده می‌شود.
- * روی خطای job با پیام فارسی سرور reject می‌کند.
+ * روی خطای job با پیام فارسی سرور reject می‌کند. خطاهای گذرای شبکه (مثلاً
+ * ری‌استارت لحظه‌ای سرور) تا ۵ بار با backoff تحمل می‌شوند.
  */
 export async function pollJob<T>(
   jobId: string,
   onProgress?: (pct: number, stage: string) => void,
   intervalMs = 1200,
 ): Promise<T> {
+  let netFailures = 0;
   for (;;) {
-    const job = await getJob(jobId);
+    let job: JobStatus;
+    try {
+      job = await getJob(jobId);
+      netFailures = 0;
+    } catch (e) {
+      // پاسخ HTTP سرور (مثل 404) خطای واقعی است؛ فقط خطای شبکه retry می‌شود
+      if (!(e instanceof TypeError)) throw e;
+      netFailures += 1;
+      if (netFailures >= 5) {
+        throw new Error(
+          "اتصال به سرور قطع شد؛ اگر سرور کرش کرده آن را دوباره اجرا کنید و صفحه را رفرش کنید.",
+        );
+      }
+      await new Promise((r) => setTimeout(r, intervalMs * Math.min(1 + netFailures, 4)));
+      continue;
+    }
     onProgress?.(job.progress, job.stage);
     if (job.status === "done") return job.result as T;
     if (job.status === "error") throw new Error(job.error || "خطای نامشخص در پردازش");
@@ -74,12 +91,15 @@ export async function pollJob<T>(
 export async function uploadFile(
   file: File,
   onProgress?: (pct: number, stage: string) => void,
+  onSession?: (sessionId: string) => void,
 ): Promise<UploadResponse> {
   const form = new FormData();
   form.append("file", file);
-  const { job_id } = await handle<{ job_id: string; session_id: string }>(
+  const { job_id, session_id } = await handle<{ job_id: string; session_id: string }>(
     await fetch(`${BASE}/api/upload`, { method: "POST", body: form }),
   );
+  // شناسه‌ی نشست از همین لحظه در دسترس است تا بعد از کرش/رفرش گم نشود
+  onSession?.(session_id);
   return pollJob<UploadResponse>(job_id, onProgress);
 }
 

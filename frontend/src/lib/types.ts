@@ -17,6 +17,7 @@ export interface UploadResponse {
   roles: RoleInfo[];
   preview: Record<string, string>[];
   n_rows: number;
+  warnings?: string[];
 }
 
 export interface KPIs {

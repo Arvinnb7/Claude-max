@@ -43,7 +43,13 @@ export function Stepper({ active }: { active: number }) {
   );
 }
 
-export function UploadStep({ onLoaded }: { onLoaded: (r: UploadResponse) => void }) {
+export function UploadStep({
+  onLoaded,
+  onSession,
+}: {
+  onLoaded: (r: UploadResponse) => void;
+  onSession?: (sessionId: string) => void;
+}) {
   const [loading, setLoading] = useState<"file" | "sample" | null>(null);
   const [progress, setProgress] = useState<{ pct: number; stage: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -54,7 +60,9 @@ export function UploadStep({ onLoaded }: { onLoaded: (r: UploadResponse) => void
     setLoading("file");
     setProgress({ pct: 0, stage: "در حال ارسال فایل…" });
     try {
-      onLoaded(await uploadFile(file, (pct, stage) => setProgress({ pct, stage })));
+      onLoaded(
+        await uploadFile(file, (pct, stage) => setProgress({ pct, stage }), onSession),
+      );
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -194,6 +202,9 @@ export function MappingStep({
 
   return (
     <div className="space-y-5">
+      {data.warnings && data.warnings.length > 0 && (
+        <Alert tone="warn">{data.warnings.join(" ")}</Alert>
+      )}
       <Card>
         <SectionTitle
           title="نگاشت ستون‌ها"

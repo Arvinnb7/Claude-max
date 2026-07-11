@@ -35,7 +35,7 @@ forecast = ["prophet>=1.1"]
 connectors = ["sqlalchemy>=2.0", "httpx>=0.27"]
 pdf = ["weasyprint>=60"]
 xls = ["xlrd>=2.0"]
-api = ["fastapi>=0.110", "uvicorn[standard]>=0.27", "python-multipart>=0.0.9", "apscheduler>=3.10,<4"]
+api = ["fastapi>=0.110", "uvicorn[standard]>=0.27", "python-multipart>=0.0.9", "apscheduler>=3.10,<4", "tzdata"]
 dev = ["pytest>=8.0", "pytest-cov>=4.1", "ruff>=0.3", "mypy>=1.8", "httpx>=0.27"]
 
 [tool.setuptools.packages.find]

@@ -4,14 +4,25 @@ from __future__ import annotations
 
 import csv
 import io
+from collections.abc import Callable
 from pathlib import Path
 
 import pandas as pd
 
+from ..config import get_settings
 from .base import ConnectorResult, DataConnector
+from .excel_stream import (
+    _cap_warning,
+    finalize_frame,
+    read_xlsb_stream,
+    read_xlsx_stream,
+)
 
 _EXCEL_EXT = {".xlsx", ".xlsm", ".xls", ".xlsb"}
 _CSV_EXT = {".csv", ".txt", ".tsv"}
+
+# فایل‌های CSV کوچک‌تر از این حجم با یک read_csv تکی خوانده می‌شوند (رفتار قبلی)
+_CSV_SINGLE_READ_BYTES = 5 * 1024 * 1024
 
 
 def _excel_engine(ext: str) -> str:
@@ -65,31 +76,96 @@ class ExcelCsvConnector(DataConnector):
         return self.path.read_bytes()
 
     def list_sources(self) -> list[str]:
-        """نام شیت‌ها (اکسل) یا نام فایل (CSV)."""
-        if self._ext in _EXCEL_EXT:
-            xls = pd.ExcelFile(io.BytesIO(self._bytes()), engine=_excel_engine(self._ext))
-            return list(xls.sheet_names)
-        return [self.filename]
+        """نام شیت‌ها (اکسل) یا نام فایل (CSV) — فقط متادیتا، بدون پارس کامل شیت."""
+        if self._ext in (".xlsx", ".xlsm"):
+            from openpyxl import load_workbook
 
-    def read(self, source: str | None = None, *, header_row: int = 0, **kwargs) -> ConnectorResult:
+            wb = load_workbook(io.BytesIO(self._bytes()), read_only=True)
+            try:
+                return list(wb.sheetnames)
+            finally:
+                wb.close()
+        if self._ext == ".xlsb":
+            from pyxlsb import open_workbook
+
+            with open_workbook(io.BytesIO(self._bytes())) as wb:
+                return list(wb.sheets)
+        if self._ext == ".xls":
+            import xlrd
+
+            book = xlrd.open_workbook(file_contents=self._bytes(), on_demand=True)
+            return list(book.sheet_names())
+        if self._ext in _CSV_EXT:
+            return [self.filename]
+        raise ValueError(f"پسوند پشتیبانی‌نشده: {self._ext}")
+
+    def read(self, source: str | None = None, *, header_row: int = 0,
+             progress: Callable[[int, int | None], None] | None = None,
+             max_rows: int | None = None, **kwargs) -> ConnectorResult:
         """خواندن یک شیت/فایل و بازگرداندن DataFrame خام.
 
         Args:
             source: نام شیت (اکسل) — در نبود، اولین شیت.
             header_row: شماره‌ی ردیف هدر (۰-مبنا) برای فایل‌های با هدر چندردیفه.
+            progress: callback اختیاری (ردیف‌های خوانده‌شده، کل اعلام‌شده یا None).
+            max_rows: سقف ردیف؛ پیش‌فرض از تنظیمات (MKT_MAX_ROWS).
         """
         raw = self._bytes()
-        if self._ext in _EXCEL_EXT:
+        cap = max_rows or get_settings().mkt_max_rows
+        warnings: list[str] = []
+
+        if self._ext in (".xlsx", ".xlsm"):
+            res = read_xlsx_stream(raw, source, header_row=header_row,
+                                   max_rows=cap, progress=progress)
+            df = finalize_frame(res)
+            warnings = res.warnings
+            meta = {"format": "excel", "sheet": source}
+        elif self._ext == ".xlsb":
+            res = read_xlsb_stream(raw, source, header_row=header_row,
+                                   max_rows=cap, progress=progress)
+            df = finalize_frame(res)
+            warnings = res.warnings
+            meta = {"format": "excel", "sheet": source}
+        elif self._ext == ".xls":
+            # xlrd کل فایل را هنگام باز کردن پارس می‌کند و سقف فرمت ۶۵۵۳۶ ردیف است؛
+            # استریم معنایی ندارد — فقط سقف و progress ابتدا/انتها.
+            if progress:
+                progress(0, None)
             df = pd.read_excel(
                 io.BytesIO(raw),
                 sheet_name=source if source else 0,
                 header=header_row,
-                engine=_excel_engine(self._ext),
+                engine="xlrd",
             )
+            if len(df) > cap:
+                df = df.head(cap)
+                warnings.append(_cap_warning(cap))
+            if progress:
+                progress(len(df), len(df))
             meta = {"format": "excel", "sheet": source}
         elif self._ext in _CSV_EXT:
             encoding, sep = _sniff_csv(raw)
-            df = pd.read_csv(io.BytesIO(raw), encoding=encoding, sep=sep, header=header_row)
+            if len(raw) <= _CSV_SINGLE_READ_BYTES:
+                df = pd.read_csv(io.BytesIO(raw), encoding=encoding, sep=sep,
+                                 header=header_row)
+                if len(df) > cap:
+                    df = df.head(cap)
+                    warnings.append(_cap_warning(cap))
+            else:
+                parts: list[pd.DataFrame] = []
+                n = 0
+                reader = pd.read_csv(io.BytesIO(raw), encoding=encoding, sep=sep,
+                                     header=header_row, chunksize=50_000)
+                for chunk in reader:
+                    take = min(len(chunk), cap - n)
+                    parts.append(chunk.head(take))
+                    n += take
+                    if progress:
+                        progress(n, None)
+                    if n >= cap:
+                        warnings.append(_cap_warning(cap))
+                        break
+                df = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
             meta = {"format": "csv", "encoding": encoding, "sep": sep}
         else:
             raise ValueError(f"پسوند پشتیبانی‌نشده: {self._ext}")
@@ -97,4 +173,5 @@ class ExcelCsvConnector(DataConnector):
         # حذف ستون‌های کاملاً بی‌نام/خالی
         df = df.dropna(axis=1, how="all")
         df.columns = [str(c).strip() for c in df.columns]
+        meta["warnings"] = warnings
         return ConnectorResult(dataframe=df, source_name=source or self.filename, meta=meta)

@@ -34,21 +34,33 @@ def submit_job(kind: str, fn: Callable[[ProgressFn], Any],
                          progress=max(0.0, min(100.0, pct)), stage=stage)
 
     def _run() -> None:
-        store.update_job(jid, status="running", progress=1, stage="شروع پردازش")
         try:
-            result = fn(_progress)
-            store.update_job(jid, status="done", progress=100, stage="پایان",
-                             result=result)
-        except _JobError as e:
-            logger.warning("job %s(%s) failed: %s", kind, jid, e)
-            store.update_job(jid, status="error", error=str(e))
-        except Exception as e:  # noqa: BLE001 - مرز job؛ خطا باید ثبت شود نه crash
-            logger.error("job %s(%s) crashed: %s\n%s", kind, jid, e,
-                         traceback.format_exc())
-            store.update_job(
-                jid, status="error",
-                error=f"خطای غیرمنتظره ({type(e).__name__}): {e}",
-            )
+            store.update_job(jid, status="running", progress=1, stage="شروع پردازش")
+            try:
+                result = fn(_progress)
+                store.update_job(jid, status="done", progress=100, stage="پایان",
+                                 result=result)
+            except _JobError as e:
+                logger.warning("job %s(%s) failed: %s", kind, jid, e)
+                store.update_job(jid, status="error", error=str(e))
+            except Exception as e:  # noqa: BLE001 - مرز job؛ خطا باید ثبت شود نه crash
+                logger.error("job %s(%s) crashed: %s\n%s", kind, jid, e,
+                             traceback.format_exc())
+                store.update_job(
+                    jid, status="error",
+                    error=f"خطای غیرمنتظره ({type(e).__name__}): {e}",
+                )
+        finally:
+            # هیچ مسیری (حتی خطای خودِ ثبت خطا) نباید job را غیرنهایی رها کند
+            try:
+                job = store.get_job(jid)
+                if job is not None and job.status in ("queued", "running"):
+                    store.update_job(
+                        jid, status="error",
+                        error="پردازش به‌صورت غیرمنتظره پایان یافت؛ لطفاً دوباره تلاش کنید.",
+                    )
+            except Exception:
+                logger.exception("finalize job %s failed", jid)
 
     _executor.submit(_run)
     return jid
