@@ -146,6 +146,7 @@ export interface AnalyzeResponse {
     overdue_days: number;
     likely_products: string[];
     expected_value: number;
+    buy_probability_30d: number | null;
   }[];
   performance?: {
     branches: EntityPerf[];

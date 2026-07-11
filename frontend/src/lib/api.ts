@@ -113,6 +113,8 @@ export async function analyze(
     mapping: Record<string, string>;
     horizon: number;
     balanced_uplift: number;
+    file_currency: string;
+    display_currency: string;
   },
   onProgress?: (pct: number, stage: string) => void,
 ): Promise<AnalyzeResponse> {
@@ -172,6 +174,12 @@ export async function getAudienceKinds(): Promise<{ kinds: AudienceKind[] }> {
 
 export function reportUrl(session_id: string, fmt: "pdf" | "html" = "pdf"): string {
   return `${BASE}/api/report?session_id=${encodeURIComponent(session_id)}&fmt=${fmt}`;
+}
+
+export type ExportSection = "segments" | "next_purchase" | "products" | "diagnostics";
+
+export function exportUrl(session_id: string, section: ExportSection): string {
+  return `${BASE}/api/export?session_id=${encodeURIComponent(session_id)}&section=${section}`;
 }
 
 export async function sendSMS(params: {

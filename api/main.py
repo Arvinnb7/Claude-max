@@ -7,6 +7,7 @@ import sys
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import quote
 
 # دسترسی به mktcore بدون نصب
 _ROOT = Path(__file__).resolve().parent.parent
@@ -26,6 +27,11 @@ from mktcore.connectors import ExcelCsvConnector  # noqa: E402
 from mktcore.execution import build_audience, render_messages, send_campaign  # noqa: E402
 from mktcore.execution.audience import AUDIENCE_KINDS  # noqa: E402
 from mktcore.ingest.cleaning import clean_frame  # noqa: E402
+from mktcore.ingest.currency import (  # noqa: E402
+    CURRENCIES,
+    conversion_factor,
+    convert_monetary_columns,
+)
 from mktcore.ingest.mapper import SchemaMapper  # noqa: E402
 from mktcore.ingest.profiler import profile_frame  # noqa: E402
 from mktcore.ingest.schema import REQUIRED_ROLES, ColumnRole, standard_column  # noqa: E402
@@ -33,6 +39,7 @@ from mktcore.locale_fa import ROLE_LABELS_FA, format_number_fa  # noqa: E402
 from mktcore.pipeline import run_analysis  # noqa: E402
 from mktcore.synthetic import generate_synthetic_sales  # noqa: E402
 
+from .export import EXPORT_FA_NAMES, EXPORT_SECTIONS, EmptySection, build_export  # noqa: E402
 from .jobs import JobError, submit_job  # noqa: E402
 from .persistence import store  # noqa: E402
 from .scheduler import (  # noqa: E402
@@ -193,6 +200,8 @@ class AnalyzeRequest(BaseModel):
     mapping: dict[str, str]  # role -> column name
     horizon: int = 6
     balanced_uplift: float = 0.10
+    file_currency: str = "تومان"
+    display_currency: str = "تومان"
 
 
 def _validate_clean(clean) -> str | None:
@@ -220,6 +229,12 @@ def analyze(req: AnalyzeRequest) -> dict:
         mapping = {ColumnRole(role): col for role, col in req.mapping.items() if col}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=f"نقش نامعتبر در نگاشت: {e}") from e
+
+    if req.file_currency not in CURRENCIES or req.display_currency not in CURRENCIES:
+        raise HTTPException(
+            status_code=400,
+            detail="واحد پول نامعتبر است؛ فقط «تومان» یا «ریال» مجاز است.",
+        )
 
     missing = [ROLE_LABELS_FA[r.value] for r in REQUIRED_ROLES if r not in mapping]
     if missing:
@@ -262,6 +277,10 @@ def analyze(req: AnalyzeRequest) -> dict:
         if err:
             raise JobError(err)
 
+        # تبدیل واحد پول (بعد از اعتبارسنجی تا پیام‌ها درباره‌ی داده‌ی خام باشند)
+        factor = conversion_factor(req.file_currency, req.display_currency)
+        clean = convert_monetary_columns(clean, factor)
+
         progress(30, "تحلیل جامع (KPI، سگمنت، چرخه، پیش‌بینی…)")
         try:
             bundle = run_analysis(clean, horizon=req.horizon,
@@ -269,12 +288,16 @@ def analyze(req: AnalyzeRequest) -> dict:
         except Exception as e:
             raise JobError(f"خطا در مرحله‌ی تحلیل ({type(e).__name__}): {e}") from e
 
+        bundle.meta["currency"] = req.display_currency
+        bundle.meta["file_currency"] = req.file_currency
+        bundle.meta["currency_factor"] = factor
+
         progress(90, "ذخیره‌ی نتایج")
         store.save_clean(sid, clean)
         store.save_bundle(sid, bundle)
         store.set_mapping(sid, {r.value: c for r, c in mapping.items()})
 
-        payload = bundle_to_dict(bundle, currency=get_settings().mkt_currency)
+        payload = bundle_to_dict(bundle, currency=req.display_currency)
         payload["quality"]["warnings"] = profile_frame(clean).warnings
         store.set_analysis(sid, payload)
         return payload
@@ -421,6 +444,36 @@ def report(session_id: str, fmt: str = "pdf"):
     return Response(
         content=pdf, media_type="application/pdf",
         headers={"Content-Disposition": "attachment; filename=marketing_report.pdf"},
+    )
+
+
+# ------------------------------------------------------------- خروجی اکسل
+@app.get("/api/export")
+def export_excel(session_id: str, section: str):
+    """خروجی اکسل یک بخش داشبورد (سگمنت‌ها/پیش‌بینی خرید/محصولات/تشخیص و تأمین)."""
+    if section not in EXPORT_SECTIONS:
+        raise HTTPException(status_code=400, detail="بخش نامعتبر برای خروجی اکسل.")
+    _require_analyzed(session_id)
+    bundle = store.load_bundle(session_id)
+    clean = store.load_clean(session_id)
+    if bundle is None or clean is None:
+        raise HTTPException(
+            status_code=404,
+            detail="داده‌ی تحلیل نشست یافت نشد؛ تحلیل را دوباره اجرا کنید.",
+        )
+    try:
+        content = build_export(section, bundle, clean)
+    except EmptySection as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+
+    fa_name = quote(f"{EXPORT_FA_NAMES[section]}.xlsx")
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition":
+                f'attachment; filename="{section}.xlsx"; filename*=UTF-8\'\'{fa_name}',
+        },
     )
 
 

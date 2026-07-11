@@ -115,7 +115,10 @@ export default function Home() {
     };
   }, []);
 
-  async function handleConfirm(mapping: Record<string, string>) {
+  async function handleConfirm(
+    mapping: Record<string, string>,
+    currency: { file_currency: string; display_currency: string },
+  ) {
     if (!upload) return;
     setError(null);
     setAnalyzing(true);
@@ -127,6 +130,7 @@ export default function Home() {
           mapping,
           horizon: 6,
           balanced_uplift: 0.1,
+          ...currency,
         },
         (pct, stg) => setProgress({ pct, stage: stg }),
       );

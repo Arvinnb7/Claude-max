@@ -160,7 +160,8 @@ def bundle_to_dict(bundle: MetricsBundle, *, currency: str = "تومان") -> di
         data["next_purchase"] = [
             {"customer_id": c.customer_id, "predicted_next_date": c.predicted_next_date,
              "status": c.status, "overdue_days": c.overdue_days,
-             "likely_products": c.likely_products, "expected_value": c.expected_value}
+             "likely_products": c.likely_products, "expected_value": c.expected_value,
+             "buy_probability_30d": c.buy_probability_30d}
             for c in bundle.next_purchase.due_now(30)
         ]
 

@@ -79,8 +79,9 @@ def run_analysis(
     bundle.products = analyze_products(df)
     bundle.basket = analyze_basket(df)
     bundle.sequences = analyze_sequences(df)
-    bundle.next_purchase = predict_next_purchases(df, bundle.basket)
     bundle.purchase_cycle = analyze_purchase_cycles(df, bundle.basket)
+    bundle.next_purchase = predict_next_purchases(df, bundle.basket,
+                                                  cycles=bundle.purchase_cycle)
     bundle.performance = analyze_performance(df)
     bundle.inventory = analyze_inventory(df)
     bundle.diagnostics = diagnose(df)

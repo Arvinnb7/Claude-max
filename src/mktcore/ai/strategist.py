@@ -38,7 +38,8 @@ def generate_strategy(
     max_tokens = max_tokens or settings.mkt_max_tokens
     cli = client or get_client()
 
-    payload = build_payload(bundle, currency=settings.mkt_currency)
+    currency = bundle.meta.get("currency") or settings.mkt_currency
+    payload = build_payload(bundle, currency=currency)
     metrics_json = payload_to_json(payload)
     user_message = build_user_message(metrics_json)
 

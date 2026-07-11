@@ -1,10 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { History, Megaphone, MessageSquare, Send } from "lucide-react";
+import { Download, History, Megaphone, MessageSquare, Send } from "lucide-react";
 
-import { getCampaign, getOutbox, sendSMS, type OutboxItem } from "@/lib/api";
-import { compact, num, pct, toFa } from "@/lib/format";
+import { exportUrl, getCampaign, getOutbox, sendSMS, type OutboxItem } from "@/lib/api";
+import { compact, jalali, num, pct, toFa } from "@/lib/format";
 import type { AnalyzeResponse, CampaignResponse, SMSResult } from "@/lib/types";
 import { Alert, Badge, Button, Card, ProgressBar, SectionTitle } from "./ui";
 
@@ -17,12 +17,25 @@ const REC_TONE: Record<string, "green" | "brand" | "accent" | "rose"> = {
 };
 
 /* ---------- محصولات و سبد خرید ---------- */
-export function ProductsTab({ data, unit }: { data: AnalyzeResponse; unit: string }) {
+export function ProductsTab({
+  data,
+  unit,
+  sessionId,
+}: {
+  data: AnalyzeResponse;
+  unit: string;
+  sessionId: string;
+}) {
   return (
     <div className="space-y-6">
       {data.products && (
         <Card>
-          <SectionTitle title="محصولات پرفروش و تحلیل ABC" subtitle="کلاس A پرفروش‌ترین‌ها، C کم‌اهمیت‌ترین‌ها" />
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <SectionTitle title="محصولات پرفروش و تحلیل ABC" subtitle="کلاس A پرفروش‌ترین‌ها، C کم‌اهمیت‌ترین‌ها" />
+            <a href={exportUrl(sessionId, "products")}>
+              <Button variant="outline"><Download size={16} /> دانلود اکسل</Button>
+            </a>
+          </div>
           <table className="w-full text-right text-sm">
             <thead>
               <tr className="border-b border-ink-200 text-ink-500 dark:border-ink-700 dark:text-ink-400">
@@ -102,29 +115,40 @@ export function ProductsTab({ data, unit }: { data: AnalyzeResponse; unit: strin
 
       {data.next_purchase && data.next_purchase.length > 0 && (
         <Card>
-          <SectionTitle title="پیش‌بینی خرید بعدی و سبد بعدی" subtitle="مشتریانِ سررسیدشده برای خرید مجدد و سبد محتمل آن‌ها" />
-          <table className="w-full text-right text-sm">
-            <thead>
-              <tr className="border-b border-ink-200 text-ink-500 dark:border-ink-700 dark:text-ink-400">
-                <th className="px-3 py-2 font-medium">مشتری</th>
-                <th className="px-3 py-2 font-medium">وضعیت</th>
-                <th className="px-3 py-2 font-medium">تأخیر</th>
-                <th className="px-3 py-2 font-medium">سبد محتمل</th>
-                <th className="px-3 py-2 font-medium">ارزش مورد انتظار</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.next_purchase.slice(0, 15).map((c, i) => (
-                <tr key={i} className="border-b border-ink-100 dark:border-ink-800">
-                  <td className="px-3 py-2">{c.customer_id}</td>
-                  <td className="px-3 py-2"><Badge tone={c.status === "سررسیدشده" ? "rose" : "accent"}>{c.status}</Badge></td>
-                  <td className="px-3 py-2 tnum">{toFa(num(c.overdue_days))} روز</td>
-                  <td className="px-3 py-2">{c.likely_products.join("، ") || "—"}</td>
-                  <td className="px-3 py-2 tnum">{compact(c.expected_value)} {unit}</td>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <SectionTitle title="پیش‌بینی خرید بعدی و سبد بعدی" subtitle="مشتریانِ سررسیدشده برای خرید مجدد، احتمال خرید و سبد محتمل آن‌ها" />
+            <a href={exportUrl(sessionId, "next_purchase")}>
+              <Button variant="outline"><Download size={16} /> دانلود اکسل کامل</Button>
+            </a>
+          </div>
+          <div className="scrollbar-thin overflow-x-auto">
+            <table className="w-full text-right text-sm">
+              <thead>
+                <tr className="border-b border-ink-200 text-ink-500 dark:border-ink-700 dark:text-ink-400">
+                  <th className="px-3 py-2 font-medium">مشتری</th>
+                  <th className="px-3 py-2 font-medium">وضعیت</th>
+                  <th className="px-3 py-2 font-medium">تاریخ پیش‌بینی</th>
+                  <th className="px-3 py-2 font-medium">تأخیر</th>
+                  <th className="px-3 py-2 font-medium">احتمال خرید (۳۰ روز)</th>
+                  <th className="px-3 py-2 font-medium">سبد محتمل</th>
+                  <th className="px-3 py-2 font-medium">ارزش مورد انتظار</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {data.next_purchase.slice(0, 15).map((c, i) => (
+                  <tr key={i} className="border-b border-ink-100 dark:border-ink-800">
+                    <td className="px-3 py-2">{c.customer_id}</td>
+                    <td className="px-3 py-2"><Badge tone={c.status === "سررسیدشده" ? "rose" : "accent"}>{c.status}</Badge></td>
+                    <td className="whitespace-nowrap px-3 py-2 tnum">{c.predicted_next_date ? jalali(c.predicted_next_date) : "—"}</td>
+                    <td className="px-3 py-2 tnum">{toFa(num(c.overdue_days))} روز</td>
+                    <td className="px-3 py-2 tnum">{c.buy_probability_30d == null ? "—" : pct(c.buy_probability_30d)}</td>
+                    <td className="px-3 py-2">{c.likely_products.join("، ") || "—"}</td>
+                    <td className="px-3 py-2 tnum">{compact(c.expected_value)} {unit}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </Card>
       )}
     </div>
@@ -207,9 +231,22 @@ export function PerformanceTab({ data, unit }: { data: AnalyzeResponse; unit: st
 }
 
 /* ---------- تشخیص و تأمین ---------- */
-export function DiagnosticsTab({ data, unit }: { data: AnalyzeResponse; unit: string }) {
+export function DiagnosticsTab({
+  data,
+  unit,
+  sessionId,
+}: {
+  data: AnalyzeResponse;
+  unit: string;
+  sessionId: string;
+}) {
   return (
     <div className="space-y-6">
+      <div className="flex justify-end">
+        <a href={exportUrl(sessionId, "diagnostics")}>
+          <Button variant="outline"><Download size={16} /> دانلود اکسل تشخیص و تأمین</Button>
+        </a>
+      </div>
       {data.pacing && (
         <Card>
           <SectionTitle title="پیشروی به‌سمت تارگت ماهانه" />

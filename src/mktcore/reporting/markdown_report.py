@@ -32,7 +32,7 @@ def build_markdown(
 ) -> str:
     """ساخت گزارش کامل Markdown (فارسی) شامل تحلیل، تارگت، استراتژی و کمپین."""
     s = get_settings()
-    cur = s.mkt_currency
+    cur = bundle.meta.get("currency") or s.mkt_currency
     k = bundle.kpis
     lines: list[str] = []
 

@@ -162,6 +162,13 @@ export function UploadStep({
   );
 }
 
+export interface CurrencyChoice {
+  file_currency: string;
+  display_currency: string;
+}
+
+const CURRENCY_OPTIONS = ["تومان", "ریال"];
+
 export function MappingStep({
   data,
   onConfirm,
@@ -169,7 +176,7 @@ export function MappingStep({
   loading,
 }: {
   data: UploadResponse;
-  onConfirm: (mapping: Record<string, string>) => void;
+  onConfirm: (mapping: Record<string, string>, currency: CurrencyChoice) => void;
   onBack: () => void;
   loading: boolean;
 }) {
@@ -177,6 +184,8 @@ export function MappingStep({
   for (const r of data.roles) if (r.suggested) init[r.role] = r.suggested;
   const [mapping, setMapping] = useState<Record<string, string>>(init);
   const [ackLowConf, setAckLowConf] = useState(false);
+  const [fileCurrency, setFileCurrency] = useState("تومان");
+  const [displayCurrency, setDisplayCurrency] = useState("تومان");
 
   const requiredMissing = data.roles
     .filter((r) => r.required && !mapping[r.role])
@@ -200,11 +209,53 @@ export function MappingStep({
     });
   }
 
+  const currencySelectCls =
+    "w-full rounded-xl border border-ink-200 bg-white px-3 py-2 text-sm outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-100 dark:border-ink-700 dark:bg-ink-800 dark:text-ink-100 dark:focus:ring-brand-500/30";
+
   return (
     <div className="space-y-5">
       {data.warnings && data.warnings.length > 0 && (
         <Alert tone="warn">{data.warnings.join(" ")}</Alert>
       )}
+
+      <Card>
+        <SectionTitle
+          title="واحد پول"
+          subtitle="واحد مبالغ فایل و واحد نمایش گزارش‌ها را مشخص کنید."
+        />
+        <div className="grid gap-4 sm:grid-cols-2 lg:max-w-lg">
+          <div>
+            <label className="mb-1 block text-sm font-medium">واحد مبالغ فایل</label>
+            <select
+              value={fileCurrency}
+              onChange={(e) => setFileCurrency(e.target.value)}
+              className={currencySelectCls}
+            >
+              {CURRENCY_OPTIONS.map((c) => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="mb-1 block text-sm font-medium">واحد نمایش گزارش‌ها</label>
+            <select
+              value={displayCurrency}
+              onChange={(e) => setDisplayCurrency(e.target.value)}
+              className={currencySelectCls}
+            >
+              {CURRENCY_OPTIONS.map((c) => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+        {fileCurrency !== displayCurrency && (
+          <p className="mt-3 text-xs" style={{ color: "var(--muted)" }}>
+            مبالغ هنگام تحلیل به‌صورت خودکار تبدیل می‌شوند (هر تومان = ۱۰ ریال).
+          </p>
+        )}
+      </Card>
+
       <Card>
         <SectionTitle
           title="نگاشت ستون‌ها"
@@ -322,7 +373,12 @@ export function MappingStep({
           بازگشت
         </Button>
         <Button
-          onClick={() => onConfirm(mapping)}
+          onClick={() =>
+            onConfirm(mapping, {
+              file_currency: fileCurrency,
+              display_currency: displayCurrency,
+            })
+          }
           disabled={
             requiredMissing.length > 0 ||
             loading ||

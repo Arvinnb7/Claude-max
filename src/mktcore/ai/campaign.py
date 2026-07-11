@@ -29,7 +29,8 @@ def generate_campaigns(
     max_tokens = max_tokens or settings.mkt_max_tokens
     cli = client or get_client()
 
-    payload = build_payload(bundle, currency=settings.mkt_currency)
+    currency = bundle.meta.get("currency") or settings.mkt_currency
+    payload = build_payload(bundle, currency=currency)
     user_message = build_campaign_message(payload_to_json(payload))
 
     system_blocks = [

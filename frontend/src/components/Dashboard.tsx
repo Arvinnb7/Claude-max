@@ -19,7 +19,7 @@ import {
   Users,
 } from "lucide-react";
 
-import { reportUrl } from "@/lib/api";
+import { exportUrl, reportUrl } from "@/lib/api";
 import { CampaignTab, CycleTab, DiagnosticsTab, PerformanceTab, ProductsTab } from "./AdvancedTabs";
 
 import { getStrategy } from "@/lib/api";
@@ -169,13 +169,15 @@ export default function Dashboard({
       </div>
 
       {tab === "kpi" && <KpiTab data={data} unit={unit} />}
-      {tab === "segments" && <SegmentsTab data={data} unit={unit} />}
-      {tab === "products" && <ProductsTab data={data} unit={unit} />}
+      {tab === "segments" && <SegmentsTab data={data} unit={unit} sessionId={sessionId} />}
+      {tab === "products" && <ProductsTab data={data} unit={unit} sessionId={sessionId} />}
       {tab === "cycle" && <CycleTab data={data} />}
       {tab === "performance" && <PerformanceTab data={data} unit={unit} />}
       {tab === "forecast" && <ForecastTab data={data} unit={unit} />}
       {tab === "targets" && <TargetsTab data={data} unit={unit} />}
-      {tab === "diagnostics" && <DiagnosticsTab data={data} unit={unit} />}
+      {tab === "diagnostics" && (
+        <DiagnosticsTab data={data} unit={unit} sessionId={sessionId} />
+      )}
       {tab === "ai" && (
         <AiTab sessionId={sessionId} aiAvailable={aiAvailable} initial={initialStrategy} />
       )}
@@ -246,7 +248,15 @@ function KpiTab({ data, unit }: { data: AnalyzeResponse; unit: string }) {
   );
 }
 
-function SegmentsTab({ data, unit }: { data: AnalyzeResponse; unit: string }) {
+function SegmentsTab({
+  data,
+  unit,
+  sessionId,
+}: {
+  data: AnalyzeResponse;
+  unit: string;
+  sessionId: string;
+}) {
   const seg = data.segmentation;
   const dims = Object.keys(seg.breakdowns);
   const [dim, setDim] = useState(dims[0] ?? "");
@@ -261,7 +271,14 @@ function SegmentsTab({ data, unit }: { data: AnalyzeResponse; unit: string }) {
             <SegmentBars segments={seg.segments} unit={unit} />
           </Card>
           <Card>
-            <SectionTitle title="جزئیات سگمنت‌ها" />
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <SectionTitle title="جزئیات سگمنت‌ها" />
+              <a href={exportUrl(sessionId, "segments")}>
+                <Button variant="outline">
+                  <Download size={16} /> دانلود اکسل مشتریان سگمنت‌ها
+                </Button>
+              </a>
+            </div>
             <table className="w-full text-right text-sm">
               <thead>
                 <tr className="border-b border-ink-200 text-ink-500 dark:border-ink-700 dark:text-ink-400">
