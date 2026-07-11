@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
-import pandas as pd
-import pytest
+import os
+import tempfile
+import time
 
-from mktcore.synthetic import generate_synthetic_sales
+# پیش از هر importِ api/config: دایرکتوری داده‌ی ایزوله + زمان‌بند خاموش در تست
+os.environ.setdefault("MKT_DATA_DIR", tempfile.mkdtemp(prefix="mkt-test-"))
+os.environ.setdefault("MKT_SCHEDULER_ENABLE", "0")
+
+import pandas as pd  # noqa: E402
+import pytest  # noqa: E402
+
+from mktcore.synthetic import generate_synthetic_sales  # noqa: E402
 
 
 @pytest.fixture(scope="session")
@@ -28,3 +36,18 @@ def messy_frame() -> pd.DataFrame:
             "مبلغ کل": ["۲٬۴۰۰٬۰۰۰", "", "", "۱٬۵۰۰٬۰۰۰"],
         }
     )
+
+
+def poll_job(client, job_id: str, *, timeout: float = 180.0) -> dict:
+    """poll کردن یک job تا اتمام؛ نتیجه (یا AssertionError روی خطا/timeout)."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        r = client.get(f"/api/jobs/{job_id}")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        if body["status"] == "done":
+            return body["result"]
+        if body["status"] == "error":
+            raise AssertionError(f"job failed: {body.get('error')}")
+        time.sleep(0.25)
+    raise AssertionError("job timed out")

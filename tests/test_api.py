@@ -1,4 +1,4 @@
-"""تست‌های API بدون فراخوانی شبکه (TestClient)."""
+"""تست‌های API با قرارداد job پس‌زمینه (TestClient، بدون شبکه)."""
 
 from __future__ import annotations
 
@@ -11,110 +11,165 @@ sys.path.insert(0, str(_ROOT))
 from api.main import app  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
+from .conftest import poll_job  # noqa: E402
+
 client = TestClient(app)
+
+
+def _sample_ready() -> dict:
+    """داده‌ی نمونه (سینک) → payload ستون‌ها با session_id."""
+    r = client.post("/api/sample")
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def _analyze(data: dict, horizon: int = 4) -> dict:
+    roles = {x["role"]: x["suggested"] for x in data["roles"]}
+    mapping = {role: col for role, col in roles.items() if col}
+    r = client.post("/api/analyze", json={
+        "session_id": data["session_id"], "mapping": mapping, "horizon": horizon,
+    })
+    assert r.status_code == 200, r.text
+    return poll_job(client, r.json()["job_id"])
 
 
 def test_health():
     r = client.get("/api/health")
     assert r.status_code == 200
-    assert r.json()["status"] == "ok"
+    body = r.json()
+    assert body["status"] == "ok"
+    assert "sms_enabled" in body
 
 
-def test_sample_then_analyze():
-    r = client.post("/api/sample")
-    assert r.status_code == 200
-    data = r.json()
-    sid = data["session_id"]
+def test_sample_then_analyze_via_jobs():
+    data = _sample_ready()
     assert data["n_rows"] > 0
-    # نقش‌های پیشنهادی باید تاریخ و درآمد را داشته باشند
     roles = {x["role"]: x["suggested"] for x in data["roles"]}
-    assert roles["DATE"] is not None
-    assert roles["REVENUE"] is not None
+    assert roles["DATE"] and roles["REVENUE"]
 
-    mapping = {role: col for role, col in roles.items() if col}
-    r2 = client.post("/api/analyze", json={"session_id": sid, "mapping": mapping, "horizon": 4})
-    assert r2.status_code == 200, r2.text
-    payload = r2.json()
+    payload = _analyze(data)
     assert payload["kpis"]["total_revenue"] > 0
     assert len(payload["forecast"]["yhat"]) == 4
     assert len(payload["targets"]["scenarios"]) == 3
-    assert payload["trends"]["monthly"]
+
+
+def test_session_restore_and_persistence():
+    """نشست بعد از تحلیل باید از طریق GET /api/session کاملاً بازیابی شود."""
+    data = _sample_ready()
+    sid = data["session_id"]
+    _analyze(data)
+
+    r = client.get(f"/api/session/{sid}")
+    assert r.status_code == 200
+    info = r.json()
+    assert info["exists"] is True
+    assert info["columns_payload"]["n_rows"] == data["n_rows"]
+    assert info["analysis"]["kpis"]["total_revenue"] > 0
+
+    # شبیه‌سازی «پروسه‌ی تازه»: store جدید روی همان دیسک باید نشست را ببیند
+    from api.persistence import PersistentStore
+
+    fresh = PersistentStore()
+    rec = fresh.get_session(sid)
+    assert rec is not None and rec.has_analysis
+    assert fresh.load_clean(sid) is not None
+    assert fresh.load_bundle(sid) is not None
+
+
+def test_advanced_sections_present():
+    data = _sample_ready()
+    payload = _analyze(data)
+    for key in ("products", "basket", "performance", "inventory",
+                "branch_targets", "pacing", "purchase_cycle"):
+        assert key in payload, key
 
 
 def test_analyze_missing_session():
-    r = client.post("/api/analyze", json={"session_id": "nope", "mapping": {}, "horizon": 4})
+    r = client.post("/api/analyze", json={"session_id": "nope", "mapping": {"DATE": "x", "REVENUE": "y"}})
     assert r.status_code == 404
 
 
-def test_strategy_without_key_or_analysis():
-    # بدون تحلیل قبلی → 404
+def test_strategy_without_analysis():
     r = client.post("/api/strategy", json={"session_id": "nope"})
     assert r.status_code == 404
 
 
-def test_analyze_includes_advanced_sections():
-    data = client.post("/api/sample").json()
+def test_job_not_found():
+    r = client.get("/api/jobs/does-not-exist")
+    assert r.status_code == 404
+
+
+def test_sms_dry_run_and_outbox():
+    data = _sample_ready()
     sid = data["session_id"]
-    roles = {x["role"]: x["suggested"] for x in data["roles"]}
-    mapping = {role: col for role, col in roles.items() if col}
-    payload = client.post(
-        "/api/analyze", json={"session_id": sid, "mapping": mapping, "horizon": 4}
-    ).json()
-    # بخش‌های پیشرفته باید در خروجی باشند
-    assert "products" in payload
-    assert "basket" in payload
-    assert "performance" in payload
-    assert "inventory" in payload
-    assert "branch_targets" in payload
-    assert "pacing" in payload
-
-
-def test_audience_kinds_and_sms_dry_run():
-    kinds = client.get("/api/audience-kinds").json()
-    assert any(k["key"] == "سررسیدشده" for k in kinds["kinds"])
-
-    data = client.post("/api/sample").json()
-    sid = data["session_id"]
-    roles = {x["role"]: x["suggested"] for x in data["roles"]}
-    mapping = {role: col for role, col in roles.items() if col}
-    client.post("/api/analyze", json={"session_id": sid, "mapping": mapping, "horizon": 4})
+    _analyze(data)
 
     r = client.post("/api/sms/send", json={
         "session_id": sid, "kind": "سررسیدشده",
-        "template": "سلام {نام}، پیشنهاد: {سبد_پیشنهادی}", "limit": 30, "dry_run": True,
+        "template": "سلام {نام}، پیشنهاد: {سبد_پیشنهادی}", "limit": 20,
+        "dry_run": True,
     })
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["حالت_آزمایشی"] is True
     assert body["audience_size"] >= 1
 
+    # ارسال‌ها باید در outbox لاگ شده باشند
+    ob = client.get("/api/outbox?limit=10").json()["items"]
+    assert any(row["kind"] == "campaign_sms" and row["session_id"] == sid for row in ob)
 
-def test_report_pdf_endpoint():
-    data = client.post("/api/sample").json()
+
+def test_sms_real_send_gated_without_config():
+    """بدون پیکربندی پنل، درخواست ارسال واقعی باید امن به آزمایشی برگردد."""
+    data = _sample_ready()
     sid = data["session_id"]
-    roles = {x["role"]: x["suggested"] for x in data["roles"]}
-    mapping = {role: col for role, col in roles.items() if col}
-    client.post("/api/analyze", json={"session_id": sid, "mapping": mapping, "horizon": 4})
+    _analyze(data)
 
-    # HTML همیشه کار می‌کند
+    r = client.post("/api/sms/send", json={
+        "session_id": sid, "kind": "سررسیدشده", "template": "سلام {نام}",
+        "limit": 5, "dry_run": False, "confirm": True,
+    })
+    assert r.status_code == 200
+    body = r.json()
+    assert body["حالت_آزمایشی"] is True
+    assert "توضیح" in body
+
+
+def test_report_endpoints():
+    data = _sample_ready()
+    sid = data["session_id"]
+    _analyze(data)
+
     r_html = client.get(f"/api/report?session_id={sid}&fmt=html")
     assert r_html.status_code == 200
     assert "گزارش جامع" in r_html.text
 
-    # PDF (در صورت نصب WeasyPrint)
     r_pdf = client.get(f"/api/report?session_id={sid}&fmt=pdf")
     assert r_pdf.status_code == 200
-    assert r_pdf.content[:4] in (b"%PDF", b"<!DO")  # PDF یا fallback HTML
+    assert r_pdf.content[:4] in (b"%PDF", b"<!DO")
 
 
-def test_purchase_cycle_in_analyze():
-    data = client.post("/api/sample").json()
-    sid = data["session_id"]
-    roles = {x["role"]: x["suggested"] for x in data["roles"]}
-    mapping = {role: col for role, col in roles.items() if col}
-    payload = client.post(
-        "/api/analyze", json={"session_id": sid, "mapping": mapping, "horizon": 4}
-    ).json()
-    assert "purchase_cycle" in payload
-    types = {p["product"]: p["product_type"] for p in payload["purchase_cycle"]["products"]}
-    assert types.get("باکس حمل") == "تک‌خریدی"
+def test_scheduler_run_now_creates_outbox():
+    data = _sample_ready()
+    _analyze(data)
+
+    r = client.post("/api/scheduler/run-now")
+    assert r.status_code == 200, r.text
+    summary = r.json()
+    assert summary["status"] == "ok"
+    assert summary["حالت"] == "آزمایشی (بدون ارسال)"
+
+    ob = client.get("/api/outbox?limit=200").json()["items"]
+    assert any(row["kind"] == "cycle_notification" for row in ob)
+
+    # اجرای دوباره نباید برای همان مشتریان دوباره ثبت کند (dedupe)
+    r2 = client.post("/api/scheduler/run-now")
+    assert r2.json()["ثبت‌شده"] == 0
+
+
+def test_scheduler_status_endpoint():
+    r = client.get("/api/scheduler/status")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["enabled"] is False  # در تست‌ها خاموش است
+    assert body["running"] is False

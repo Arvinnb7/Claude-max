@@ -1,10 +1,10 @@
-"""برنامه‌ی FastAPI — API تحلیل و استراتژی مارکتینگ برای فرانت‌اند Next.js."""
+"""برنامه‌ی FastAPI — API تحلیل و استراتژی مارکتینگ (نشست ماندگار + job پس‌زمینه)."""
 
 from __future__ import annotations
 
 import logging
 import sys
-import traceback
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 # دسترسی به mktcore بدون نصب
@@ -32,14 +32,33 @@ from mktcore.locale_fa import ROLE_LABELS_FA  # noqa: E402
 from mktcore.pipeline import run_analysis  # noqa: E402
 from mktcore.synthetic import generate_synthetic_sales  # noqa: E402
 
+from .jobs import JobError, submit_job  # noqa: E402
+from .persistence import store  # noqa: E402
+from .scheduler import (  # noqa: E402
+    run_cycle_scan,
+    scheduler_status,
+    start_scheduler,
+    stop_scheduler,
+)
 from .serialize import bundle_to_dict, campaign_to_dict, strategy_to_dict  # noqa: E402
-from .store import store  # noqa: E402
 
-app = FastAPI(title="Marketing Analytics API", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    recovered = store.recover_stale_jobs()
+    if recovered:
+        logger.warning("recovered %d stale jobs after restart", recovered)
+    store.cleanup_expired()
+    start_scheduler()
+    yield
+    stop_scheduler()
+
+
+app = FastAPI(title="Marketing Analytics API", version="0.2.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=get_settings().cors_origin_list,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -73,31 +92,76 @@ def _columns_payload(df) -> dict:
 
 @app.get("/api/health")
 def health() -> dict:
-    return {"status": "ok", "ai_available": api_key_available(),
-            "model": get_settings().mkt_model, "currency": get_settings().mkt_currency}
+    s = get_settings()
+    return {
+        "status": "ok",
+        "ai_available": api_key_available(),
+        "model": s.mkt_model,
+        "currency": s.mkt_currency,
+        "sms_enabled": s.sms_configured,
+        "scheduler": scheduler_status()["running"],
+    }
 
 
+# ---------------------------------------------------------------- آپلود (job)
 @app.post("/api/upload")
 async def upload(file: UploadFile = File(...)) -> dict:
-    content = await file.read()
-    try:
-        connector = ExcelCsvConnector(content=content, filename=file.filename or "uploaded")
-        sheets = connector.list_sources()
-        result = connector.read(sheets[0])
-        df = result.dataframe
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"خطا در خواندن فایل: {e}") from e
-    sid = store.create(df)
-    return {"session_id": sid, "sheets": sheets, **_columns_payload(df)}
+    settings = get_settings()
+    max_bytes = settings.mkt_max_upload_mb * 1024 * 1024
+
+    chunks: list[bytes] = []
+    total = 0
+    while chunk := await file.read(1024 * 1024):
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=f"حجم فایل از سقف مجاز ({settings.mkt_max_upload_mb} مگابایت) بیشتر است.",
+            )
+        chunks.append(chunk)
+    content = b"".join(chunks)
+    if not content:
+        raise HTTPException(status_code=400, detail="فایل خالی است.")
+
+    filename = file.filename or "uploaded"
+    sid = store.create_session(filename)
+
+    def _job(progress) -> dict:
+        progress(5, "خواندن فایل")
+        try:
+            connector = ExcelCsvConnector(content=content, filename=filename)
+            sheets = connector.list_sources()
+            progress(15, "خواندن اکسل (فایل‌های بزرگ ممکن است تا یک دقیقه طول بکشد)")
+            df = connector.read(sheets[0]).dataframe
+        except Exception as e:
+            raise JobError(f"خطا در خواندن فایل: {e}") from e
+        progress(70, "ذخیره‌ی داده")
+        store.save_raw(sid, df)
+        progress(85, "تشخیص هوشمند ستون‌ها")
+        payload = _columns_payload(df)
+        payload["session_id"] = sid
+        payload["sheets"] = sheets
+        store.set_columns_payload(sid, payload)
+        return payload
+
+    job_id = submit_job("upload", _job, session_id=sid)
+    return {"job_id": job_id, "session_id": sid}
 
 
 @app.post("/api/sample")
 def sample() -> dict:
+    """داده‌ی نمونه (سریع؛ بدون job) — همان قرارداد نتیجه‌ی آپلود."""
     df = generate_synthetic_sales()
-    sid = store.create(df)
-    return {"session_id": sid, "sheets": ["نمونه"], **_columns_payload(df)}
+    sid = store.create_session("داده‌ی نمونه")
+    store.save_raw(sid, df)
+    payload = _columns_payload(df)
+    payload["session_id"] = sid
+    payload["sheets"] = ["نمونه"]
+    store.set_columns_payload(sid, payload)
+    return payload
 
 
+# ---------------------------------------------------------------- تحلیل (job)
 class AnalyzeRequest(BaseModel):
     session_id: str
     mapping: dict[str, str]  # role -> column name
@@ -106,7 +170,6 @@ class AnalyzeRequest(BaseModel):
 
 
 def _validate_clean(clean) -> str | None:
-    """اعتبارسنجی داده‌ی پاک‌شده؛ پیام خطای فارسی یا None برمی‌گرداند."""
     date_col = standard_column(ColumnRole.DATE)
     rev_col = standard_column(ColumnRole.REVENUE)
     if clean is None or len(clean) == 0:
@@ -121,19 +184,17 @@ def _validate_clean(clean) -> str | None:
 
 @app.post("/api/analyze")
 def analyze(req: AnalyzeRequest) -> dict:
-    session = store.get(req.session_id)
+    session = store.get_session(req.session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="نشست یافت نشد یا منقضی شده است.")
+    logger.info("analyze: session=%s mapping=%s horizon=%s",
+                req.session_id, req.mapping, req.horizon)
 
-    logger.info("analyze: session=%s mapping=%s horizon=%s", req.session_id, req.mapping, req.horizon)
-
-    # تبدیل نگاشت به ColumnRole
     try:
         mapping = {ColumnRole(role): col for role, col in req.mapping.items() if col}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=f"نقش نامعتبر در نگاشت: {e}") from e
 
-    # نقش‌های ضروری
     missing = [ROLE_LABELS_FA[r.value] for r in REQUIRED_ROLES if r not in mapping]
     if missing:
         raise HTTPException(
@@ -141,149 +202,269 @@ def analyze(req: AnalyzeRequest) -> dict:
             detail=f"نگاشت ناقص: ستون‌های اجباری انتخاب نشده‌اند: {', '.join(missing)}",
         )
 
-    # بررسی وجود ستون‌های نگاشت‌شده در داده‌ی خام
+    columns = (session.columns_payload or {}).get("columns")
+    if columns is None:
+        raise HTTPException(status_code=409, detail="پردازش فایل هنوز کامل نشده است؛ کمی صبر کنید.")
     for role, col in mapping.items():
-        if col not in session.raw_df.columns:
+        if col not in columns:
             raise HTTPException(
                 status_code=400,
                 detail=f"ستون «{col}» برای نقش «{ROLE_LABELS_FA.get(role.value, role.value)}» در فایل وجود ندارد.",
             )
 
-    # مرحله ۱: اعمال نگاشت
-    try:
-        std = SchemaMapper().apply(session.raw_df, mapping)
-        logger.info("analyze: after apply -> %d rows, cols=%s", len(std), list(std.columns))
-    except Exception as e:
-        logger.error("analyze apply failed: %s\n%s", e, traceback.format_exc())
-        raise HTTPException(status_code=400, detail=f"خطا در اعمال نگاشت ستون‌ها: {e}") from e
+    sid = req.session_id
 
-    # مرحله ۲: پاک‌سازی
-    try:
-        clean = clean_frame(std)
-        logger.info(
-            "analyze: after clean -> %d rows, cols=%s, dropped_invalid=%s, dropped_dup=%s",
-            len(clean), list(clean.columns),
-            clean.attrs.get("dropped_invalid_rows"), clean.attrs.get("dropped_duplicate_rows"),
-        )
-    except Exception as e:
-        logger.error("analyze clean failed: %s\n%s", e, traceback.format_exc())
-        raise HTTPException(status_code=400, detail=f"خطا در پاک‌سازی داده‌ها: {e}") from e
+    def _job(progress) -> dict:
+        raw = store.load_raw(sid)
+        if raw is None:
+            raise JobError("داده‌ی خام نشست یافت نشد؛ لطفاً فایل را دوباره بارگذاری کنید.")
 
-    # مرحله ۳: اعتبارسنجی
-    err = _validate_clean(clean)
-    if err:
-        logger.warning("analyze validation failed: %s", err)
-        raise HTTPException(status_code=400, detail=err)
+        progress(8, "اعمال نگاشت ستون‌ها")
+        try:
+            std = SchemaMapper().apply(raw, mapping)
+        except Exception as e:
+            raise JobError(f"خطا در اعمال نگاشت ستون‌ها: {e}") from e
 
-    # مرحله ۴: تحلیل
-    try:
-        bundle = run_analysis(clean, horizon=req.horizon, balanced_uplift=req.balanced_uplift)
-        logger.info("analyze: run_analysis OK (revenue=%s)", bundle.kpis.total_revenue)
-    except Exception as e:
-        logger.error("analyze run_analysis failed: %s\n%s", e, traceback.format_exc())
-        raise HTTPException(
-            status_code=400,
-            detail=f"خطا در مرحله‌ی تحلیل ({type(e).__name__}): {e}",
-        ) from e
+        progress(18, "پاک‌سازی و استانداردسازی داده")
+        try:
+            clean = clean_frame(std)
+        except Exception as e:
+            raise JobError(f"خطا در پاک‌سازی داده‌ها: {e}") from e
+        logger.info("analyze job: clean -> %d rows", len(clean))
 
-    session.clean_df = clean
-    session.bundle = bundle
-    profile = profile_frame(clean)
-    payload = bundle_to_dict(bundle, currency=get_settings().mkt_currency)
-    payload["quality"]["warnings"] = profile.warnings
-    return payload
+        err = _validate_clean(clean)
+        if err:
+            raise JobError(err)
+
+        progress(30, "تحلیل جامع (KPI، سگمنت، چرخه، پیش‌بینی…)")
+        try:
+            bundle = run_analysis(clean, horizon=req.horizon,
+                                  balanced_uplift=req.balanced_uplift)
+        except Exception as e:
+            raise JobError(f"خطا در مرحله‌ی تحلیل ({type(e).__name__}): {e}") from e
+
+        progress(90, "ذخیره‌ی نتایج")
+        store.save_clean(sid, clean)
+        store.save_bundle(sid, bundle)
+        store.set_mapping(sid, {r.value: c for r, c in mapping.items()})
+
+        payload = bundle_to_dict(bundle, currency=get_settings().mkt_currency)
+        payload["quality"]["warnings"] = profile_frame(clean).warnings
+        store.set_analysis(sid, payload)
+        return payload
+
+    job_id = submit_job("analyze", _job, session_id=sid)
+    return {"job_id": job_id}
 
 
+# ---------------------------------------------------------- job و بازیابی نشست
+@app.get("/api/jobs/{job_id}")
+def job_status(job_id: str) -> dict:
+    job = store.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job یافت نشد.")
+    out: dict = {
+        "id": job.id, "kind": job.kind, "status": job.status,
+        "progress": round(job.progress, 1), "stage": job.stage,
+    }
+    if job.status == "error":
+        out["error"] = job.error or "خطای نامشخص"
+    if job.status == "done":
+        out["result"] = job.result
+    return out
+
+
+@app.get("/api/session/{session_id}")
+def session_info(session_id: str) -> dict:
+    """بازیابی وضعیت نشست برای فرانت (بعد از reload/ری‌استارت)."""
+    session = store.get_session(session_id)
+    if session is None:
+        return {"exists": False}
+    return {
+        "exists": True,
+        "filename": session.filename,
+        "columns_payload": session.columns_payload,
+        "analysis": session.analysis,
+        "strategy": session.strategy,
+        "campaign": session.campaign,
+    }
+
+
+# ------------------------------------------------------------- هوش مصنوعی (job)
 class StrategyRequest(BaseModel):
     session_id: str
 
 
+def _require_analyzed(session_id: str):
+    session = store.get_session(session_id)
+    if session is None or not session.has_analysis:
+        raise HTTPException(status_code=404, detail="ابتدا تحلیل را اجرا کنید.")
+    return session
+
+
 @app.post("/api/strategy")
 def strategy(req: StrategyRequest = Body(...)) -> dict:
-    session = store.get(req.session_id)
-    if session is None or session.bundle is None:
-        raise HTTPException(status_code=404, detail="ابتدا تحلیل را اجرا کنید.")
+    _require_analyzed(req.session_id)
     if not api_key_available():
         raise HTTPException(status_code=503, detail="کلید ANTHROPIC_API_KEY تنظیم نشده است.")
-    try:
+    sid = req.session_id
+
+    def _job(progress) -> dict:
+        bundle = store.load_bundle(sid)
+        if bundle is None:
+            raise JobError("نتیجه‌ی تحلیل یافت نشد؛ تحلیل را دوباره اجرا کنید.")
+        progress(15, "تحلیل مدیر مارکتینگ در حال نگارش استراتژی…")
         from mktcore.ai.strategist import generate_strategy
 
-        report = generate_strategy(session.bundle)
-        session.strategy = report
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"خطا در تولید استراتژی: {e}") from e
-    return strategy_to_dict(report)
+        try:
+            report = generate_strategy(bundle)
+        except Exception as e:
+            raise JobError(f"خطا در تولید استراتژی: {e}") from e
+        result = strategy_to_dict(report)
+        store.set_strategy(sid, result)
+        return result
+
+    return {"job_id": submit_job("strategy", _job, session_id=sid)}
 
 
 @app.post("/api/campaign")
 def campaign(req: StrategyRequest = Body(...)) -> dict:
-    """تولید برنامه‌ی کمپین و پیام‌های شخصی‌سازی‌شده‌ی چندکاناله."""
-    session = store.get(req.session_id)
-    if session is None or session.bundle is None:
-        raise HTTPException(status_code=404, detail="ابتدا تحلیل را اجرا کنید.")
+    _require_analyzed(req.session_id)
     if not api_key_available():
         raise HTTPException(status_code=503, detail="کلید ANTHROPIC_API_KEY تنظیم نشده است.")
-    try:
+    sid = req.session_id
+
+    def _job(progress) -> dict:
+        bundle = store.load_bundle(sid)
+        if bundle is None:
+            raise JobError("نتیجه‌ی تحلیل یافت نشد؛ تحلیل را دوباره اجرا کنید.")
+        progress(15, "طراحی کمپین و نگارش پیام‌های شخصی‌سازی‌شده…")
         from mktcore.ai.campaign import generate_campaigns
 
-        plan = generate_campaigns(session.bundle)
-        session.campaign = plan
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"خطا در تولید کمپین: {e}") from e
-    return campaign_to_dict(plan)
+        try:
+            plan = generate_campaigns(bundle)
+        except Exception as e:
+            raise JobError(f"خطا در تولید کمپین: {e}") from e
+        result = campaign_to_dict(plan)
+        store.set_campaign(sid, result)
+        return result
+
+    return {"job_id": submit_job("campaign", _job, session_id=sid)}
 
 
-@app.get("/api/audience-kinds")
-def audience_kinds() -> dict:
-    return {"kinds": [{"key": k, "label": v} for k, v in AUDIENCE_KINDS.items()]}
-
-
+# ------------------------------------------------------------------- گزارش PDF
 @app.get("/api/report")
 def report(session_id: str, fmt: str = "pdf"):
-    """خروجی گزارش جامع (تحلیل + استراتژی + کمپین) به‌صورت PDF یا HTML.
+    session = _require_analyzed(session_id)
+    bundle = store.load_bundle(session_id)
+    if bundle is None:
+        raise HTTPException(status_code=404, detail="نتیجه‌ی تحلیل یافت نشد؛ تحلیل را دوباره اجرا کنید.")
 
-    استراتژی/کمپین اگر قبلاً تولید شده باشند در گزارش گنجانده می‌شوند.
-    """
-    session = store.get(session_id)
-    if session is None or session.bundle is None:
-        raise HTTPException(status_code=404, detail="ابتدا تحلیل را اجرا کنید.")
-    strategy = getattr(session, "strategy", None)
-    campaign = getattr(session, "campaign", None)
+    strategy_obj = campaign_obj = None
+    if session.strategy:
+        from mktcore.ai.schemas import StrategyReport
+
+        strategy_obj = StrategyReport.model_validate(session.strategy)
+    if session.campaign:
+        from mktcore.ai.schemas import CampaignPlan
+
+        campaign_obj = CampaignPlan.model_validate(session.campaign)
 
     from mktcore.reporting.pdf_report import build_pdf, render_html, weasyprint_available
 
     if fmt == "html" or not weasyprint_available():
-        html = render_html(session.bundle, strategy, campaign)
-        return HTMLResponse(content=html)
-    pdf = build_pdf(session.bundle, strategy, campaign)
+        return HTMLResponse(content=render_html(bundle, strategy_obj, campaign_obj))
+    pdf = build_pdf(bundle, strategy_obj, campaign_obj)
     return Response(
         content=pdf, media_type="application/pdf",
         headers={"Content-Disposition": "attachment; filename=marketing_report.pdf"},
     )
 
 
+# ------------------------------------------------------------- اجرای پیامکی
+@app.get("/api/audience-kinds")
+def audience_kinds() -> dict:
+    return {"kinds": [{"key": k, "label": v} for k, v in AUDIENCE_KINDS.items()]}
+
+
 class SMSRequest(BaseModel):
     session_id: str
-    kind: str  # نوع مخاطب (از /api/audience-kinds)
-    template: str  # قالب پیام با متغیرهای {نام} و …
+    kind: str
+    template: str
     limit: int = 100
-    dry_run: bool = True  # امن: پیش‌فرض فقط پیش‌نمایش
+    dry_run: bool = True
+    confirm: bool = False  # برای ارسال واقعی، تأیید صریح لازم است
 
 
 @app.post("/api/sms/send")
 def sms_send(req: SMSRequest) -> dict:
-    """ساخت مخاطب، شخصی‌سازی پیام و ارسال (پیش‌فرض dry-run؛ بدون ارسال واقعی)."""
-    session = store.get(req.session_id)
-    if session is None or session.bundle is None or session.clean_df is None:
-        raise HTTPException(status_code=404, detail="ابتدا تحلیل را اجرا کنید.")
+    """ساخت مخاطب، شخصی‌سازی پیام و ارسال.
+
+    ارسال واقعی فقط وقتی انجام می‌شود که پنل پیامکی در env فعال/پیکربندی شده
+    باشد (MKT_SMS_ENABLE=1 + KAVENEGAR_API_KEY) و درخواست dry_run=false و
+    confirm=true بدهد؛ در غیر این صورت پیش‌نمایش امن برگردانده می‌شود.
+    """
+    _require_analyzed(req.session_id)
     if req.kind not in AUDIENCE_KINDS:
         raise HTTPException(status_code=400, detail="نوع مخاطب نامعتبر است.")
 
-    recipients = build_audience(session.bundle, req.kind, df=session.clean_df, limit=req.limit)
+    bundle = store.load_bundle(req.session_id)
+    clean = store.load_clean(req.session_id)
+    if bundle is None or clean is None:
+        raise HTTPException(status_code=404, detail="داده‌ی تحلیل نشست یافت نشد.")
+
+    recipients = build_audience(bundle, req.kind, df=clean, limit=req.limit)
     messages = render_messages(req.template, recipients)
-    # ارسال واقعی نیازمند کلید پنل است؛ این endpoint فقط dry-run را پشتیبانی می‌کند.
-    result = send_campaign(messages, dry_run=True)
-    return {"audience_size": len(recipients), **result.to_dict()}
+
+    settings = get_settings()
+    wants_real = not req.dry_run
+    real_send = wants_real and req.confirm and settings.sms_configured
+    note = None
+    if wants_real and not real_send:
+        if not settings.sms_configured:
+            note = ("ارسال واقعی غیرفعال است: MKT_SMS_ENABLE=1 و KAVENEGAR_API_KEY را در "
+                    "تنظیمات سرور قرار دهید. نتیجه به‌صورت آزمایشی برگردانده شد.")
+        elif not req.confirm:
+            note = "برای ارسال واقعی، تأیید صریح (confirm=true) لازم است. نتیجه آزمایشی است."
+
+    result = send_campaign(
+        messages,
+        provider=settings.mkt_sms_provider,
+        api_key=settings.kavenegar_api_key if real_send else None,
+        sender=settings.mkt_sms_sender,
+        dry_run=not real_send,
+    )
+
+    status_of = {d.get("مشتری"): d.get("وضعیت", "") for d in result.details}
+    for m in messages:
+        store.add_outbox(
+            kind="campaign_sms", session_id=req.session_id, audience=req.kind,
+            customer_id=m.customer_id, phone=m.phone, message=m.text,
+            status=status_of.get(m.customer_id, "نامشخص"),
+            provider=result.provider, dry_run=result.dry_run,
+        )
+
+    out = {"audience_size": len(recipients), **result.to_dict()}
+    if note:
+        out["توضیح"] = note
+    return out
+
+
+# --------------------------------------------------------- زمان‌بند و outbox
+@app.get("/api/outbox")
+def outbox(limit: int = 50) -> dict:
+    return {"items": store.list_outbox(limit=min(limit, 200))}
+
+
+@app.get("/api/scheduler/status")
+def get_scheduler_status() -> dict:
+    return scheduler_status()
+
+
+@app.post("/api/scheduler/run-now")
+def scheduler_run_now() -> dict:
+    """اجرای دستی اسکن چرخه (برای تست/راه‌اندازی)."""
+    return run_cycle_scan()
 
 
 __all__ = ["app"]

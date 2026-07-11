@@ -17,6 +17,8 @@ from mktcore.ingest.cleaning import clean_frame  # noqa: E402
 from mktcore.ingest.mapper import SchemaMapper  # noqa: E402
 from mktcore.pipeline import run_analysis  # noqa: E402
 
+from .conftest import poll_job  # noqa: E402
+
 client = TestClient(app)
 
 
@@ -53,22 +55,45 @@ def test_minimal_columns_only():
 
 
 def test_api_empty_after_clean_message():
-    """اگر همه ردیف‌ها نامعتبر باشند، پیام فارسی دقیق برگردد (نه 500)."""
+    """اگر همه ردیف‌ها نامعتبر باشند، job با پیام فارسی دقیق شکست بخورد (نه 500)."""
     # داده با مبلغ‌های نامعتبر (غیرعددی) → بعد از پاک‌سازی خالی
     import io
 
+    import pytest
+
     csv = "تاریخ,مبلغ کل\nنامعتبر,نامعتبر\nxxx,yyy\n"
     files = {"file": ("bad.csv", io.BytesIO(csv.encode("utf-8")), "text/csv")}
-    up = client.post("/api/upload", files=files).json()
-    sid = up["session_id"]
+    up_resp = client.post("/api/upload", files=files).json()
+    sid = up_resp["session_id"]
+    up = poll_job(client, up_resp["job_id"])
     roles = {x["role"]: x["suggested"] for x in up["roles"]}
     mapping = {r: c for r, c in roles.items() if c}
     # تضمین نگاشت تاریخ و مبلغ
     mapping.setdefault("DATE", "تاریخ")
     mapping.setdefault("REVENUE", "مبلغ کل")
     r = client.post("/api/analyze", json={"session_id": sid, "mapping": mapping, "horizon": 4})
-    assert r.status_code == 400
-    assert "معتبر" in r.json()["detail"]
+    assert r.status_code == 200
+    with pytest.raises(AssertionError, match="معتبر"):
+        poll_job(client, r.json()["job_id"])
+
+
+def test_upload_size_cap(monkeypatch):
+    """آپلود بزرگ‌تر از سقف باید 413 با پیام فارسی بدهد."""
+    import io
+
+    from mktcore.config import get_settings
+
+    monkeypatch.setenv("MKT_MAX_UPLOAD_MB", "1")
+    get_settings.cache_clear()
+    try:
+        big = b"x" * (2 * 1024 * 1024)
+        files = {"file": ("big.csv", io.BytesIO(big), "text/csv")}
+        r = client.post("/api/upload", files=files)
+        assert r.status_code == 413
+        assert "سقف مجاز" in r.json()["detail"]
+    finally:
+        monkeypatch.delenv("MKT_MAX_UPLOAD_MB", raising=False)
+        get_settings.cache_clear()
 
 
 def test_accounting_negative_sign_convention():
