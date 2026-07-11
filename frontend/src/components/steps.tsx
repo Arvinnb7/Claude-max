@@ -6,7 +6,7 @@ import { FileSpreadsheet, Sparkles, Upload, Wand2 } from "lucide-react";
 import { loadSample, uploadFile } from "@/lib/api";
 import { toFa } from "@/lib/format";
 import type { UploadResponse } from "@/lib/types";
-import { Alert, Button, Card, SectionTitle, Spinner } from "./ui";
+import { Alert, Button, Card, ProgressBar, SectionTitle, Spinner } from "./ui";
 
 const STEPS = ["بارگذاری داده", "نگاشت ستون‌ها", "تحلیل و استراتژی"];
 
@@ -45,18 +45,21 @@ export function Stepper({ active }: { active: number }) {
 
 export function UploadStep({ onLoaded }: { onLoaded: (r: UploadResponse) => void }) {
   const [loading, setLoading] = useState<"file" | "sample" | null>(null);
+  const [progress, setProgress] = useState<{ pct: number; stage: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   async function handleFile(file: File) {
     setError(null);
     setLoading("file");
+    setProgress({ pct: 0, stage: "در حال ارسال فایل…" });
     try {
-      onLoaded(await uploadFile(file));
+      onLoaded(await uploadFile(file, (pct, stage) => setProgress({ pct, stage })));
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setLoading(null);
+      setProgress(null);
     }
   }
 
@@ -72,6 +75,15 @@ export function UploadStep({ onLoaded }: { onLoaded: (r: UploadResponse) => void
     }
   }
 
+  if (loading === "file" && progress) {
+    return (
+      <ProgressBar
+        pct={progress.pct}
+        stage={progress.stage}
+        label="در حال بارگذاری و بررسی فایل — این صفحه را باز نگه دارید"
+      />
+    );
+  }
   if (loading) return <Spinner label="در حال بارگذاری و بررسی داده…" />;
 
   return (

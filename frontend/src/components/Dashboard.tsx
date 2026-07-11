@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   Boxes,
@@ -24,7 +24,7 @@ import { CampaignTab, CycleTab, DiagnosticsTab, PerformanceTab, ProductsTab } fr
 
 import { getStrategy } from "@/lib/api";
 import { compact, num, pct, toFa } from "@/lib/format";
-import type { AnalyzeResponse, StrategyResponse } from "@/lib/types";
+import type { AnalyzeResponse, CampaignResponse, StrategyResponse } from "@/lib/types";
 import {
   BreakdownBars,
   ForecastChart,
@@ -33,7 +33,7 @@ import {
   SegmentBars,
   WeekdayChart,
 } from "./charts";
-import { Alert, Badge, Button, Card, SectionTitle, Spinner, StatCard } from "./ui";
+import { Alert, Badge, Button, Card, ProgressBar, SectionTitle, StatCard } from "./ui";
 
 type Tab =
   | "kpi"
@@ -67,19 +67,54 @@ const DIM_LABELS: Record<string, string> = {
   REGION: "منطقه",
 };
 
+const SS_TAB = "mkt.tab";
+const TAB_IDS = new Set(TABS.map((t) => t.id));
+
 export default function Dashboard({
   data,
   sessionId,
   aiAvailable,
+  smsEnabled = false,
+  initialStrategy = null,
+  initialCampaign = null,
   onReset,
 }: {
   data: AnalyzeResponse;
   sessionId: string;
   aiAvailable: boolean;
+  smsEnabled?: boolean;
+  initialStrategy?: StrategyResponse | null;
+  initialCampaign?: CampaignResponse | null;
   onReset: () => void;
 }) {
   const [tab, setTab] = useState<Tab>("kpi");
   const unit = data.currency;
+
+  // بازیابی تب فعال بعد از reload (بدون ناسازگاری hydration)
+  useEffect(() => {
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      try {
+        const saved = sessionStorage.getItem(SS_TAB);
+        if (saved && TAB_IDS.has(saved as Tab)) setTab(saved as Tab);
+      } catch {
+        /* noop */
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  function selectTab(t: Tab) {
+    setTab(t);
+    try {
+      sessionStorage.setItem(SS_TAB, t);
+    } catch {
+      /* noop */
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -120,7 +155,7 @@ export default function Dashboard({
         {TABS.map((t) => (
           <button
             key={t.id}
-            onClick={() => setTab(t.id)}
+            onClick={() => selectTab(t.id)}
             className={`flex items-center gap-2 whitespace-nowrap rounded-t-xl px-4 py-2.5 text-sm font-medium transition ${
               tab === t.id
                 ? "border-b-2 border-brand-600 text-brand-700 dark:text-brand-300"
@@ -141,8 +176,17 @@ export default function Dashboard({
       {tab === "forecast" && <ForecastTab data={data} unit={unit} />}
       {tab === "targets" && <TargetsTab data={data} unit={unit} />}
       {tab === "diagnostics" && <DiagnosticsTab data={data} unit={unit} />}
-      {tab === "ai" && <AiTab sessionId={sessionId} aiAvailable={aiAvailable} />}
-      {tab === "campaign" && <CampaignTab sessionId={sessionId} aiAvailable={aiAvailable} />}
+      {tab === "ai" && (
+        <AiTab sessionId={sessionId} aiAvailable={aiAvailable} initial={initialStrategy} />
+      )}
+      {tab === "campaign" && (
+        <CampaignTab
+          sessionId={sessionId}
+          aiAvailable={aiAvailable}
+          smsEnabled={smsEnabled}
+          initial={initialCampaign}
+        />
+      )}
     </div>
   );
 }
@@ -355,23 +399,28 @@ function TargetsTab({ data, unit }: { data: AnalyzeResponse; unit: string }) {
 function AiTab({
   sessionId,
   aiAvailable,
+  initial = null,
 }: {
   sessionId: string;
   aiAvailable: boolean;
+  initial?: StrategyResponse | null;
 }) {
-  const [report, setReport] = useState<StrategyResponse | null>(null);
+  const [report, setReport] = useState<StrategyResponse | null>(initial);
   const [loading, setLoading] = useState(false);
+  const [progress, setProgress] = useState<{ pct: number; stage: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   async function generate() {
     setError(null);
     setLoading(true);
+    setProgress({ pct: 0, stage: "در صف پردازش…" });
     try {
-      setReport(await getStrategy(sessionId));
+      setReport(await getStrategy(sessionId, (pct, stage) => setProgress({ pct, stage })));
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setLoading(false);
+      setProgress(null);
     }
   }
 
@@ -424,7 +473,13 @@ function AiTab({
         </div>
       </Card>
 
-      {loading && <Spinner label="مدیر مارکتینگ هوشمند در حال تحلیل داده‌ها و تدوین استراتژی است…" />}
+      {loading && (
+        <ProgressBar
+          pct={progress?.pct ?? 0}
+          stage={progress?.stage}
+          label="مدیر مارکتینگ هوشمند در حال تحلیل داده‌ها و تدوین استراتژی است…"
+        />
+      )}
       {error && <Alert tone="error">{error}</Alert>}
 
       {report && !loading && (

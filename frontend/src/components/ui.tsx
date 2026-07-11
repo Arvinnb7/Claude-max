@@ -2,6 +2,8 @@
 
 import { ReactNode } from "react";
 
+import { toFa } from "@/lib/format";
+
 export function Card({
   children,
   className = "",
@@ -131,6 +133,31 @@ export function Spinner({ label }: { label?: string }) {
           {label}
         </span>
       )}
+    </div>
+  );
+}
+
+export function ProgressBar({
+  pct,
+  stage,
+  label,
+}: {
+  pct: number;
+  stage?: string;
+  label?: string;
+}) {
+  return (
+    <div className="mx-auto max-w-md py-10 text-center">
+      {label && <p className="mb-3 text-sm font-semibold">{label}</p>}
+      <div className="h-2 w-full overflow-hidden rounded-full bg-ink-100 dark:bg-ink-800">
+        <div
+          className="h-full rounded-full bg-brand-600 transition-all duration-500"
+          style={{ width: `${Math.min(100, Math.max(4, pct))}%` }}
+        />
+      </div>
+      <p className="mt-3 text-sm tnum" style={{ color: "var(--muted)" }}>
+        {stage || "در حال پردازش…"} — {toFa(Math.round(pct))}٪
+      </p>
     </div>
   );
 }

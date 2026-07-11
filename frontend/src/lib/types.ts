@@ -254,6 +254,7 @@ export interface SMSResult {
   حالت_آزمایشی: boolean;
   ارائه‌دهنده: string;
   نمونه: { مشتری: string; گیرنده: string; متن: string; وضعیت: string }[];
+  توضیح?: string;
 }
 
 export interface AudienceKind {
@@ -280,4 +281,25 @@ export interface HealthResponse {
   ai_available: boolean;
   model: string;
   currency: string;
+  sms_enabled: boolean;
+  scheduler: boolean;
+}
+
+export interface JobStatus {
+  id: string;
+  kind: string;
+  status: "queued" | "running" | "done" | "error";
+  progress: number;
+  stage: string;
+  error?: string;
+  result?: unknown;
+}
+
+export interface SessionInfo {
+  exists: boolean;
+  filename?: string | null;
+  columns_payload?: UploadResponse | null;
+  analysis?: AnalyzeResponse | null;
+  strategy?: StrategyResponse | null;
+  campaign?: CampaignResponse | null;
 }
