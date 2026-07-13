@@ -175,6 +175,8 @@ def bundle_to_dict(bundle: MetricsBundle, *, currency: str = "تومان") -> di
             "recall_at_5": ev.recall_at_5,
             "popularity_hitrate_at_5": ev.popularity_hitrate_at_5,
             "heuristic_hitrate_at_5": ev.heuristic_hitrate_at_5,
+            "best_config": ev.best_config,
+            "coverage": ev.coverage,
         }
 
     pc = bundle.purchase_cycle

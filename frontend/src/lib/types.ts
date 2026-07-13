@@ -155,6 +155,8 @@ export interface AnalyzeResponse {
     recall_at_5: number;
     popularity_hitrate_at_5: number;
     heuristic_hitrate_at_5: number;
+    best_config: string;
+    coverage: number;
   };
   performance?: {
     branches: EntityPerf[];

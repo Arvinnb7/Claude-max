@@ -230,21 +230,26 @@ def predict_next_purchases(
         np_by_id[str(cust)] = npr
         res.customers.append(npr)
 
-    # ---------------- سبد محتمل فقط برای مشتریان سررسیدشده/نزدیک (سقف کارایی)
-    due = sorted([c for c in res.customers if c.status in ("سررسیدشده", "نزدیک")],
-                 key=lambda c: -c.overdue_days)[:max_basket_customers]
-    if due and _PRODUCT in d.columns:
-        due_ids = {c.customer_id for c in due}
+    # -------- سبد پیشنهادی: با موتور CF برای «همه»ی مشتریان (پوشش کامل)؛
+    # fallback ابتکاری (فقط در داده‌ی کوچک که موتور غیرفعال است) برای dueها.
+    if _PRODUCT in d.columns:
         if recommender is not None and recommender.available:
-            recs = recommender.recommend_many(sorted(due_ids), n=5)
-            for c in due:
+            all_ids = [c.customer_id for c in res.customers]
+            recs = recommender.recommend_many(all_ids, n=5)
+            for c in res.customers:
                 c.recommendations = recs.get(c.customer_id, [])
                 c.likely_products = [r.product for r in c.recommendations]
         else:
-            baskets = _heuristic_basket(d, due_ids, cycles=cycles, basket=basket,
-                                        top_products=top_products)
-            for c in due:
-                c.likely_products = baskets.get(c.customer_id, [])
+            due = sorted(
+                [c for c in res.customers if c.status in ("سررسیدشده", "نزدیک")],
+                key=lambda c: -c.overdue_days,
+            )[:max_basket_customers]
+            if due:
+                due_ids = {c.customer_id for c in due}
+                baskets = _heuristic_basket(d, due_ids, cycles=cycles, basket=basket,
+                                            top_products=top_products)
+                for c in due:
+                    c.likely_products = baskets.get(c.customer_id, [])
 
     return res
 

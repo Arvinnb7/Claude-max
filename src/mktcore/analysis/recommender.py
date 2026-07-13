@@ -35,13 +35,14 @@ REASON_CF = "مشتریان مشابه"
 REASON_COMPLEMENT = "مکمل خرید"
 REASON_POPULAR = "پرفروش"
 
-_W_CYCLE = 1.00
-_W_CF = 0.55
-_W_TRIPLE = 0.45
-_W_PAIR = 0.30
-_W_POPULAR = 0.10
+# وزن‌های پیش‌فرض ترکیب سیگنال‌ها — pipeline می‌تواند وزن بهینه‌ی هر دیتاست را
+# با آزمون holdout انتخاب و تزریق کند (خودتنظیمی).
+DEFAULT_WEIGHTS: dict[str, float] = {
+    "cycle": 1.00, "cf": 0.55, "triple": 0.45, "pair": 0.30, "pop": 0.10,
+}
 
 _CHUNK = 256  # densify امتیازها فقط در chunkهای کوچک
+_CF_CANDIDATES = 10  # کاندیدای CF هر مشتری
 
 
 @dataclass
@@ -64,6 +65,7 @@ class BasketRecommender:
     triple_rules: list = field(default_factory=list)
     recent_items: dict[str, list[str]] = field(default_factory=dict)
     popularity: list[str] = field(default_factory=list)
+    weights: dict[str, float] = field(default_factory=lambda: dict(DEFAULT_WEIGHTS))
 
     def recommend(self, customer_id: str, n: int = 5) -> list[Recommendation]:
         return self.recommend_many([customer_id], n=n).get(str(customer_id), [])
@@ -96,13 +98,18 @@ class BasketRecommender:
             scores[bought & ~self.consumable_mask[None, :]] = 0.0
             for i, (cid, _) in enumerate(chunk):
                 row = scores[i]
-                if row.max() <= 0:
+                mx = row.max()
+                if mx <= 0:
                     continue
-                k = min(15, np.count_nonzero(row))
+                k = min(_CF_CANDIDATES, int(np.count_nonzero(row)))
                 top = np.argpartition(row, -k)[-k:]
-                mx = row[top].max()
-                result[cid] = {str(items[j]): float(row[j] / mx)
-                               for j in top if row[j] > 0}
+                vals = row[top]
+                keep = vals > 0
+                result[cid] = dict(zip(
+                    (str(p) for p in items[top[keep]]),
+                    (float(v) for v in vals[keep] / mx),
+                    strict=True,
+                ))
         return result
 
     # ------------------------------------------------- ترکیب سیگنال‌ها (fusion)
@@ -113,26 +120,27 @@ class BasketRecommender:
             contrib.setdefault(product, {})[reason] = max(
                 contrib.get(product, {}).get(reason, 0.0), amount)
 
+        w = self.weights
         for product, strength in self.cycle_due.get(cid, []):
-            add(product, _W_CYCLE * strength, REASON_CYCLE)
+            add(product, w["cycle"] * strength, REASON_CYCLE)
         for product, score in cf.items():
-            add(product, _W_CF * score, REASON_CF)
+            add(product, w["cf"] * score, REASON_CF)
 
         recent = self.recent_items.get(cid, [])
         recent_set = set(recent)
         for tr in self.triple_rules:
             a, b = tr.antecedents
             if a in recent_set and b in recent_set and tr.consequent not in recent_set:
-                add(tr.consequent, _W_TRIPLE * min(tr.confidence, 1.0), REASON_COMPLEMENT)
+                add(tr.consequent, w["triple"] * min(tr.confidence, 1.0), REASON_COMPLEMENT)
         for p in recent:
             for cons, rank_score in self.pair_complements.get(p, []):
                 if cons not in recent_set:
-                    add(cons, _W_PAIR * rank_score, REASON_COMPLEMENT)
+                    add(cons, w["pair"] * rank_score, REASON_COMPLEMENT)
 
         bought_all = self._bought_set(cid)
         for rank, p in enumerate(self.popularity):
             if p not in bought_all:
-                add(p, _W_POPULAR * (1.0 - rank / max(len(self.popularity), 1)),
+                add(p, w["pop"] * (1.0 - rank / max(len(self.popularity), 1)),
                     REASON_POPULAR)
 
         # حذف اقلام خریده‌شده‌ی غیرمصرفی از همه‌ی سیگنال‌ها (CF خودش حذف کرده)
@@ -203,6 +211,7 @@ def build_recommender(
     *,
     cycles: PurchaseCycleAnalysis | None = None,
     basket: BasketAnalysis | None = None,
+    weights: dict[str, float] | None = None,
     half_life_days: float = 90.0,
     top_k: int = 20,
     min_cobuyers: int = 3,
@@ -210,6 +219,8 @@ def build_recommender(
 ) -> BasketRecommender:
     """ساخت موتور پیشنهاد از دیتافریم پاک‌شده (وکتورایز، بدون dep جدید)."""
     rec = BasketRecommender()
+    if weights:
+        rec.weights = {**DEFAULT_WEIGHTS, **weights}
     if _CUSTOMER not in df.columns or _PRODUCT not in df.columns or df.empty:
         return rec
     d = df.dropna(subset=[_CUSTOMER, _PRODUCT, _DATE])
@@ -308,4 +319,5 @@ def build_recommender(
 
 
 __all__ = ["Recommendation", "BasketRecommender", "build_recommender",
+           "DEFAULT_WEIGHTS",
            "REASON_CYCLE", "REASON_CF", "REASON_COMPLEMENT", "REASON_POPULAR"]

@@ -69,6 +69,13 @@ def test_export_next_purchase_probabilities():
     assert nums, "هیچ احتمال عددی در خروجی نیست"
     assert all(0.0 <= v <= 1.0 for v in nums)
 
+    # پوشش کامل: «محتمل‌ترین محصول بعدی» باید برای اکثریت قاطع مشتریان پر باشد
+    assert "محتمل‌ترین محصول بعدی" in headers
+    t_col = headers.index("محتمل‌ترین محصول بعدی") + 1
+    tvals = [ws.cell(row=i, column=t_col).value for i in range(2, ws.max_row + 1)]
+    filled = sum(1 for v in tvals if v)
+    assert filled >= 0.9 * len(tvals), f"پوشش ناکافی: {filled}/{len(tvals)}"
+
 
 def test_export_products_full_list():
     sid = _analyzed_session()

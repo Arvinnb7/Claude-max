@@ -125,10 +125,14 @@ export function ProductsTab({
             <div className="mb-4">
               <Alert tone="info">
                 <span className="tnum">
-                  دقت سنجیده‌شده روی داده‌ی شما: در {pct(data.basket_eval.hitrate_at_5)} از مشتریان،
-                  دست‌کم یک قلم از سبد بعدی درست پیش‌بینی شد
-                  (روش ساده‌ی «پرفروش‌ها»: {pct(data.basket_eval.popularity_hitrate_at_5)}) —
-                  آزمون روی {toFa(num(data.basket_eval.n_eval))} مشتری با پنهان‌کردن آخرین خرید واقعی.
+                  برای <b>همه‌ی {toFa(num(data.basket_eval.coverage))} مشتری</b> سبد پیشنهادی
+                  شخصی ساخته شد (فهرست کامل در «دانلود اکسل کامل»). دقت مدل — با پیکربندی
+                  «{data.basket_eval.best_config}» که سیستم به‌صورت خودکار برای داده‌ی شما
+                  انتخاب کرد — در آزمون علمیِ پنهان‌سازی آخرین خرید{" "}
+                  {toFa(num(data.basket_eval.n_eval))} مشتری: در{" "}
+                  {pct(data.basket_eval.hitrate_at_5)} موارد دست‌کم یک قلم از سبد بعدی درست
+                  پیش‌بینی شد (روش ساده‌ی «پرفروش‌ها»:{" "}
+                  {pct(data.basket_eval.popularity_hitrate_at_5)}).
                 </span>
               </Alert>
             </div>
@@ -577,7 +581,7 @@ export function CampaignTab({
         />
         <div className="flex flex-col gap-3">
           <div className="flex flex-wrap gap-2">
-            {[["سررسیدشده", "سررسیدشده برای خرید"], ["چرخه_عقب‌افتاده", "عقب از چرخه‌ی مصرفی"], ["تارگت_تک‌خریدی", "بالقوه‌ی تک‌خریدی"], ["ناتمام_الگو", "ناتمام در الگوی خرید"], ["در_معرض_ریزش", "در معرض ریزش"]].map(([k, lbl]) => (
+            {[["پیشنهاد_شخصی", "پیشنهاد شخصی (همه)"], ["سررسیدشده", "سررسیدشده برای خرید"], ["چرخه_عقب‌افتاده", "عقب از چرخه‌ی مصرفی"], ["تارگت_تک‌خریدی", "بالقوه‌ی تک‌خریدی"], ["ناتمام_الگو", "ناتمام در الگوی خرید"], ["در_معرض_ریزش", "در معرض ریزش"]].map(([k, lbl]) => (
               <button key={k} onClick={() => setKind(k)}
                 className={`rounded-lg px-3 py-1.5 text-sm transition ${kind === k ? "bg-brand-600 text-white" : "bg-ink-100 text-ink-600 dark:bg-ink-800 dark:text-ink-300"}`}>{lbl}</button>
             ))}

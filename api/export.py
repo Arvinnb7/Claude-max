@@ -100,6 +100,8 @@ def _next_purchase_sheets(bundle, clean) -> list[tuple[str, pd.DataFrame]]:
     rows = [{
         "کد مشتری": c.customer_id,
         "موبایل": phones.get(c.customer_id, ""),
+        "محتمل‌ترین محصول بعدی": c.recommendations[0].product if c.recommendations else "",
+        "دلیل": c.recommendations[0].reason if c.recommendations else "",
         "آخرین خرید": c.last_purchase,
         "میانگین فاصله (روز)": c.avg_interval_days,
         "تاریخ پیش‌بینی": c.predicted_next_date or "",

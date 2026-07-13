@@ -27,6 +27,7 @@ class Recipient:
 
 # انواع مخاطب قابل ساخت از تحلیل
 AUDIENCE_KINDS = {
+    "پیشنهاد_شخصی": "همه‌ی مشتریان با سبد پیشنهادی شخصی (مرتب به احتمال خرید)",
     "سررسیدشده": "مشتریانی که خرید بعدی‌شان سررسید شده است",
     "ناتمام_الگو": "مشتریانی که الگوی خرید توالی را کامل نکرده‌اند",
     "در_معرض_ریزش": "مشتریان سگمنت در معرض ریزش",
@@ -58,7 +59,26 @@ def build_audience(
     phones = _phone_lookup(df) if df is not None else {}
     recipients: list[Recipient] = []
 
-    if kind == "سررسیدشده" and bundle.next_purchase.available:
+    if kind == "پیشنهاد_شخصی" and bundle.next_purchase.available:
+        # همه‌ی مشتریانِ دارای سبد پیشنهادی، محتمل‌ترین خریداران اول
+        candidates = [c for c in bundle.next_purchase.customers if c.likely_products]
+        candidates.sort(
+            key=lambda c: -(c.buy_probability_30d if c.buy_probability_30d is not None else -1.0)
+        )
+        for c in candidates[:limit]:
+            prob = c.buy_probability_30d
+            recipients.append(Recipient(
+                customer_id=c.customer_id,
+                phone=phones.get(c.customer_id),
+                vars={
+                    "نام": c.customer_id,
+                    "محصول": c.likely_products[0],
+                    "سبد_پیشنهادی": "، ".join(c.likely_products),
+                    "احتمال": f"{round(prob * 100)}٪" if prob is not None else "—",
+                },
+            ))
+
+    elif kind == "سررسیدشده" and bundle.next_purchase.available:
         for c in bundle.next_purchase.due_now(limit):
             recipients.append(Recipient(
                 customer_id=c.customer_id,

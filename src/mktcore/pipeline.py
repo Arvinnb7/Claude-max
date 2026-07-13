@@ -17,7 +17,7 @@ from .analysis.performance import PerformanceAnalysis, analyze_performance
 from .analysis.products import ProductAnalysis, analyze_products
 from .analysis.purchase_cycle import PurchaseCycleAnalysis, analyze_purchase_cycles
 from .analysis.recommender import build_recommender
-from .analysis.recommender_eval import BasketEvaluation, evaluate_recommender
+from .analysis.recommender_eval import BasketEvaluation, tune_and_evaluate
 from .analysis.seasonality import SeasonalityResult, compute_seasonality
 from .analysis.segmentation import SegmentationResult, compute_segmentation
 from .analysis.sequence import SequenceAnalysis, analyze_sequences
@@ -83,15 +83,20 @@ def run_analysis(
     bundle.basket = analyze_basket(df)
     bundle.sequences = analyze_sequences(df)
     bundle.purchase_cycle = analyze_purchase_cycles(df, bundle.basket)
+    # خودتنظیمی: بهترین وزن سیگنال‌ها روی holdout داده‌ی همین کاربر انتخاب می‌شود
+    best_weights = None
+    try:
+        best_weights, bundle.basket_eval = tune_and_evaluate(df)
+    except Exception as e:  # noqa: BLE001 - سنجش دقت نباید تحلیل را بشکند
+        bundle.meta["basket_eval_error"] = str(e)
     recommender = build_recommender(df, cycles=bundle.purchase_cycle,
-                                    basket=bundle.basket)
+                                    basket=bundle.basket, weights=best_weights)
     bundle.next_purchase = predict_next_purchases(df, bundle.basket,
                                                   cycles=bundle.purchase_cycle,
                                                   recommender=recommender)
-    try:
-        bundle.basket_eval = evaluate_recommender(df)
-    except Exception as e:  # noqa: BLE001 - سنجش دقت نباید تحلیل را بشکند
-        bundle.meta["basket_eval_error"] = str(e)
+    if bundle.basket_eval is not None:
+        bundle.basket_eval.coverage = sum(
+            1 for c in bundle.next_purchase.customers if c.recommendations)
     bundle.performance = analyze_performance(df)
     bundle.inventory = analyze_inventory(df)
     bundle.diagnostics = diagnose(df)

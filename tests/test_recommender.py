@@ -124,7 +124,8 @@ def test_predict_without_recommender_backward_compat():
         assert isinstance(c.likely_products, list)
 
 
-def test_predict_with_recommender_fills_both_fields():
+def test_predict_with_recommender_covers_all_customers():
+    """پوشش کامل: پیشنهاد باید برای همه‌ی مشتریان پر شود، نه فقط سررسیدشده‌ها."""
     rows = []
     for i in range(55):
         for m in (1, 2, 3):
@@ -139,11 +140,51 @@ def test_predict_with_recommender_fills_both_fields():
     res = predict_next_purchases(df, basket, cycles=cycles, recommender=rec)
     due = res.due_now(20)
     assert due
-    filled = [c for c in due if c.recommendations]
-    assert filled, "مشتریان سررسیدشده باید recommendations داشته باشند"
-    for c in filled:
+    covered = [c for c in res.customers if c.recommendations]
+    assert len(covered) == len(res.customers), "همه‌ی مشتریان باید پیشنهاد داشته باشند"
+    non_due_covered = [c for c in covered if c.status not in ("سررسیدشده", "نزدیک")]
+    assert non_due_covered, "مشتریان غیر سررسیدشده هم باید پیشنهاد داشته باشند"
+    for c in covered:
         assert c.likely_products == [r.product for r in c.recommendations]
         assert len(c.likely_products) <= 5
+
+
+def test_weights_injection_changes_ranking():
+    df = _frame(_cluster_rows())
+    default = build_recommender(df).recommend("هدف", n=5)
+    cf_off = build_recommender(
+        df, weights={"cf": 0.0, "pop": 1.0}).recommend("هدف", n=5)
+    assert default, "پیشنهاد پیش‌فرض نباید خالی باشد"
+    assert [r.product for r in default] != [r.product for r in cf_off] or \
+           [r.reason for r in default] != [r.reason for r in cf_off]
+
+
+def test_personal_offer_audience():
+    from mktcore.execution.audience import build_audience
+    from mktcore.ingest.cleaning import clean_frame
+    from mktcore.ingest.mapper import SchemaMapper
+    from mktcore.pipeline import run_analysis
+    from mktcore.synthetic import generate_synthetic_sales
+
+    raw = generate_synthetic_sales().head(4000)
+    m = SchemaMapper()
+    clean = clean_frame(m.apply(raw, m.auto_detect(raw).mapping))
+    bundle = run_analysis(clean, horizon=3)
+
+    recipients = build_audience(bundle, "پیشنهاد_شخصی", df=clean, limit=25)
+    assert recipients, "مخاطب پیشنهاد شخصی نباید خالی باشد"
+    assert len(recipients) <= 25
+    for r in recipients:
+        assert r.vars["محصول"]
+        assert r.vars["سبد_پیشنهادی"]
+        assert "احتمال" in r.vars
+    # مرتب به احتمال نزولی
+    probs = []
+    by_id = {c.customer_id: c for c in bundle.next_purchase.customers}
+    for r in recipients:
+        p = by_id[r.customer_id].buy_probability_30d
+        probs.append(-1.0 if p is None else p)
+    assert probs == sorted(probs, reverse=True)
 
 
 def test_runtime_smoke_20k_rows():
