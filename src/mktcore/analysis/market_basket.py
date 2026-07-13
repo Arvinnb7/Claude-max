@@ -30,8 +30,21 @@ class AssociationRule:
 
 
 @dataclass
+class TripleRule:
+    """قاعده‌ی چندقلمی «اگر A و B، آن‌گاه C» — هم‌ارز خروجی FP-Growth در این مقیاس."""
+
+    antecedents: tuple[str, str]
+    consequent: str
+    support: float
+    confidence: float
+    lift: float
+    count: int
+
+
+@dataclass
 class BasketAnalysis:
     rules: list[AssociationRule] = field(default_factory=list)
+    triple_rules: list[TripleRule] = field(default_factory=list)
     avg_basket_size: float = 0.0
 
     @property
@@ -110,7 +123,63 @@ def analyze_basket(
 
     rules.sort(key=lambda r: (-r.lift, -r.confidence))
     res.rules = rules
+    res.triple_rules = _mine_triples(baskets, item_count, pair_count, n_baskets)
     return res
 
 
-__all__ = ["BasketAnalysis", "AssociationRule", "analyze_basket"]
+# سقف اقلام هر سبد هنگام استخراج سه‌تایی‌ها (سبدهای عمده‌فروشی منفجر نشوند)
+_TRIPLE_BASKET_CAP = 15
+# فقط وقتی داده به‌قدر کافی بزرگ و سبدها چندقلمی باشند سه‌تایی می‌سازیم
+_TRIPLE_MIN_BASKETS = 2000
+_TRIPLE_MIN_AVG_SIZE = 3.0
+_TRIPLE_TOP_PRODUCTS = 300
+
+
+def _mine_triples(baskets, item_count: dict[str, int],
+                  pair_count: dict[tuple[str, str], int], n_baskets: int) -> list[TripleRule]:
+    """قواعد «A+B→C» با هرس Apriori: فقط گسترش جفت‌های از قبل frequent."""
+    if n_baskets < _TRIPLE_MIN_BASKETS:
+        return []
+    avg_size = float(baskets.apply(len).mean())
+    if avg_size < _TRIPLE_MIN_AVG_SIZE:
+        return []
+
+    min_count = max(5, int(0.002 * n_baskets))
+    top = set(sorted(item_count, key=item_count.get, reverse=True)[:_TRIPLE_TOP_PRODUCTS])
+    frequent_pairs = {p for p, c in pair_count.items()
+                      if c >= min_count and p[0] in top and p[1] in top}
+    if not frequent_pairs:
+        return []
+
+    triple_count: dict[tuple[str, str, str], int] = {}
+    for items in baskets:
+        keep = [i for i in items if i in top][:_TRIPLE_BASKET_CAP]
+        if len(keep) < 3:
+            continue
+        for combo in combinations(keep, 3):  # از قبل مرتب است (baskets sorted)
+            a, b, c = combo
+            # هرس: دست‌کم یکی از جفت‌های درون سه‌تایی باید frequent باشد
+            if (a, b) in frequent_pairs or (a, c) in frequent_pairs or (b, c) in frequent_pairs:
+                triple_count[combo] = triple_count.get(combo, 0) + 1
+
+    rules: list[TripleRule] = []
+    for (a, b, c3), cnt in triple_count.items():
+        if cnt < min_count:
+            continue
+        support = cnt / n_baskets
+        # هر عضو یک‌بار consequent می‌شود، به‌شرط frequent بودن جفتِ antecedent
+        for ante, cons in (((a, b), c3), ((a, c3), b), ((b, c3), a)):
+            pc = pair_count.get(ante)
+            if pc is None or pc < min_count:
+                continue
+            conf = cnt / pc
+            lift = conf / (item_count[cons] / n_baskets)
+            if lift >= 1.2:
+                rules.append(TripleRule(antecedents=ante, consequent=cons,
+                                        support=support, confidence=conf,
+                                        lift=lift, count=cnt))
+    rules.sort(key=lambda r: (-r.confidence, -r.lift))
+    return rules[:200]
+
+
+__all__ = ["BasketAnalysis", "AssociationRule", "TripleRule", "analyze_basket"]

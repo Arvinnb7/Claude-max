@@ -116,11 +116,23 @@ export function ProductsTab({
       {data.next_purchase && data.next_purchase.length > 0 && (
         <Card>
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <SectionTitle title="پیش‌بینی خرید بعدی و سبد بعدی" subtitle="مشتریانِ سررسیدشده برای خرید مجدد، احتمال خرید و سبد محتمل آن‌ها" />
+            <SectionTitle title="پیش‌بینی خرید بعدی و سبد بعدی" subtitle="مشتریانِ سررسیدشده برای خرید مجدد، احتمال خرید و سبد پیشنهادی شخصی‌سازی‌شده" />
             <a href={exportUrl(sessionId, "next_purchase")}>
               <Button variant="outline"><Download size={16} /> دانلود اکسل کامل</Button>
             </a>
           </div>
+          {data.basket_eval && (
+            <div className="mb-4">
+              <Alert tone="info">
+                <span className="tnum">
+                  دقت سنجیده‌شده روی داده‌ی شما: در {pct(data.basket_eval.hitrate_at_5)} از مشتریان،
+                  دست‌کم یک قلم از سبد بعدی درست پیش‌بینی شد
+                  (روش ساده‌ی «پرفروش‌ها»: {pct(data.basket_eval.popularity_hitrate_at_5)}) —
+                  آزمون روی {toFa(num(data.basket_eval.n_eval))} مشتری با پنهان‌کردن آخرین خرید واقعی.
+                </span>
+              </Alert>
+            </div>
+          )}
           <div className="scrollbar-thin overflow-x-auto">
             <table className="w-full text-right text-sm">
               <thead>
@@ -142,7 +154,22 @@ export function ProductsTab({
                     <td className="whitespace-nowrap px-3 py-2 tnum">{c.predicted_next_date ? jalali(c.predicted_next_date) : "—"}</td>
                     <td className="px-3 py-2 tnum">{toFa(num(c.overdue_days))} روز</td>
                     <td className="px-3 py-2 tnum">{c.buy_probability_30d == null ? "—" : pct(c.buy_probability_30d)}</td>
-                    <td className="px-3 py-2">{c.likely_products.join("، ") || "—"}</td>
+                    <td className="px-3 py-2">
+                      {c.recommendations && c.recommendations.length > 0 ? (
+                        <span className="inline-flex flex-wrap gap-x-2 gap-y-1">
+                          {c.recommendations.map((r, k) => (
+                            <span key={k} title={r.reason}>
+                              {r.product}
+                              <span className="text-xs" style={{ color: "var(--muted)" }}>
+                                {" "}({r.reason})
+                              </span>
+                            </span>
+                          ))}
+                        </span>
+                      ) : (
+                        c.likely_products.join("، ") || "—"
+                      )}
+                    </td>
                     <td className="px-3 py-2 tnum">{compact(c.expected_value)} {unit}</td>
                   </tr>
                 ))}

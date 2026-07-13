@@ -108,6 +108,7 @@ def _next_purchase_sheets(bundle, clean) -> list[tuple[str, pd.DataFrame]]:
         "احتمال خرید ۳۰ روز": c.buy_probability_30d,
         "ارزش مورد انتظار": round(c.expected_value),
         "سبد محتمل": "، ".join(c.likely_products),
+        "دلیل پیشنهاد": "، ".join(f"{r.product} ({r.reason})" for r in c.recommendations),
     } for c in customers]
     df = pd.DataFrame(rows)
     df["_o"] = df["وضعیت"].map(_STATUS_ORDER).fillna(9)

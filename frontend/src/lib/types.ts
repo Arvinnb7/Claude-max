@@ -147,7 +147,15 @@ export interface AnalyzeResponse {
     likely_products: string[];
     expected_value: number;
     buy_probability_30d: number | null;
+    recommendations: { product: string; reason: string }[];
   }[];
+  basket_eval?: {
+    n_eval: number;
+    hitrate_at_5: number;
+    recall_at_5: number;
+    popularity_hitrate_at_5: number;
+    heuristic_hitrate_at_5: number;
+  };
   performance?: {
     branches: EntityPerf[];
     salespeople: EntityPerf[];

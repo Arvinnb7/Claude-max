@@ -16,6 +16,8 @@ from .analysis.next_purchase import NextPurchaseAnalysis, predict_next_purchases
 from .analysis.performance import PerformanceAnalysis, analyze_performance
 from .analysis.products import ProductAnalysis, analyze_products
 from .analysis.purchase_cycle import PurchaseCycleAnalysis, analyze_purchase_cycles
+from .analysis.recommender import build_recommender
+from .analysis.recommender_eval import BasketEvaluation, evaluate_recommender
 from .analysis.seasonality import SeasonalityResult, compute_seasonality
 from .analysis.segmentation import SegmentationResult, compute_segmentation
 from .analysis.sequence import SequenceAnalysis, analyze_sequences
@@ -51,6 +53,7 @@ class MetricsBundle:
     branch_targets: TargetAllocation | None = None
     salesperson_targets: TargetAllocation | None = None
     pacing: PacingPlan | None = None
+    basket_eval: BasketEvaluation | None = None
     quality: DataQualityReport = field(default_factory=DataQualityReport)
     meta: dict = field(default_factory=dict)
 
@@ -80,8 +83,15 @@ def run_analysis(
     bundle.basket = analyze_basket(df)
     bundle.sequences = analyze_sequences(df)
     bundle.purchase_cycle = analyze_purchase_cycles(df, bundle.basket)
+    recommender = build_recommender(df, cycles=bundle.purchase_cycle,
+                                    basket=bundle.basket)
     bundle.next_purchase = predict_next_purchases(df, bundle.basket,
-                                                  cycles=bundle.purchase_cycle)
+                                                  cycles=bundle.purchase_cycle,
+                                                  recommender=recommender)
+    try:
+        bundle.basket_eval = evaluate_recommender(df)
+    except Exception as e:  # noqa: BLE001 - سنجش دقت نباید تحلیل را بشکند
+        bundle.meta["basket_eval_error"] = str(e)
     bundle.performance = analyze_performance(df)
     bundle.inventory = analyze_inventory(df)
     bundle.diagnostics = diagnose(df)

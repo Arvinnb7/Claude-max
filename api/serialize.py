@@ -161,9 +161,21 @@ def bundle_to_dict(bundle: MetricsBundle, *, currency: str = "تومان") -> di
             {"customer_id": c.customer_id, "predicted_next_date": c.predicted_next_date,
              "status": c.status, "overdue_days": c.overdue_days,
              "likely_products": c.likely_products, "expected_value": c.expected_value,
-             "buy_probability_30d": c.buy_probability_30d}
+             "buy_probability_30d": c.buy_probability_30d,
+             "recommendations": [{"product": r.product, "reason": r.reason}
+                                 for r in c.recommendations]}
             for c in bundle.next_purchase.due_now(30)
         ]
+
+    if bundle.basket_eval is not None:
+        ev = bundle.basket_eval
+        data["basket_eval"] = {
+            "n_eval": ev.n_eval,
+            "hitrate_at_5": ev.hitrate_at_5,
+            "recall_at_5": ev.recall_at_5,
+            "popularity_hitrate_at_5": ev.popularity_hitrate_at_5,
+            "heuristic_hitrate_at_5": ev.heuristic_hitrate_at_5,
+        }
 
     pc = bundle.purchase_cycle
     if pc.available:

@@ -22,6 +22,7 @@ import pandas as pd
 from ..ingest.schema import ColumnRole, standard_column
 from .market_basket import BasketAnalysis
 from .purchase_cycle import PurchaseCycleAnalysis
+from .recommender import BasketRecommender, Recommendation
 
 _DATE = standard_column(ColumnRole.DATE)
 _PRODUCT = standard_column(ColumnRole.PRODUCT)
@@ -54,6 +55,7 @@ class NextPurchase:
     likely_products: list[str] = field(default_factory=list)
     expected_value: float = 0.0
     buy_probability_30d: float | None = None  # احتمال خرید در پنجره‌ی ۳۰ روز آینده
+    recommendations: list[Recommendation] = field(default_factory=list)  # با دلیل
 
 
 @dataclass
@@ -108,6 +110,7 @@ def predict_next_purchases(
     basket: BasketAnalysis | None = None,
     *,
     cycles: PurchaseCycleAnalysis | None = None,
+    recommender: BasketRecommender | None = None,
     near_window: int = 14,
     max_basket_customers: int = 1500,
     window_days: int = 30,
@@ -232,35 +235,58 @@ def predict_next_purchases(
                  key=lambda c: -c.overdue_days)[:max_basket_customers]
     if due and _PRODUCT in d.columns:
         due_ids = {c.customer_id for c in due}
-        bought_map = (
-            d[d[_CUSTOMER].astype(str).isin(due_ids)]
-            .groupby(_CUSTOMER)[_PRODUCT]
-            .agg(lambda s: {str(x) for x in s if pd.notna(x)})
-        )
-        # محصولات چرخه‌عقب‌افتاده‌ی هر مشتری (اولویت اول سبد)
-        cycle_due: dict[str, list[str]] = {}
-        if cycles is not None and getattr(cycles, "notifications", None):
-            for note in cycles.notifications:
-                if note.status in ("عقب‌افتاده", "نزدیک") and str(note.customer_id) in due_ids:
-                    cycle_due.setdefault(str(note.customer_id), []).append(str(note.product))
-        for c in due:
-            bought = bought_map.get(c.customer_id, set())
-            likely: list[str] = []
-            for p in cycle_due.get(c.customer_id, []):
-                if p not in likely:
-                    likely.append(p)
-            if basket is not None and basket.available:
-                for p in bought:
-                    for rule in basket.complements_for(p, n=2):
-                        if rule.consequent not in bought and rule.consequent not in likely:
-                            likely.append(rule.consequent)
-            for p in top_products:
-                ps = str(p)
-                if ps not in bought and ps not in likely:
-                    likely.append(ps)
-            c.likely_products = likely[:5]
+        if recommender is not None and recommender.available:
+            recs = recommender.recommend_many(sorted(due_ids), n=5)
+            for c in due:
+                c.recommendations = recs.get(c.customer_id, [])
+                c.likely_products = [r.product for r in c.recommendations]
+        else:
+            baskets = _heuristic_basket(d, due_ids, cycles=cycles, basket=basket,
+                                        top_products=top_products)
+            for c in due:
+                c.likely_products = baskets.get(c.customer_id, [])
 
     return res
+
+
+def _heuristic_basket(
+    d: pd.DataFrame,
+    due_ids: set[str],
+    *,
+    cycles: PurchaseCycleAnalysis | None,
+    basket: BasketAnalysis | None,
+    top_products: list,
+) -> dict[str, list[str]]:
+    """منطق قدیمی سبد محتمل (بدون CF) — baseline سنجش دقت هم از همین استفاده می‌کند."""
+    bought_map = (
+        d[d[_CUSTOMER].astype(str).isin(due_ids)]
+        .groupby(_CUSTOMER)[_PRODUCT]
+        .agg(lambda s: {str(x) for x in s if pd.notna(x)})
+        .rename(index=str)
+    )
+    cycle_due: dict[str, list[str]] = {}
+    if cycles is not None and getattr(cycles, "notifications", None):
+        for note in cycles.notifications:
+            if note.status in ("عقب‌افتاده", "نزدیک") and str(note.customer_id) in due_ids:
+                cycle_due.setdefault(str(note.customer_id), []).append(str(note.product))
+    out: dict[str, list[str]] = {}
+    for cid in due_ids:
+        bought = bought_map.get(cid, set())
+        likely: list[str] = []
+        for p in cycle_due.get(cid, []):
+            if p not in likely:
+                likely.append(p)
+        if basket is not None and basket.available:
+            for p in bought:
+                for rule in basket.complements_for(p, n=2):
+                    if rule.consequent not in bought and rule.consequent not in likely:
+                        likely.append(rule.consequent)
+        for p in top_products:
+            ps = str(p)
+            if ps not in bought and ps not in likely:
+                likely.append(ps)
+        out[cid] = likely[:5]
+    return out
 
 
 __all__ = ["NextPurchaseAnalysis", "NextPurchase", "predict_next_purchases"]
