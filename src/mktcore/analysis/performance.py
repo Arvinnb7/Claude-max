@@ -13,6 +13,9 @@ _REVENUE = standard_column(ColumnRole.REVENUE)
 _ORDER = standard_column(ColumnRole.ORDER_ID)
 _CUSTOMER = standard_column(ColumnRole.CUSTOMER_ID)
 
+UNASSIGNED_BRANCH = "بدون شعبه"
+UNASSIGNED_SALESPERSON = "بدون فروشنده"
+
 
 @dataclass
 class EntityPerformance:
@@ -88,10 +91,16 @@ def analyze_performance(df: pd.DataFrame) -> PerformanceAnalysis:
         return res
     sp_col = standard_column(ColumnRole.SALESPERSON)
     br_col = standard_column(ColumnRole.BRANCH)
+    # ردیف‌های بدون شعبه/فروشنده حذف نمی‌شوند؛ سطل «بدون …» می‌گیرند تا
+    # جمع سهم‌ها با درآمد کل آشتی کند (groupby ردیف NaN را بی‌صدا می‌انداخت)
     if sp_col in df.columns:
-        res.by_salesperson = _analyze_dimension(df, sp_col)
+        d = df if df[sp_col].notna().all() else df.assign(
+            **{sp_col: df[sp_col].fillna(UNASSIGNED_SALESPERSON)})
+        res.by_salesperson = _analyze_dimension(d, sp_col)
     if br_col in df.columns:
-        res.by_branch = _analyze_dimension(df, br_col)
+        d = df if df[br_col].notna().all() else df.assign(
+            **{br_col: df[br_col].fillna(UNASSIGNED_BRANCH)})
+        res.by_branch = _analyze_dimension(d, br_col)
     return res
 
 

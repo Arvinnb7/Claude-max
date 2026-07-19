@@ -121,13 +121,18 @@ def _allocate_entity_targets(bundle: MetricsBundle, df: pd.DataFrame) -> None:
     total_target = bundle.targets.scenarios["balanced"].total
     baseline_total = bundle.targets.forecast_total
     perf = bundle.performance
-    if perf.has_branch:
+    # سطل «بدون شعبه/فروشنده» تارگت نمی‌گیرد؛ سهمش بین بقیه بازتوزیع می‌شود
+    from .analysis.performance import UNASSIGNED_BRANCH, UNASSIGNED_SALESPERSON
+
+    branches = [e for e in perf.by_branch if e.name != UNASSIGNED_BRANCH]
+    salespeople = [e for e in perf.by_salesperson if e.name != UNASSIGNED_SALESPERSON]
+    if branches:
         bundle.branch_targets = allocate_targets(
-            perf.by_branch, total_target, dimension="شعبه", baseline_total=baseline_total,
+            branches, total_target, dimension="شعبه", baseline_total=baseline_total,
         )
-    if perf.has_salesperson:
+    if salespeople:
         bundle.salesperson_targets = allocate_targets(
-            perf.by_salesperson, total_target, dimension="فروشنده", baseline_total=baseline_total,
+            salespeople, total_target, dimension="فروشنده", baseline_total=baseline_total,
         )
 
 

@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from ..ingest.schema import ColumnRole, standard_column
+from .trends import complete_month_series
 
 _DATE = standard_column(ColumnRole.DATE)
 _REVENUE = standard_column(ColumnRole.REVENUE)
@@ -52,6 +53,9 @@ def diagnose(df: pd.DataFrame, *, period: str = "ME") -> DiagnosticsReport:
         return rep
 
     monthly = df.set_index(_DATE)[_REVENUE].resample(period).sum()
+    if period == "ME":
+        # افت را فقط بین ماه‌های کامل بسنج؛ ماه ناقص افتِ قلابی می‌سازد
+        monthly = complete_month_series(monthly, pd.Timestamp(df[_DATE].max()))
     if len(monthly) < 2:
         return rep
     last_val, prev_val = float(monthly.iloc[-1]), float(monthly.iloc[-2])
@@ -60,9 +64,11 @@ def diagnose(df: pd.DataFrame, *, period: str = "ME") -> DiagnosticsReport:
     rep.period_label = f"{monthly.index[-1].date()} نسبت به {monthly.index[-2].date()}"
 
     # بازه‌ی دو دوره‌ی آخر (مرز ابتدای ماه از تایم‌استمپ پایان دوره)
+    # کران بالا لازم است: بعد از حذف ماه ناقص، ردیف‌های همان ماه نباید وارد شوند
     last_start = monthly.index[-1].replace(day=1)
     prev_start = monthly.index[-2].replace(day=1)
-    last_df = df[df[_DATE] >= last_start]
+    last_end = last_start + pd.offsets.MonthBegin(1)
+    last_df = df[(df[_DATE] >= last_start) & (df[_DATE] < last_end)]
     prev_df = df[(df[_DATE] >= prev_start) & (df[_DATE] < last_start)]
 
     total_decline = 0.0

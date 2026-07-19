@@ -83,6 +83,13 @@ export interface AnalyzeResponse {
     monthly: Point[];
     moving_avg_30: Point[];
     overall_trend_pct: number | null;
+    partial_month: {
+      label: string;
+      days_covered: number;
+      days_in_month: number;
+      mtd_actual: number;
+      nowcast: number;
+    } | null;
   };
   segmentation: {
     segments: Segment[];

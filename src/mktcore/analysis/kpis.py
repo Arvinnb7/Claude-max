@@ -8,6 +8,7 @@ import pandas as pd
 
 from ..ingest.cleaning import get_returns
 from ..ingest.schema import ColumnRole, standard_column
+from .trends import complete_month_series
 
 _DATE = standard_column(ColumnRole.DATE)
 _REVENUE = standard_column(ColumnRole.REVENUE)
@@ -105,8 +106,8 @@ def compute_kpis(df: pd.DataFrame) -> KPISet:
     days = max((df[_DATE].max() - df[_DATE].min()).days + 1, 1)
     k.avg_daily_revenue = k.net_sales / days
 
-    # رشد ماهانه و سالانه بر سری خالص
-    monthly = _net_monthly(df, returns)
+    # رشد ماهانه و سالانه بر سری خالص — فقط بین ماه‌های «کامل» (ماه ناقص جدا گزارش می‌شود)
+    monthly = complete_month_series(_net_monthly(df, returns), pd.Timestamp(df[_DATE].max()))
     if len(monthly) >= 2 and monthly.iloc[-2] > 0:
         k.mom_growth = float((monthly.iloc[-1] - monthly.iloc[-2]) / monthly.iloc[-2])
     if len(monthly) >= 13 and monthly.iloc[-13] > 0:

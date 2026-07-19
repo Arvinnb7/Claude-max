@@ -73,6 +73,7 @@ def bundle_to_dict(bundle: MetricsBundle, *, currency: str = "تومان") -> di
             "monthly": _series_points(bundle.trends.monthly),
             "moving_avg_30": _series_points(bundle.trends.moving_avg_30),
             "overall_trend_pct": bundle.trends.overall_trend_pct,
+            "partial_month": getattr(bundle.trends, "partial_month", None),
         },
         "segmentation": {
             "segments": [

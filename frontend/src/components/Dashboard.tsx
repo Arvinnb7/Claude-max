@@ -240,6 +240,18 @@ function KpiTab({ data, unit }: { data: AnalyzeResponse; unit: string }) {
         <StatCard label="حاشیه‌ی سود ناخالص" value={pct(k.gross_margin)} icon={<TrendingUp size={18} />} />
       </div>
 
+      {data.trends.partial_month && (
+        <Alert tone="info">
+          <span className="tnum">
+            ماه جاری ناقص است ({toFa(num(data.trends.partial_month.days_covered))} روز از{" "}
+            {toFa(num(data.trends.partial_month.days_in_month))} روز) — فروش تاکنون:{" "}
+            {compact(data.trends.partial_month.mtd_actual)} {unit} · برآورد پایان ماه:{" "}
+            {compact(data.trends.partial_month.nowcast)} {unit}. رشد ماهانه فقط بین
+            ماه‌های کامل محاسبه شده است.
+          </span>
+        </Alert>
+      )}
+
       {k.flags.map((f, i) => (
         <Alert key={i} tone="info">
           {f}
