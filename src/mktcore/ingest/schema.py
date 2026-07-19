@@ -68,6 +68,10 @@ CATEGORICAL_ROLES: tuple[ColumnRole, ...] = (
     ColumnRole.BRANCH,
 )
 
+# ستون فنی «شماره ردیف منبع» (۰-مبنا، بعد از هدر) برای ممیزی و ردیابی؛
+# در نگاشت ساخته می‌شود و از هیچ نقش کاربری نمی‌آید.
+SOURCE_ROW = "source_row"
+
 
 def standard_column(role: ColumnRole) -> str:
     """نام ستون استاندارد متناظر با یک نقش."""

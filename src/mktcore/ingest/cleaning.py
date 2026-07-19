@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 
 from ..locale_fa import normalize_digits
-from .schema import ColumnRole, standard_column
+from .schema import SOURCE_ROW, ColumnRole, standard_column
 
 _DATE = standard_column(ColumnRole.DATE)
 _REVENUE = standard_column(ColumnRole.REVENUE)
@@ -31,6 +31,31 @@ _LABEL_COLS = tuple(
 _SIGN_COLS = (_REVENUE, _UNIT_PRICE, _QUANTITY, _COST)
 
 
+class SideFrame:
+    """پوشش DataFrame برای نگهداری در df.attrs.
+
+    pandas 3 هنگام concat مقادیر attrs را با == مقایسه می‌کند و DataFrame خام
+    خطای «truth value ambiguous» می‌دهد؛ این پوشش برابری هویتی دارد.
+    """
+
+    __slots__ = ("df",)
+
+    def __init__(self, df: pd.DataFrame) -> None:
+        self.df = df
+
+    def __eq__(self, other: object) -> bool:
+        return self is other
+
+    def __hash__(self) -> int:
+        return id(self)
+
+
+def get_exclusions(df: pd.DataFrame) -> pd.DataFrame:
+    """ردیف‌های حذف‌شده در پاک‌سازی (با ستون «دلیل»)؛ خالی اگر موجود نباشد."""
+    side = df.attrs.get("exclusions_df")
+    return side.df if isinstance(side, SideFrame) else pd.DataFrame()
+
+
 def _clean_label(x: object) -> object:
     """تبدیل برچسب به رشته‌ی تمیز یا NaN (برای یکدست‌سازی ستون‌های شناسه/متنی)."""
     if x is None or (isinstance(x, float) and np.isnan(x)):
@@ -42,20 +67,27 @@ def _clean_label(x: object) -> object:
 
 
 def _to_number(value: object) -> float:
-    """تبدیل یک مقدار (احتمالاً فارسی/ارزی) به عدد اعشاری یا NaN."""
+    """تبدیل یک مقدار (احتمالاً فارسی/ارزی) به عدد اعشاری یا NaN.
+
+    پرانتز حسابداری «(1,250)» طبق قرارداد دفترداری به معنی عدد منفی است.
+    """
     if value is None or (isinstance(value, float) and np.isnan(value)):
         return np.nan
     if isinstance(value, (int, float)):
         return float(value)
     s = normalize_digits(str(value)).strip()
+    paren_negative = s.startswith("(") and s.endswith(")")
+    if paren_negative:
+        s = s[1:-1]
     s = s.replace(",", "")
     s = re.sub(r"[^\d.\-]", "", s)
     if s in ("", "-", ".", "-."):
         return np.nan
     try:
-        return float(s)
+        num = float(s)
     except ValueError:
         return np.nan
+    return -num if paren_negative and num > 0 else num
 
 
 def _parse_jalali(value: str) -> pd.Timestamp | None:
@@ -140,21 +172,42 @@ def clean_frame(df: pd.DataFrame) -> pd.DataFrame:
     elif _REVENUE not in out.columns and _QUANTITY in out.columns and _UNIT_PRICE in out.columns:
         out[_REVENUE] = out[_QUANTITY] * out[_UNIT_PRICE]
 
-    # حذف ردیف‌های بدون تاریخ یا درآمد معتبر
+    # حذف ردیف‌های بدون تاریخ یا درآمد معتبر — با ثبت ممیزی (شماره ردیف + دلیل)
+    exclusions: list[pd.DataFrame] = []
+
+    def _exclude(mask: pd.Series, reason: str) -> None:
+        if mask.any():
+            part = out.loc[mask].copy()
+            part["دلیل"] = reason
+            exclusions.append(part)
+
     before = len(out)
     if _DATE in out.columns:
+        _exclude(out[_DATE].isna(), "تاریخ نامعتبر")
         out = out[out[_DATE].notna()]
     if _REVENUE in out.columns:
+        _exclude(out[_REVENUE].isna(), "مبلغ نامعتبر")
+        _exclude(out[_REVENUE] < 0, "مبلغ منفی")
         out = out[out[_REVENUE].notna() & (out[_REVENUE] >= 0)]
     out.attrs["dropped_invalid_rows"] = before - len(out)
 
     # حذف ردیف‌های کاملاً تکراری (نه بر اساس order_id؛ هر سفارش می‌تواند چند قلم داشته باشد)
+    # ستون فنی source_row از تعریف «تکرار» خارج است وگرنه هیچ تکراری پیدا نمی‌شد
     dup_before = len(out)
-    out = out.drop_duplicates()
+    dup_subset = [c for c in out.columns if c != SOURCE_ROW]
+    dup_mask = out.duplicated(subset=dup_subset) if SOURCE_ROW in out.columns else out.duplicated()
+    _exclude(dup_mask, "ردیف تکراری")
+    out = out[~dup_mask]
     out.attrs["dropped_duplicate_rows"] = dup_before - len(out)
+
+    if exclusions:
+        excl = pd.concat(exclusions, ignore_index=True)
+    else:
+        excl = pd.DataFrame(columns=[*out.columns, "دلیل"])
+    out.attrs["exclusions_df"] = SideFrame(excl)
 
     out = out.sort_values(_DATE).reset_index(drop=True) if _DATE in out.columns else out.reset_index(drop=True)
     return out
 
 
-__all__ = ["clean_frame"]
+__all__ = ["clean_frame", "get_exclusions", "SideFrame"]

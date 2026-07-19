@@ -12,6 +12,7 @@ import re
 import warnings
 from dataclasses import dataclass, field
 
+import numpy as np
 import pandas as pd
 
 from ..locale_fa import normalize_digits
@@ -19,6 +20,7 @@ from .schema import (
     CATEGORICAL_ROLES,
     NUMERIC_ROLES,
     REQUIRED_ROLES,
+    SOURCE_ROW,
     ColumnRole,
     standard_column,
 )
@@ -472,6 +474,8 @@ class SchemaMapper:
             if col not in df.columns:
                 raise ValueError(f"ستون «{col}» برای نقش {role.value} در داده وجود ندارد.")
             out[standard_column(role)] = df[col].to_numpy()
+        # شماره ردیف منبع (۰-مبنا نسبت به داده‌ی بعد از هدر) برای ممیزی حذف‌ها
+        out[SOURCE_ROW] = np.arange(len(df))
         return out.reset_index(drop=True)
 
 
