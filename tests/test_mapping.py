@@ -121,3 +121,33 @@ def test_string_numbers_do_not_crash():
     assert clean["revenue"].dtype.kind == "f"
     bundle = run_analysis(clean, with_forecast=True)
     assert bundle.kpis.total_revenue > 0
+
+
+def test_doc_type_maps_and_gross_absent(jivan_like):
+    s = _m(jivan_like)
+    assert s.mapping.get(ColumnRole.DOC_TYPE) == "نوع سند"
+    # «نحوه برگشت از فروش» هرگز نوع سند نیست (بلاک «نحوه»)
+    assert s.mapping.get(ColumnRole.DOC_TYPE) != "نحوه برگشت از فروش"
+    # این فایل ستون ناخالص ندارد
+    assert ColumnRole.GROSS_AMOUNT not in s.mapping
+
+
+def test_gross_amount_maps_when_present(jivan_like):
+    df = jivan_like.copy()
+    df["قیمت کل(تخفیف کسر نشده)"] = df["قابل پرداخت"] * 1.1
+    s = _m(df)
+    assert s.mapping[ColumnRole.REVENUE] == "قابل پرداخت"
+    assert s.mapping.get(ColumnRole.GROSS_AMOUNT) == "قیمت کل(تخفیف کسر نشده)"
+
+
+def test_single_total_column_stays_revenue():
+    """فایلی که تنها ستون مبلغش «قیمت کل» است باید REVENUE بماند نه GROSS."""
+    import numpy as np
+    rng = np.random.default_rng(1)
+    df = pd.DataFrame({
+        "تاریخ": ["1403/01/01"] * 30,
+        "قیمت کل": rng.integers(1000, 9000, 30),
+        "نام مشتری": [f"م{i}" for i in range(30)],
+    })
+    s = _m(df)
+    assert s.mapping.get(ColumnRole.REVENUE) == "قیمت کل"

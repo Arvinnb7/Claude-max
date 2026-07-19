@@ -113,3 +113,33 @@ def test_ambiguous_sign_share_warns():
     raw = pd.DataFrame(rows, columns=["تاریخ", "مبلغ", "مشتری", "فاکتور", "کالا"])
     clean = _clean(raw)
     assert clean.attrs.get("ambiguous_sign") is True
+
+
+def test_doc_sign_matrix_and_reconciliation_checks():
+    """نوع سند ناسازگار با علامت + ناهم‌خوانی ناخالص−تخفیف−پرداختی گزارش شود."""
+    from mktcore.ingest.profiler import profile_frame
+
+    rows = []
+    for i in range(30):
+        rows.append(("1402/01/01", 1000, "فروش", 1200, 200, f"C{i}", f"F{i}", "P"))
+    # سند «برگشت» ولی مبلغ مثبت (ناسازگار)
+    rows.append(("1402/01/02", 500, "برگشت", 500, 0, "C0", "FR", "P"))
+    # آشتی خراب: ناخالص−تخفیف ≠ پرداختی
+    for i in range(5):
+        rows.append(("1402/01/03", 1000, "فروش", 5000, 0, f"D{i}", f"G{i}", "P"))
+    raw = pd.DataFrame(rows, columns=["تاریخ", "مبلغ", "نوع", "ناخالص", "تخفیف",
+                                      "مشتری", "فاکتور", "کالا"])
+    mapping = {ColumnRole.DATE: "تاریخ", ColumnRole.REVENUE: "مبلغ",
+               ColumnRole.DOC_TYPE: "نوع", ColumnRole.GROSS_AMOUNT: "ناخالص",
+               ColumnRole.DISCOUNT: "تخفیف", ColumnRole.CUSTOMER_ID: "مشتری",
+               ColumnRole.ORDER_ID: "فاکتور", ColumnRole.PRODUCT: "کالا"}
+    clean = clean_frame(SchemaMapper().apply(raw, mapping))
+
+    v = clean.attrs["validation"]
+    assert v["doc_sign_matrix"]["sale_rows_marked_return"] == 1
+    recon = v["amount_reconciliation"]
+    assert recon["violating_rows"] == 5
+
+    warnings = profile_frame(clean).warnings
+    assert any("نوع سند" in w for w in warnings)
+    assert any("هم‌خوانی ندارد" in w for w in warnings)

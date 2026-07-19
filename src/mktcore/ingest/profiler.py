@@ -88,6 +88,26 @@ def profile_frame(df: pd.DataFrame) -> DataQualityReport:
             "مبالغ فایل را بررسی کنید — تفکیک فروش/برگشت ممکن است نادرست باشد."
         )
 
+    validation = df.attrs.get("validation") or {}
+    matrix = validation.get("doc_sign_matrix")
+    if matrix:
+        if matrix["sale_rows_marked_return"] > 0:
+            rep.warnings.append(
+                f"{matrix['sale_rows_marked_return']} ردیف با نوع سند «برگشت» مبلغ مثبت دارند؛ "
+                "تفکیک برگشتی بر اساس علامت منفی است — علامت مبالغ فایل را بررسی کنید."
+            )
+        if matrix["return_rows_marked_sale"] > 0:
+            rep.warnings.append(
+                f"{matrix['return_rows_marked_sale']} ردیف با نوع سند «فروش» مبلغ منفی دارند؛ "
+                "قرارداد علامت مبالغ را بررسی کنید."
+            )
+    recon = validation.get("amount_reconciliation")
+    if recon and recon["violating_share"] > 0.05:
+        rep.warnings.append(
+            f"در {recon['violating_share']:.0%} ردیف‌ها مبلغ ناخالص منهای تخفیف با مبلغ "
+            "قابل پرداخت هم‌خوانی ندارد؛ نگاشت ستون‌های مبلغ/تخفیف را بررسی کنید."
+        )
+
     return rep
 
 

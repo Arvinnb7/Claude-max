@@ -24,6 +24,8 @@ class ColumnRole(str, Enum):
     BRANCH = "BRANCH"
     PHONE = "PHONE"
     EMAIL = "EMAIL"
+    DOC_TYPE = "DOC_TYPE"  # نوع سند (فروش/برگشت/ابطال) — فقط برای کنترل آشتی
+    GROSS_AMOUNT = "GROSS_AMOUNT"  # مبلغ ناخالص قبل از تخفیف — فقط برای کنترل آشتی
 
 
 # نام ستون استاندارد در StandardSalesFrame برای هر نقش (lowercase snake_case)
@@ -44,6 +46,8 @@ ROLE_TO_COLUMN: dict[ColumnRole, str] = {
     ColumnRole.BRANCH: "branch",
     ColumnRole.PHONE: "phone",
     ColumnRole.EMAIL: "email",
+    ColumnRole.DOC_TYPE: "doc_type",
+    ColumnRole.GROSS_AMOUNT: "gross_amount",
 }
 
 # نقش‌هایی که برای انجام هر تحلیلی ضروری‌اند
@@ -56,6 +60,7 @@ NUMERIC_ROLES: tuple[ColumnRole, ...] = (
     ColumnRole.UNIT_PRICE,
     ColumnRole.COST,
     ColumnRole.DISCOUNT,
+    ColumnRole.GROSS_AMOUNT,
 )
 
 # نقش‌های دسته‌ای/برچسبی

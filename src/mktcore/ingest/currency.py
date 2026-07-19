@@ -15,7 +15,7 @@ _RIAL_PER_UNIT = {"ریال": 1.0, "تومان": 10.0}
 
 # ستون‌های استاندارد مبلغی. discount نسبت است (نه مبلغ) و quantity شمارشی —
 # هرگز تبدیل نمی‌شوند.
-MONETARY_COLUMNS = ("revenue", "cost", "unit_price")
+MONETARY_COLUMNS = ("revenue", "cost", "unit_price", "gross_amount")
 
 
 def conversion_factor(file_currency: str, display_currency: str) -> float:

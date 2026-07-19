@@ -17,18 +17,21 @@ _UNIT_PRICE = standard_column(ColumnRole.UNIT_PRICE)
 _COST = standard_column(ColumnRole.COST)
 _DISCOUNT = standard_column(ColumnRole.DISCOUNT)
 _ORDER_ID = standard_column(ColumnRole.ORDER_ID)
+_DOC_TYPE = standard_column(ColumnRole.DOC_TYPE)
+_GROSS = standard_column(ColumnRole.GROSS_AMOUNT)
 
-_NUMERIC_COLS = (_REVENUE, _QUANTITY, _UNIT_PRICE, _COST, _DISCOUNT)
+_NUMERIC_COLS = (_REVENUE, _QUANTITY, _UNIT_PRICE, _COST, _DISCOUNT, _GROSS)
 # ستون‌هایی که باید برچسب رشته‌ای یکدست داشته باشند (جلوگیری از مخلوط str/float)
 _LABEL_COLS = tuple(
     standard_column(r) for r in (
         ColumnRole.CUSTOMER_ID, ColumnRole.PRODUCT, ColumnRole.ORDER_ID,
         ColumnRole.SALESPERSON, ColumnRole.BRANCH, ColumnRole.CHANNEL,
         ColumnRole.REGION, ColumnRole.CATEGORY, ColumnRole.EMAIL, ColumnRole.PHONE,
+        ColumnRole.DOC_TYPE,
     )
 )
 # ستون‌های مبلغی که ممکن است با «قرارداد علامت منفی» حسابداری ذخیره شده باشند
-_SIGN_COLS = (_REVENUE, _UNIT_PRICE, _QUANTITY, _COST)
+_SIGN_COLS = (_REVENUE, _UNIT_PRICE, _QUANTITY, _COST, _GROSS)
 
 
 class SideFrame:
@@ -136,6 +139,54 @@ def _parse_dates(series: pd.Series) -> pd.Series:
     return pd.to_datetime(series.map(_parse_one_date), errors="coerce")
 
 
+_DOC_RETURN = re.compile(r"برگشت|مرجوع|return", re.IGNORECASE)
+_DOC_SALE = re.compile(r"فروش|فاکتور|sale|invoice", re.IGNORECASE)
+
+
+def _validate_contracts(purchases: pd.DataFrame, returns: pd.DataFrame) -> dict:
+    """کنترل‌های آشتی (فقط گزارش، بدون اصلاح خودکار).
+
+    1) ماتریس نوع سند × علامت مبلغ — ناسازگاری یعنی تفکیک فروش/برگشت مشکوک است.
+    2) آشتی ردیفی: |ناخالص − تخفیف − قابل‌پرداخت| در تلرانس max(1، ۱٪ ناخالص).
+    """
+    checks: dict = {}
+
+    if _DOC_TYPE in purchases.columns:
+        def _cls(s: pd.Series) -> pd.Series:
+            txt = s.fillna("").astype(str)
+            return pd.Series(
+                np.where(txt.str.contains(_DOC_RETURN), "RETURN",
+                         np.where(txt.str.contains(_DOC_SALE), "SALE", "OTHER")),
+                index=s.index,
+            )
+
+        sale_side = _cls(purchases[_DOC_TYPE])
+        ret_side = _cls(returns[_DOC_TYPE]) if len(returns) else pd.Series(dtype=object)
+        checks["doc_sign_matrix"] = {
+            "sale_rows_marked_return": int((sale_side == "RETURN").sum()),
+            "return_rows_marked_sale": int((ret_side == "SALE").sum()) if len(returns) else 0,
+            "unknown_doc_rows": int((sale_side == "OTHER").sum()),
+        }
+
+    if _GROSS in purchases.columns and _REVENUE in purchases.columns:
+        g = purchases[_GROSS]
+        r = purchases[_REVENUE]
+        mask = g.notna() & r.notna()
+        if mask.any():
+            disc = (pd.to_numeric(purchases[_DISCOUNT], errors="coerce").fillna(0.0)
+                    if _DISCOUNT in purchases.columns else 0.0)
+            expected = g[mask].abs() - (disc[mask] if isinstance(disc, pd.Series) else disc)
+            delta = (expected - r[mask].abs()).abs()
+            tol = np.maximum(1.0, 0.01 * g[mask].abs())
+            bad = delta > tol
+            checks["amount_reconciliation"] = {
+                "checked_rows": int(mask.sum()),
+                "violating_rows": int(bad.sum()),
+                "violating_share": float(bad.mean()),
+            }
+    return checks
+
+
 def clean_frame(df: pd.DataFrame) -> pd.DataFrame:
     """پاک‌سازی DataFrame استانداردشده.
 
@@ -227,6 +278,7 @@ def clean_frame(df: pd.DataFrame) -> pd.DataFrame:
     out.attrs["returns_df"] = SideFrame(returns.reset_index(drop=True))
     out.attrs["n_returns"] = int(len(returns))
     out.attrs["returns_total"] = float(-returns[_REVENUE].sum()) if len(returns) else 0.0
+    out.attrs["validation"] = _validate_contracts(out, returns)
 
     out = out.sort_values(_DATE).reset_index(drop=True) if _DATE in out.columns else out.reset_index(drop=True)
     return out
