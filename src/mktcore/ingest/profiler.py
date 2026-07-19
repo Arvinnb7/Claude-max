@@ -75,6 +75,19 @@ def profile_frame(df: pd.DataFrame) -> DataQualityReport:
     if rep.dropped_duplicates > 0:
         rep.warnings.append(f"{rep.dropped_duplicates} ردیف تکراری حذف شد.")
 
+    n_returns = df.attrs.get("n_returns", 0)
+    if n_returns:
+        total = df.attrs.get("returns_total", 0.0)
+        rep.warnings.append(
+            f"{n_returns} ردیف برگشت از فروش شناسایی شد (مبلغ {total:,.0f})؛ "
+            "در محاسبه‌ی فروش خالص لحاظ شد."
+        )
+    if df.attrs.get("ambiguous_sign"):
+        rep.warnings.append(
+            "سهم ردیف‌های با مبلغ منفی غیرعادی است (بین ۴۰٪ تا ۶۰٪)؛ قرارداد علامت "
+            "مبالغ فایل را بررسی کنید — تفکیک فروش/برگشت ممکن است نادرست باشد."
+        )
+
     return rep
 
 

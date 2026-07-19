@@ -29,13 +29,28 @@ def conversion_factor(file_currency: str, display_currency: str) -> float:
 
 
 def convert_monetary_columns(df: pd.DataFrame, factor: float) -> pd.DataFrame:
-    """اعمال ضریب تبدیل روی ستون‌های مبلغی؛ با ضریب ۱ همان df برمی‌گردد."""
+    """اعمال ضریب تبدیل روی ستون‌های مبلغی؛ با ضریب ۱ همان df برمی‌گردد.
+
+    ردیف‌های برگشت (attrs) هم تبدیل می‌شوند تا KPI خالص هم‌واحد بماند؛
+    آرتیفکت ممیزی exclusions عمداً با مبلغ اصلی فایل می‌ماند.
+    """
     if factor == 1.0:
         return df
     out = df.copy()
     for col in MONETARY_COLUMNS:
         if col in out.columns:
             out[col] = out[col] * factor
+
+    from .cleaning import SideFrame, get_returns
+
+    returns = get_returns(df)
+    if len(returns):
+        ret = returns.copy()
+        for col in MONETARY_COLUMNS:
+            if col in ret.columns:
+                ret[col] = ret[col] * factor
+        out.attrs["returns_df"] = SideFrame(ret)
+        out.attrs["returns_total"] = float(df.attrs.get("returns_total", 0.0)) * factor
     return out
 
 

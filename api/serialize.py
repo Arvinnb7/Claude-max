@@ -30,6 +30,12 @@ def _series_points(s: pd.Series) -> list[dict[str, Any]]:
 def kpis_to_dict(k) -> dict:
     return {
         "total_revenue": k.total_revenue,
+        "gross_sales": getattr(k, "gross_sales", k.total_revenue),
+        "returns_total": getattr(k, "returns_total", 0.0),
+        "returns_count": getattr(k, "returns_count", 0),
+        "return_rate": getattr(k, "return_rate", None),
+        "net_sales": getattr(k, "net_sales", k.total_revenue),
+        "discount_total": getattr(k, "discount_total", None),
         "n_orders": k.n_orders,
         "n_customers": k.n_customers,
         "aov": k.aov,

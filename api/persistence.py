@@ -257,6 +257,23 @@ class PersistentStore:
             df.to_pickle(self._sdir(sid) / "clean.pkl")
         self._cache_put(sid, "clean", df)
 
+    def save_side_frame(self, sid: str, name: str, df: pd.DataFrame) -> None:
+        """ذخیره‌ی فریم‌های جانبی ممیزی (returns / exclusions) کنار clean."""
+        path = self._sdir(sid) / f"{name}.parquet"
+        try:
+            df.to_parquet(path)
+        except Exception:
+            df.to_pickle(self._sdir(sid) / f"{name}.pkl")
+
+    def load_side_frame(self, sid: str, name: str) -> pd.DataFrame | None:
+        pq = self._sdir(sid) / f"{name}.parquet"
+        pk = self._sdir(sid) / f"{name}.pkl"
+        if pq.exists():
+            return pd.read_parquet(pq)
+        if pk.exists():
+            return pd.read_pickle(pk)
+        return None
+
     def load_clean(self, sid: str) -> pd.DataFrame | None:
         cached = self._cache_get(sid, "clean")
         if cached is not None:

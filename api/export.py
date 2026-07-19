@@ -18,13 +18,14 @@ _CUSTOMER = standard_column(ColumnRole.CUSTOMER_ID)
 _DATE = standard_column(ColumnRole.DATE)
 _ORDER = standard_column(ColumnRole.ORDER_ID)
 
-EXPORT_SECTIONS = ("segments", "next_purchase", "products", "diagnostics")
+EXPORT_SECTIONS = ("segments", "next_purchase", "products", "diagnostics", "audit")
 
 EXPORT_FA_NAMES = {
     "segments": "سگمنت‌های-مشتریان",
     "next_purchase": "پیش‌بینی-خرید-بعدی",
     "products": "محصولات",
     "diagnostics": "تشخیص-و-تأمین",
+    "audit": "ممیزی-داده",
 }
 
 _INVALID_SHEET = re.compile(r"[\[\]:*?/\\]")
@@ -185,6 +186,31 @@ def _diagnostics_sheets(bundle, clean) -> list[tuple[str, pd.DataFrame]]:
     return sheets
 
 
+def _audit_sheets(extras: dict) -> list[tuple[str, pd.DataFrame]]:
+    """شیت‌های ممیزی: ردیف‌های حذف‌شده (با شماره ردیف فایل و دلیل) و برگشت‌ها."""
+    sheets: list[tuple[str, pd.DataFrame]] = []
+
+    def _prep(df: pd.DataFrame | None) -> pd.DataFrame | None:
+        if df is None or df.empty:
+            return None
+        out = df.copy()
+        if "source_row" in out.columns:
+            # ۱-مبنا + یک ردیف هدر = شماره‌ی واقعی ردیف در فایل اکسل
+            out.insert(0, "ردیف فایل", out.pop("source_row").astype("Int64") + 2)
+        return out
+
+    excl = _prep(extras.get("exclusions"))
+    if excl is not None:
+        sheets.append(("ردیف‌های حذف‌شده", excl))
+    rets = _prep(extras.get("returns"))
+    if rets is not None:
+        sheets.append(("برگشت از فروش", rets))
+
+    if not sheets:
+        raise EmptySection("هیچ ردیف حذف‌شده یا برگشتی ثبت نشده است.")
+    return sheets
+
+
 _BUILDERS = {
     "segments": _segments_sheets,
     "next_purchase": _next_purchase_sheets,
@@ -193,8 +219,10 @@ _BUILDERS = {
 }
 
 
-def build_export(section: str, bundle, clean) -> bytes:
+def build_export(section: str, bundle, clean, extras: dict | None = None) -> bytes:
     """ساخت بایت‌های xlsx برای یک بخش؛ EmptySection اگر داده‌ای نباشد."""
+    if section == "audit":
+        return _workbook_bytes(_audit_sheets(extras or {}))
     return _workbook_bytes(_BUILDERS[section](bundle, clean))
 
 

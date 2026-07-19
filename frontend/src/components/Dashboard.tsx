@@ -142,11 +142,19 @@ export default function Dashboard({
         <Alert tone="warn">
           <div className="flex items-start gap-2">
             <AlertTriangle size={16} className="mt-0.5 shrink-0" />
-            <ul className="list-inside list-disc space-y-1">
-              {data.quality.warnings.map((w, i) => (
-                <li key={i}>{w}</li>
-              ))}
-            </ul>
+            <div className="space-y-1">
+              <ul className="list-inside list-disc space-y-1">
+                {data.quality.warnings.map((w, i) => (
+                  <li key={i}>{w}</li>
+                ))}
+              </ul>
+              <a
+                href={exportUrl(sessionId, "audit")}
+                className="inline-block text-xs underline underline-offset-2"
+              >
+                دانلود اکسل ممیزی (ردیف‌های حذف‌شده و برگشت‌ها با شماره ردیف فایل)
+              </a>
+            </div>
           </div>
         </Alert>
       )}
@@ -199,10 +207,26 @@ function KpiTab({ data, unit }: { data: AnalyzeResponse; unit: string }) {
     <div className="space-y-6">
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard
-          label="درآمد کل"
+          label={k.returns_count > 0 ? "فروش خالص" : "درآمد کل"}
           value={`${compact(k.total_revenue)} ${unit}`}
           icon={<TrendingUp size={18} />}
         />
+        {k.returns_count > 0 && (
+          <>
+            <StatCard
+              label="فروش ناخالص"
+              value={`${compact(k.gross_sales)} ${unit}`}
+              icon={<TrendingUp size={18} />}
+            />
+            <StatCard
+              label="برگشت از فروش"
+              value={`${compact(k.returns_total)} ${unit}`}
+              hint={k.return_rate != null ? `نرخ برگشت: ${pct(k.return_rate)}` : undefined}
+              icon={<Repeat size={18} />}
+              tone="accent"
+            />
+          </>
+        )}
         <StatCard label="تعداد سفارش" value={toFa(num(k.n_orders))} icon={<ShoppingCart size={18} />} tone="accent" />
         <StatCard label="تعداد مشتری" value={toFa(num(k.n_customers))} icon={<Users size={18} />} tone="green" />
         <StatCard

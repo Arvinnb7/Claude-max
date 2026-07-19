@@ -20,6 +20,10 @@ def build_payload(bundle: MetricsBundle, *, currency: str = "تومان") -> dic
         "واحد_پول": currency,
         "kpi": {
             "درآمد_کل": round(k.total_revenue),
+            "فروش_ناخالص": round(getattr(k, "gross_sales", k.total_revenue)),
+            "برگشت_از_فروش": round(getattr(k, "returns_total", 0.0)),
+            "نرخ_برگشت": (None if getattr(k, "return_rate", None) is None
+                          else round(k.return_rate * 100, 1)),
             "تعداد_سفارش": k.n_orders,
             "تعداد_مشتری": k.n_customers,
             "میانگین_ارزش_سفارش": round(k.aov),

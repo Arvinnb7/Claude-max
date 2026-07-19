@@ -56,6 +56,16 @@ def get_exclusions(df: pd.DataFrame) -> pd.DataFrame:
     return side.df if isinstance(side, SideFrame) else pd.DataFrame()
 
 
+def get_returns(df: pd.DataFrame) -> pd.DataFrame:
+    """ردیف‌های برگشت از فروش (revenue منفی، جدا از فریم اصلی)؛ خالی اگر نباشد.
+
+    فریم اصلی فقط رویداد خرید مثبت دارد (تحلیل رفتاری روی خرید درست است)؛
+    خالص‌سازی مالی در لایه‌ی KPI با همین فریم انجام می‌شود.
+    """
+    side = df.attrs.get("returns_df")
+    return side.df if isinstance(side, SideFrame) else pd.DataFrame()
+
+
 def _clean_label(x: object) -> object:
     """تبدیل برچسب به رشته‌ی تمیز یا NaN (برای یکدست‌سازی ستون‌های شناسه/متنی)."""
     if x is None or (isinstance(x, float) and np.isnan(x)):
@@ -185,11 +195,20 @@ def clean_frame(df: pd.DataFrame) -> pd.DataFrame:
     if _DATE in out.columns:
         _exclude(out[_DATE].isna(), "تاریخ نامعتبر")
         out = out[out[_DATE].notna()]
+    returns = pd.DataFrame(columns=out.columns)
     if _REVENUE in out.columns:
         _exclude(out[_REVENUE].isna(), "مبلغ نامعتبر")
-        _exclude(out[_REVENUE] < 0, "مبلغ منفی")
-        out = out[out[_REVENUE].notna() & (out[_REVENUE] >= 0)]
-    out.attrs["dropped_invalid_rows"] = before - len(out)
+        out = out[out[_REVENUE].notna()]
+        # ردیف‌های منفی = برگشت از فروش؛ حذف نمی‌شوند بلکه جدا نگه داشته می‌شوند
+        # تا در فروش خالص لحاظ شوند (پیش‌تر بی‌صدا حذف می‌شدند = بیش‌برآورد فروش)
+        neg_share = float((out[_REVENUE] < 0).mean()) if len(out) else 0.0
+        if 0.4 < neg_share <= 0.6:
+            # نه اقلیت برگشتی نه اکثریت حسابداری — قرارداد علامت مشکوک است
+            out.attrs["ambiguous_sign"] = True
+        ret_mask = out[_REVENUE] < 0
+        returns = out[ret_mask].copy()
+        out = out[~ret_mask]
+    out.attrs["dropped_invalid_rows"] = before - len(out) - len(returns)
 
     # حذف ردیف‌های کاملاً تکراری (نه بر اساس order_id؛ هر سفارش می‌تواند چند قلم داشته باشد)
     # ستون فنی source_row از تعریف «تکرار» خارج است وگرنه هیچ تکراری پیدا نمی‌شد
@@ -205,9 +224,12 @@ def clean_frame(df: pd.DataFrame) -> pd.DataFrame:
     else:
         excl = pd.DataFrame(columns=[*out.columns, "دلیل"])
     out.attrs["exclusions_df"] = SideFrame(excl)
+    out.attrs["returns_df"] = SideFrame(returns.reset_index(drop=True))
+    out.attrs["n_returns"] = int(len(returns))
+    out.attrs["returns_total"] = float(-returns[_REVENUE].sum()) if len(returns) else 0.0
 
     out = out.sort_values(_DATE).reset_index(drop=True) if _DATE in out.columns else out.reset_index(drop=True)
     return out
 
 
-__all__ = ["clean_frame", "get_exclusions", "SideFrame"]
+__all__ = ["clean_frame", "get_exclusions", "get_returns", "SideFrame"]

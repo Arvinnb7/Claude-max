@@ -26,7 +26,7 @@ from mktcore.config import get_settings  # noqa: E402
 from mktcore.connectors import ExcelCsvConnector  # noqa: E402
 from mktcore.execution import build_audience, render_messages, send_campaign  # noqa: E402
 from mktcore.execution.audience import AUDIENCE_KINDS  # noqa: E402
-from mktcore.ingest.cleaning import clean_frame  # noqa: E402
+from mktcore.ingest.cleaning import clean_frame, get_exclusions, get_returns  # noqa: E402
 from mktcore.ingest.currency import (  # noqa: E402
     CURRENCIES,
     conversion_factor,
@@ -294,6 +294,8 @@ def analyze(req: AnalyzeRequest) -> dict:
 
         progress(90, "ذخیره‌ی نتایج")
         store.save_clean(sid, clean)
+        store.save_side_frame(sid, "returns", get_returns(clean))
+        store.save_side_frame(sid, "exclusions", get_exclusions(clean))
         store.save_bundle(sid, bundle)
         store.set_mapping(sid, {r.value: c for r, c in mapping.items()})
 
@@ -462,7 +464,13 @@ def export_excel(session_id: str, section: str):
             detail="داده‌ی تحلیل نشست یافت نشد؛ تحلیل را دوباره اجرا کنید.",
         )
     try:
-        content = build_export(section, bundle, clean)
+        extras = None
+        if section == "audit":
+            extras = {
+                "exclusions": store.load_side_frame(session_id, "exclusions"),
+                "returns": store.load_side_frame(session_id, "returns"),
+            }
+        content = build_export(section, bundle, clean, extras)
     except EmptySection as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
 

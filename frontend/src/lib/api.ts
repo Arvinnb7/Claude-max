@@ -176,7 +176,7 @@ export function reportUrl(session_id: string, fmt: "pdf" | "html" = "pdf"): stri
   return `${BASE}/api/report?session_id=${encodeURIComponent(session_id)}&fmt=${fmt}`;
 }
 
-export type ExportSection = "segments" | "next_purchase" | "products" | "diagnostics";
+export type ExportSection = "segments" | "next_purchase" | "products" | "diagnostics" | "audit";
 
 export function exportUrl(session_id: string, section: ExportSection): string {
   return `${BASE}/api/export?session_id=${encodeURIComponent(session_id)}&section=${section}`;

@@ -22,6 +22,12 @@ export interface UploadResponse {
 
 export interface KPIs {
   total_revenue: number;
+  gross_sales: number;
+  returns_total: number;
+  returns_count: number;
+  return_rate: number | null;
+  net_sales: number;
+  discount_total: number | null;
   n_orders: number;
   n_customers: number;
   aov: number;

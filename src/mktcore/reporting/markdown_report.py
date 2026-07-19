@@ -46,6 +46,10 @@ def build_markdown(
     lines.append("| شاخص | مقدار |")
     lines.append("|---|---|")
     lines.append(f"| درآمد کل | {_fmt(k.total_revenue)} {cur} |")
+    if getattr(k, "returns_count", 0):
+        lines.append(f"| فروش ناخالص | {_fmt(k.gross_sales)} {cur} |")
+        lines.append(f"| برگشت از فروش | {_fmt(k.returns_total)} {cur} ({_pct(k.return_rate)}) |")
+        lines.append(f"| فروش خالص | {_fmt(k.net_sales)} {cur} |")
     lines.append(f"| تعداد سفارش | {_fmt(k.n_orders)} |")
     lines.append(f"| تعداد مشتری | {_fmt(k.n_customers)} |")
     lines.append(f"| میانگین ارزش سفارش | {_fmt(k.aov)} {cur} |")
