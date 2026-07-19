@@ -138,6 +138,29 @@ export default function Dashboard({
         </div>
       </div>
 
+      {data.validation && data.validation.status !== "PASS" && (
+        <Alert tone={data.validation.status === "FAIL" ? "error" : "warn"}>
+          <div className="space-y-1">
+            <b>
+              {data.validation.status === "FAIL"
+                ? "وضعیت گزارش: تحلیل اکتشافی — دست‌کم یک کنترل صحت داده رد شده است"
+                : "وضعیت گزارش: معتبر با هشدار"}
+            </b>
+            <ul className="list-inside list-disc space-y-1 text-sm">
+              {data.validation.checks
+                .filter((c) => c.status !== "PASS")
+                .slice(0, 6)
+                .map((c, i) => (
+                  <li key={i}>
+                    {c.title}
+                    {c.detail ? ` — ${c.detail}` : ""}
+                  </li>
+                ))}
+            </ul>
+          </div>
+        </Alert>
+      )}
+
       {data.quality.warnings.length > 0 && (
         <Alert tone="warn">
           <div className="flex items-start gap-2">

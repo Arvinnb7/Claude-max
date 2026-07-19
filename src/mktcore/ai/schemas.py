@@ -73,7 +73,6 @@ class AudienceCampaign(BaseModel):
     audience_definition: str = Field(description="تعریف دقیق اینکه چه کسانی در این مخاطب هستند")
     objective: str = Field(description="هدف کمپین (مثلاً فعال‌سازی مجدد، فروش مکمل، تکمیل الگو)")
     offer: str = Field(description="پیشنهاد/مشوق کمپین")
-    estimated_size: int | None = Field(default=None, description="برآورد اندازه‌ی مخاطب")
     channels: list[ChannelMessage] = Field(
         default_factory=list, description="پیام‌های شخصی‌سازی‌شده برای هر کانال"
     )

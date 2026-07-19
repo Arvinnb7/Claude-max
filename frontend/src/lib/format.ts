@@ -51,3 +51,11 @@ export function jalaliShort(iso: string): string {
     return iso;
   }
 }
+
+/** ماسک نمایش شماره موبایل: 0912***0827 (شماره کامل فقط در ارسال واقعی). */
+export function maskPhone(p: string | null | undefined): string {
+  if (!p) return "—";
+  const d = String(p);
+  if (d.length < 8) return d;
+  return `${d.slice(0, 4)}***${d.slice(-4)}`;
+}

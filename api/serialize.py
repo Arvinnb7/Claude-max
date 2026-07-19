@@ -12,7 +12,8 @@ import pandas as pd
 
 if TYPE_CHECKING:
     from mktcore.ai.schemas import StrategyReport
-    from mktcore.pipeline import MetricsBundle
+from mktcore.analysis.inventory import SUPPLY_CAVEAT
+from mktcore.pipeline import MetricsBundle
 
 
 def _series_points(s: pd.Series) -> list[dict[str, Any]]:
@@ -222,6 +223,7 @@ def bundle_to_dict(bundle: MetricsBundle, *, currency: str = "تومان") -> di
         }
 
     if bundle.inventory.available:
+        data["inventory_caveat"] = SUPPLY_CAVEAT
         data["inventory"] = [
             {"product": i.product, "recommendation": i.recommendation,
              "growth": i.growth, "revenue_share": i.revenue_share,
@@ -269,6 +271,14 @@ def bundle_to_dict(bundle: MetricsBundle, *, currency: str = "تومان") -> di
             ],
         }
 
+    if getattr(bundle, "validation", None) is not None:
+        v = bundle.validation
+        data["validation"] = {
+            "status": v.status,
+            "checks": [{"id": c.check_id, "title": c.title,
+                        "status": c.status, "detail": c.detail} for c in v.checks],
+        }
+
     return data
 
 
@@ -300,7 +310,6 @@ def campaign_to_dict(plan) -> dict:
                 "audience_definition": a.audience_definition,
                 "objective": a.objective,
                 "offer": a.offer,
-                "estimated_size": a.estimated_size,
                 "success_kpi": a.success_kpi,
                 "channels": [
                     {"channel": c.channel, "subject": c.subject, "body": c.body,

@@ -76,7 +76,7 @@ def test_inventory_advice(raw_sales):
     b = _bundle(raw_sales, with_forecast=False)
     assert b.inventory.available
     recs = {i.recommendation for i in b.inventory.items}
-    valid = {"افزایش تأمین", "حفظ تأمین", "کاهش تأمین", "قطع تأمین"}
+    valid = {"نامزد افزایش تأمین", "حفظ تأمین", "نامزد کاهش تأمین", "نامزد بررسی برای حذف"}
     assert recs <= valid
 
 

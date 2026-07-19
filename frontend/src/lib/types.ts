@@ -175,6 +175,7 @@ export interface AnalyzeResponse {
     branches: EntityPerf[];
     salespeople: EntityPerf[];
   };
+  inventory_caveat?: string;
   inventory?: {
     product: string;
     recommendation: string;
@@ -211,6 +212,19 @@ export interface AnalyzeResponse {
       potential_count: number;
       existing_buyers: number;
     }[];
+  };
+  validation?: {
+    status: "PASS" | "PASS_WITH_WARNINGS" | "FAIL";
+    checks: { id: string; title: string; status: string; detail: string }[];
+  };
+  manifest?: {
+    source_file: string | null;
+    file_sha256: string | null;
+    raw_rows: number | null;
+    clean_rows: number;
+    returns_rows: number;
+    excluded_rows: number;
+    pipeline_version: string;
   };
   branch_targets?: TargetAlloc;
   salesperson_targets?: TargetAlloc;
@@ -264,7 +278,6 @@ export interface CampaignResponse {
     audience_definition: string;
     objective: string;
     offer: string;
-    estimated_size: number | null;
     success_kpi: string;
     channels: ChannelMessage[];
   }[];

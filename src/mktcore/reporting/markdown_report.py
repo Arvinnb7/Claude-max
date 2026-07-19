@@ -41,6 +41,26 @@ def build_markdown(
     if bundle.quality.date_min:
         lines.append(f"بازه‌ی داده: {bundle.quality.date_min} تا {bundle.quality.date_max}\n")
 
+    # وضعیت و دامنه (دروازه‌ی انتشار)
+    validation = getattr(bundle, "validation", None)
+    if validation is not None:
+        fa = {"PASS": "معتبر (همه‌ی کنترل‌ها پاس)",
+              "PASS_WITH_WARNINGS": "معتبر با هشدار",
+              "FAIL": "تحلیل اکتشافی — دست‌کم یک کنترل بحرانی رد شد"}
+        lines.append("## وضعیت و دامنه\n")
+        lines.append(f"**وضعیت صحت گزارش: {fa.get(validation.status, validation.status)}**\n")
+        lines.append(f"- تعداد رکورد معتبر: {_fmt(bundle.quality.n_rows)}")
+        if getattr(k, "returns_count", 0):
+            lines.append(f"- ردیف‌های برگشت از فروش: {_fmt(k.returns_count)}")
+        pm = getattr(bundle.trends, "partial_month", None)
+        if pm:
+            lines.append(f"- ماه جاری ناقص است ({pm['days_covered']} از {pm['days_in_month']} روز)")
+        bad = [c for c in validation.checks if c.status != "PASS"]
+        for c in bad[:8]:
+            mark = "⛔" if c.status == "FAIL" else "⚠️"
+            lines.append(f"- {mark} {c.title}" + (f" — {c.detail}" if c.detail else ""))
+        lines.append("")
+
     # KPI
     lines.append("## شاخص‌های کلیدی عملکرد\n")
     lines.append("| شاخص | مقدار |")

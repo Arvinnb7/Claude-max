@@ -18,11 +18,15 @@ _QUANTITY = standard_column(ColumnRole.QUANTITY)
 _PRODUCT = standard_column(ColumnRole.PRODUCT)
 _COST = standard_column(ColumnRole.COST)
 
+# سیگنال‌های فروش‌محور؛ بدون داده‌ی موجودی «توصیه‌ی عملیاتی قطعی» نیستند
+SUPPLY_CAVEAT = ("بر اساس داده‌ی فروش (بدون موجودی انبار، lead time و بهای خرید)؛ "
+                 "پیش از اقدام عملیاتی، موجودی و تأمین بررسی شود.")
+
 # توصیه‌ها
-RESTOCK_MORE = "افزایش تأمین"
+RESTOCK_MORE = "نامزد افزایش تأمین"
 RESTOCK_KEEP = "حفظ تأمین"
-RESTOCK_LESS = "کاهش تأمین"
-RESTOCK_STOP = "قطع تأمین"
+RESTOCK_LESS = "نامزد کاهش تأمین"
+RESTOCK_STOP = "نامزد بررسی برای حذف"
 
 
 @dataclass

@@ -22,6 +22,7 @@ from .analysis.seasonality import SeasonalityResult, compute_seasonality
 from .analysis.segmentation import SegmentationResult, compute_segmentation
 from .analysis.sequence import SequenceAnalysis, analyze_sequences
 from .analysis.trends import TrendResult, compute_trends
+from .analysis.validation import ValidationReport, run_validation
 from .forecasting.base import ForecastResult
 from .forecasting.selector import choose_and_forecast
 from .ingest.profiler import DataQualityReport, profile_frame
@@ -53,6 +54,7 @@ class MetricsBundle:
     branch_targets: TargetAllocation | None = None
     salesperson_targets: TargetAllocation | None = None
     pacing: PacingPlan | None = None
+    validation: ValidationReport | None = None
     basket_eval: BasketEvaluation | None = None
     quality: DataQualityReport = field(default_factory=DataQualityReport)
     meta: dict = field(default_factory=dict)
@@ -109,6 +111,11 @@ def run_analysis(
             _build_pacing(bundle, df)
         except Exception as e:  # pragma: no cover - مقاوم در برابر داده‌ی کم
             bundle.meta["forecast_error"] = str(e)
+
+    try:
+        bundle.validation = run_validation(bundle, df)
+    except Exception as e:  # noqa: BLE001 - دروازه نباید تحلیل را بشکند
+        bundle.meta["validation_error"] = str(e)
 
     return bundle
 

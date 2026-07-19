@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import sys
 import time
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import quote
+
+# نسخه‌ی pipeline برای manifest بازتولیدپذیری (با هر تغییر منطق محاسبات به‌روز شود)
+PIPELINE_VERSION = "2.0.0"
 
 # دسترسی به mktcore بدون نصب
 _ROOT = Path(__file__).resolve().parent.parent
@@ -174,6 +179,8 @@ async def upload(file: UploadFile = File(...)) -> dict:
         payload["session_id"] = sid
         payload["sheets"] = sheets
         payload["warnings"] = result.meta.get("warnings", [])
+        payload["file_sha256"] = hashlib.sha256(content).hexdigest()
+        payload["file_size"] = len(content)
         store.set_columns_payload(sid, payload)
         return payload
 
@@ -301,6 +308,22 @@ def analyze(req: AnalyzeRequest) -> dict:
 
         payload = bundle_to_dict(bundle, currency=req.display_currency)
         payload["quality"]["warnings"] = profile_frame(clean).warnings
+        cp = store.get_session(sid).columns_payload or {}
+        payload["manifest"] = {
+            "source_file": store.get_session(sid).filename,
+            "file_sha256": cp.get("file_sha256"),
+            "file_size": cp.get("file_size"),
+            "sheet": (cp.get("sheets") or [None])[0],
+            "raw_rows": cp.get("n_rows"),
+            "clean_rows": int(len(clean)),
+            "returns_rows": int(clean.attrs.get("n_returns", 0)),
+            "excluded_rows": int(clean.attrs.get("dropped_invalid_rows", 0))
+            + int(clean.attrs.get("dropped_duplicate_rows", 0)),
+            "file_currency": req.file_currency,
+            "display_currency": req.display_currency,
+            "pipeline_version": PIPELINE_VERSION,
+            "analyzed_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        }
         store.set_analysis(sid, payload)
         return payload
 
@@ -370,9 +393,21 @@ def _require_analyzed(session_id: str):
     return session
 
 
+def _require_publishable(session_id: str) -> None:
+    """در وضعیت FAIL، تولید استراتژی/کمپین AI مجاز نیست (تحلیل اکتشافی است)."""
+    session = store.get_session(session_id)
+    status = ((session.analysis or {}).get("validation") or {}).get("status") if session else None
+    if status == "FAIL":
+        raise HTTPException(
+            status_code=409,
+            detail="کنترل‌های صحت داده FAIL شده‌اند؛ پیش از تولید استراتژی، هشدارهای کیفیت را برطرف کنید.",
+        )
+
+
 @app.post("/api/strategy")
 def strategy(req: StrategyRequest = Body(...)) -> dict:
     _require_analyzed(req.session_id)
+    _require_publishable(req.session_id)
     if not api_key_available():
         raise HTTPException(status_code=503, detail="کلید ANTHROPIC_API_KEY تنظیم نشده است.")
     sid = req.session_id

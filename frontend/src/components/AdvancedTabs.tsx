@@ -4,16 +4,16 @@ import { useCallback, useEffect, useState } from "react";
 import { Download, History, Megaphone, MessageSquare, Send } from "lucide-react";
 
 import { exportUrl, getCampaign, getOutbox, sendSMS, type OutboxItem } from "@/lib/api";
-import { compact, jalali, num, pct, toFa } from "@/lib/format";
+import { compact, jalali, maskPhone, num, pct, toFa } from "@/lib/format";
 import type { AnalyzeResponse, CampaignResponse, SMSResult } from "@/lib/types";
 import { Alert, Badge, Button, Card, ProgressBar, SectionTitle } from "./ui";
 
 const ABC_TONE: Record<string, "green" | "brand" | "gray"> = { A: "green", B: "brand", C: "gray" };
 const REC_TONE: Record<string, "green" | "brand" | "accent" | "rose"> = {
-  "افزایش تأمین": "green",
+  "نامزد افزایش تأمین": "green",
   "حفظ تأمین": "brand",
-  "کاهش تأمین": "accent",
-  "قطع تأمین": "rose",
+  "نامزد کاهش تأمین": "accent",
+  "نامزد بررسی برای حذف": "rose",
 };
 
 /* ---------- محصولات و سبد خرید ---------- */
@@ -332,7 +332,12 @@ export function DiagnosticsTab({
 
       {data.inventory && (
         <Card>
-          <SectionTitle title="پیشنهاد تأمین کالا" subtitle="بر اساس روند، سهم درآمد و حاشیه‌ی سود" />
+          <SectionTitle title="سیگنال‌های تأمین کالا" subtitle="بر اساس روند، سهم درآمد و حاشیه‌ی سود" />
+          {data.inventory_caveat && (
+            <div className="mb-3">
+              <Alert tone="warn">{data.inventory_caveat}</Alert>
+            </div>
+          )}
           <div className="grid gap-3 sm:grid-cols-2">
             {data.inventory.map((it, i) => (
               <div key={i} className="rounded-xl border border-ink-200 p-3 dark:border-ink-700">
@@ -629,7 +634,7 @@ export function CampaignTab({
               {sms["نمونه"].slice(0, 5).map((m, i) => (
                 <div key={i} className="rounded-lg bg-ink-50 p-3 text-sm dark:bg-ink-800/60">
                   <div className="flex items-center gap-2 text-xs" style={{ color: "var(--muted)" }}>
-                    <MessageSquare size={14} /> {m["مشتری"]} · {m["گیرنده"]}
+                    <MessageSquare size={14} /> {m["مشتری"]} · {maskPhone(m["گیرنده"])}
                   </div>
                   <p className="mt-1 leading-7">{m["متن"]}</p>
                 </div>
@@ -671,7 +676,7 @@ export function CampaignTab({
                       {row.kind === "cycle_notification" ? "اعلان خودکار چرخه" : "پیامک کمپین"}
                     </td>
                     <td className="whitespace-nowrap px-3 py-2">{row.customer_id ?? "—"}</td>
-                    <td className="whitespace-nowrap px-3 py-2 tnum">{row.phone ?? "—"}</td>
+                    <td className="whitespace-nowrap px-3 py-2 tnum">{maskPhone(row.phone)}</td>
                     <td className="whitespace-nowrap px-3 py-2">
                       <Badge tone={row.dry_run ? "accent" : row.status === "ارسال‌شده" ? "green" : "gray"}>
                         {row.status}

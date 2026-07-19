@@ -250,8 +250,11 @@ class PersistentStore:
 
     def save_clean(self, sid: str, df: pd.DataFrame) -> None:
         path = self._sdir(sid) / "clean.parquet"
+        # attrs (فریم‌های جانبی ممیزی) در parquet ذخیره نمی‌شوند؛ جداگانه save می‌شوند
+        to_write = df.copy()
+        to_write.attrs = {}
         try:
-            df.to_parquet(path)
+            to_write.to_parquet(path)
         except Exception:
             # fallback در برابر نوع‌های خاص
             df.to_pickle(self._sdir(sid) / "clean.pkl")
