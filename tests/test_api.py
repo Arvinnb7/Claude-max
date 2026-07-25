@@ -80,8 +80,25 @@ def test_advanced_sections_present():
     data = _sample_ready()
     payload = _analyze(data)
     for key in ("products", "basket", "performance", "inventory",
-                "branch_targets", "pacing", "purchase_cycle"):
+                "branch_targets", "pacing", "purchase_cycle",
+                "actions", "probability_calibration", "validation", "manifest"):
         assert key in payload, key
+
+    # فهرست اقدام: ارزش ریالی نزولی + خلاصه‌ی هم‌خوان
+    acts = payload["actions"]
+    vals = [a["value_rial"] for a in acts["items"]]
+    assert vals and vals == sorted(vals, reverse=True)
+    assert acts["total_value"] >= sum(vals)
+    assert acts["summary"]
+
+    # خودسنجی احتمال‌ها روی داده‌ی نمونه باید از حدس پایه بهتر باشد
+    cal = payload["probability_calibration"]
+    assert cal["n_eval"] > 0
+    assert cal["beats_baseline"] is True
+
+    # manifest بازتولیدپذیری
+    assert payload["manifest"]["pipeline_version"]
+    assert payload["manifest"]["clean_rows"] > 0
 
 
 def test_analyze_missing_session():

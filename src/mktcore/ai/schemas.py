@@ -25,6 +25,11 @@ class Recommendation(BaseModel):
     priority: Priority = Field(description="اولویت اجرا")
     rationale: str = Field(description="چرایی این توصیه بر پایه‌ی داده")
     expected_impact: str = Field(description="اثر مورد انتظار بر فروش/مارکتینگ")
+    expected_value_rial: float | None = Field(
+        default=None,
+        description=("ارزش ریالی این پیشنهاد — فقط اگر عیناً از «فرصت‌های_ارزش‌دار» "
+                     "در داده‌ی ورودی نقل شود؛ در غیر این صورت خالی بماند"),
+    )
     effort: EffortLevel = Field(description="میزان تلاش/منابع لازم")
 
 

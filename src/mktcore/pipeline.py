@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
+from .analysis.actions import ActionPlan, build_action_list
 from .analysis.anomalies import AnomalyResult, detect_anomalies
 from .analysis.cohorts import CohortResult, compute_cohorts
 from .analysis.diagnostics import DiagnosticsReport, diagnose
@@ -14,6 +15,7 @@ from .analysis.kpis import KPISet, compute_kpis
 from .analysis.market_basket import BasketAnalysis, analyze_basket
 from .analysis.next_purchase import NextPurchaseAnalysis, predict_next_purchases
 from .analysis.performance import PerformanceAnalysis, analyze_performance
+from .analysis.probability_eval import ProbabilityCalibration, evaluate_probability
 from .analysis.products import ProductAnalysis, analyze_products
 from .analysis.purchase_cycle import PurchaseCycleAnalysis, analyze_purchase_cycles
 from .analysis.recommender import build_recommender
@@ -55,6 +57,8 @@ class MetricsBundle:
     salesperson_targets: TargetAllocation | None = None
     pacing: PacingPlan | None = None
     validation: ValidationReport | None = None
+    actions: ActionPlan = field(default_factory=ActionPlan)
+    probability_calibration: ProbabilityCalibration | None = None
     basket_eval: BasketEvaluation | None = None
     quality: DataQualityReport = field(default_factory=DataQualityReport)
     meta: dict = field(default_factory=dict)
@@ -100,8 +104,15 @@ def run_analysis(
         bundle.basket_eval.coverage = sum(
             1 for c in bundle.next_purchase.customers if c.recommendations)
     bundle.performance = analyze_performance(df)
+    # فهرست اقدام ریالی بعد از performance ساخته می‌شود تا «مالک» هر مشتری را داشته باشد
+
     bundle.inventory = analyze_inventory(df)
     bundle.diagnostics = diagnose(df)
+    bundle.actions = build_action_list(bundle, df)
+    try:
+        bundle.probability_calibration = evaluate_probability(df)
+    except Exception as e:  # noqa: BLE001 - خودسنجی نباید تحلیل را بشکند
+        bundle.meta["probability_calibration_error"] = str(e)
 
     if with_forecast and not df.empty:
         try:

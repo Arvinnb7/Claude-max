@@ -78,6 +78,29 @@ def build_markdown(
     lines.append(f"| نرخ مشتری تکراری | {_pct(k.repeat_rate)} |")
     lines.append(f"| حاشیه‌ی سود ناخالص | {_pct(k.gross_margin)} |\n")
 
+    # فرصت‌های ارزش‌دار (اعداد از موتور تصمیم، نه از مدل زبانی)
+    ap = getattr(bundle, "actions", None)
+    if ap is not None and getattr(ap, "available", False):
+        lines.append("## فرصت‌های ارزش‌دار (فهرست اقدام)\n")
+        lines.append(f"جمع ارزش فرصت‌های شناسایی‌شده: **{_fmt(ap.total_value)} {cur}** "
+                     f"در {_fmt(len(ap.actions))} اقدام\n")
+        lines.append("| نوع اقدام | تعداد | جمع ارزش |")
+        lines.append("|---|---:|---:|")
+        for s in ap.summary:
+            lines.append(f"| {s['نوع اقدام']} | {_fmt(s['تعداد'])} | {_fmt(s['جمع ارزش'])} {cur} |")
+        lines.append("")
+        lines.append("**۵ اقدام با بالاترین ارزش:**\n")
+        for a in ap.top(5):
+            lines.append(f"- {a.action_fa} — مشتری {a.customer_id} — "
+                         f"{_fmt(a.value_rial)} {cur} ({a.value_kind}، اتکا: {a.confidence})")
+        lines.append("")
+        cal = getattr(bundle, "probability_calibration", None)
+        if cal is not None:
+            verdict = "قابل اتکا" if cal.beats_baseline else "کم‌اعتماد"
+            lines.append(f"دقت احتمال‌های خرید ({verdict}): خطای مدل {cal.brier} در برابر "
+                         f"{cal.baseline_brier} برای حدس ساده — آزمون روی {_fmt(cal.n_eval)} "
+                         f"مشتری با پنهان‌کردن {cal.window_days} روز آخر داده.\n")
+
     # محصولات
     if bundle.products.available:
         lines.append("## محصولات پرفروش و تحلیل ABC\n")

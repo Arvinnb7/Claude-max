@@ -80,11 +80,11 @@ def compute_kpis(df: pd.DataFrame) -> KPISet:
         k.return_rate = k.returns_total / k.gross_sales
     k.total_revenue = k.net_sales
 
-    if _DISCOUNT in df.columns:
+    if _DISCOUNT in df.columns and df.attrs.get("discount_is_amount"):
+        # تفسیر «مبلغی/نسبتی» در پاک‌سازی تعیین شده است؛ فقط مبلغی جمع‌پذیر است
         disc = pd.to_numeric(df[_DISCOUNT], errors="coerce").dropna()
         nonzero = disc[disc != 0]
-        # فقط تخفیفِ «مبلغی» جمع‌پذیر است؛ ستون نسبتی (۰..۱) جمع معناداری ندارد
-        if len(nonzero) and (nonzero.abs() > 1).mean() > 0.8:
+        if len(nonzero):
             k.discount_total = float(nonzero.sum())
 
     # شمارش سفارش: فاکتورهای با جمع خالص مثبت (فاکتور کاملاً برگشتی نمی‌شمارد)

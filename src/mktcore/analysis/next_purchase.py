@@ -53,9 +53,14 @@ class NextPurchase:
     status: str  # "سررسیدشده" | "نزدیک" | "زود" | "نامشخص"
     overdue_days: int  # روزهای گذشته از پیش‌بینی (مثبت = معوق)
     likely_products: list[str] = field(default_factory=list)
-    expected_value: float = 0.0
+    expected_value: float = 0.0  # ارزش یک سفارش (وزن‌دار تازگی)
     buy_probability_30d: float | None = None  # احتمال خرید در پنجره‌ی ۳۰ روز آینده
     recommendations: list[Recommendation] = field(default_factory=list)  # با دلیل
+    alive_probability: float | None = None  # احتمال فعال‌بودن مشتری (sBG)
+    churn_risk: float | None = None  # ۱ − احتمال فعال‌بودن
+    expected_value_30d: float | None = None  # ارزش مورد انتظار ۳۰ روز = EV × احتمال
+    clv_12m: float | None = None  # ارزش عمر تنزیل‌شده‌ی ۱۲ ماه آینده
+    value_confidence: str | None = None  # «بالا» | «متوسط» | «کم (نمونه ناکافی)»
 
 
 @dataclass
@@ -80,16 +85,23 @@ class NextPurchaseAnalysis:
         ]
 
 
-def _window_probability(elapsed: np.ndarray, mu: np.ndarray, cv: np.ndarray,
-                        window_days: int) -> np.ndarray:
-    """P(خرید در window روز آینده | elapsed روز از آخرین خرید گذشته).
+def alive_probability(elapsed: np.ndarray, mu: np.ndarray) -> np.ndarray:
+    """احتمال «زنده‌بودن» مشتری: افت هندسی sBG بعد از یک چرخه‌ی کامل تأخیر."""
+    mu = np.clip(np.asarray(mu, dtype=float), 1e-9, None)
+    elapsed = np.clip(np.asarray(elapsed, dtype=float), 0.0, None)
+    return np.clip(_ALIVE_PI ** np.maximum(elapsed / mu - 1.0, 0.0), 0.0, 1.0)
 
-    گامای گشتاوری per-customer + میراگر زنده‌بودن sBG هندسی. همه‌ی ورودی‌ها
-    آرایه‌های هم‌طول‌اند؛ خروجی در [0, 1].
+
+def window_components(elapsed: np.ndarray, mu: np.ndarray, cv: np.ndarray,
+                      window_days: int) -> tuple[np.ndarray, np.ndarray]:
+    """اجزای احتمال: (احتمال خرید در پنجره به‌شرط زنده‌بودن، احتمال زنده‌بودن).
+
+    گامای گشتاوری per-customer برای زمان بین خرید + میراگر زنده‌بودن sBG هندسی.
+    جدا برگرداندن اجزا لازم است چون «احتمال ریزش» و CLV به p_alive نیاز دارند.
     """
-    mu = np.clip(mu.astype(float), 1e-9, None)
-    cv = np.clip(cv.astype(float), _CV_FLOOR, None)
-    elapsed = np.clip(elapsed.astype(float), 0.0, None)
+    mu = np.clip(np.asarray(mu, dtype=float), 1e-9, None)
+    cv = np.clip(np.asarray(cv, dtype=float), _CV_FLOOR, None)
+    elapsed = np.clip(np.asarray(elapsed, dtype=float), 0.0, None)
     try:
         from scipy.stats import gamma as _gamma
 
@@ -101,8 +113,38 @@ def _window_probability(elapsed: np.ndarray, mu: np.ndarray, cv: np.ndarray,
     except Exception:
         # fallback نمایی (بی‌حافظه): مستقل از elapsed
         p_window = 1.0 - np.exp(-window_days / mu)
-    p_alive = _ALIVE_PI ** np.maximum(elapsed / mu - 1.0, 0.0)
+    return np.clip(p_window, 0.0, 1.0), alive_probability(elapsed, mu)
+
+
+def _window_probability(elapsed: np.ndarray, mu: np.ndarray, cv: np.ndarray,
+                        window_days: int) -> np.ndarray:
+    """P(خرید در window روز آینده | elapsed روز از آخرین خرید گذشته)، در [0, 1]."""
+    p_window, p_alive = window_components(elapsed, mu, cv, window_days)
     return np.clip(p_window * p_alive, 0.0, 1.0)
+
+
+# نرخ تنزیل ماهانه‌ی CLV و افق آن (۱۲ ماه)
+_CLV_MONTHS = 12
+_CLV_DISCOUNT_MONTHLY = 0.02
+
+
+def _clv_12m(ev: float, mu: float | None, p_alive_now: float | None) -> float | None:
+    """ارزش عمر تنزیل‌شده‌ی ۱۲ ماه آینده با همان cadence و افت زنده‌بودن.
+
+    برای هر ماه t: (تعداد خرید انتظاری = ۳۰/μ) × ارزش سفارش × p_alive(t) ÷ (1+r)^t
+    که p_alive با گذر هر چرخه به‌صورت هندسی افت می‌کند (همان π مدل موجود).
+    """
+    if not ev or mu is None or pd.isna(mu) or float(mu) <= 0:
+        return None
+    mu_f = float(mu)
+    alive = 1.0 if p_alive_now is None or pd.isna(p_alive_now) else float(p_alive_now)
+    orders_per_month = 30.0 / mu_f
+    total = 0.0
+    for t in range(1, _CLV_MONTHS + 1):
+        # افت زنده‌بودن متناسب با تعداد چرخه‌های سپری‌شده در این ماه
+        alive *= _ALIVE_PI ** (30.0 / mu_f)
+        total += orders_per_month * ev * alive / ((1.0 + _CLV_DISCOUNT_MONTHLY) ** t)
+    return round(total)
 
 
 def predict_next_purchases(
@@ -175,15 +217,16 @@ def predict_next_purchases(
         mu_all = cadence.reindex(all_ids).fillna(pooled_median)
         cv_all = cv_i.reindex(all_ids).fillna(cv_pooled)
         elapsed_all = (data_max - last).dt.days.astype(float)
-        prob_all = pd.Series(
-            _window_probability(elapsed_all.to_numpy(), mu_all.to_numpy(),
-                                cv_all.to_numpy(), window_days),
-            index=all_ids,
-        )
+        p_win, p_alive = window_components(
+            elapsed_all.to_numpy(), mu_all.to_numpy(), cv_all.to_numpy(), window_days)
+        prob_all = pd.Series(np.clip(p_win * p_alive, 0.0, 1.0), index=all_ids)
+        alive_all = pd.Series(p_alive, index=all_ids)
         predicted = last + pd.to_timedelta(cadence.reindex(all_ids), unit="D")
         overdue = (data_max - predicted).dt.days
     else:
         prob_all = pd.Series(np.nan, index=all_ids)
+        alive_all = pd.Series(np.nan, index=all_ids)
+        mu_all = pd.Series(np.nan, index=all_ids)
         predicted = pd.Series(pd.NaT, index=all_ids)
         overdue = pd.Series(np.nan, index=all_ids)
 
@@ -219,13 +262,23 @@ def predict_next_purchases(
         else:
             # تک‌خرید: تاریخ قطعی نداریم ولی احتمال از prior استخری معنادار است
             ov_days, status, pred_str, ai = 0, "نامشخص", None, None
+        ev_c = float(ev.get(cust, ev_fallback))
+        pa = alive_all.get(cust)
+        pa_f = round(float(pa), 3) if pd.notna(pa) else None
+        mu_c = mu_all.get(cust) if has_repeats else np.nan
         npr = NextPurchase(
             customer_id=str(cust),
             last_purchase=last[cust].date().isoformat(),
             avg_interval_days=ai, predicted_next_date=pred_str, status=status,
             overdue_days=ov_days, likely_products=[],
-            expected_value=float(ev.get(cust, ev_fallback)),
+            expected_value=ev_c,
             buy_probability_30d=prob,
+            alive_probability=pa_f,
+            churn_risk=None if pa_f is None else round(1.0 - pa_f, 3),
+            expected_value_30d=(None if prob is None else round(ev_c * prob)),
+            clv_12m=_clv_12m(ev_c, mu_c, pa),
+            value_confidence=("بالا" if nd >= 4 else
+                              ("متوسط" if nd >= 2 else "کم (نمونه ناکافی)")),
         )
         np_by_id[str(cust)] = npr
         res.customers.append(npr)

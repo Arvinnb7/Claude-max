@@ -97,3 +97,39 @@ def test_export_invalid_section_and_session():
     sid = _analyzed_session()
     assert client.get(f"/api/export?session_id={sid}&section=nope").status_code == 400
     assert client.get("/api/export?session_id=missing&section=products").status_code == 404
+
+
+def test_export_action_list():
+    sid = _analyzed_session()
+    wb = _fetch(sid, "actions")
+    assert "فهرست اقدام" in wb.sheetnames
+    assert "خلاصه‌ی فرصت‌ها" in wb.sheetnames
+
+    ws = wb["فهرست اقدام"]
+    headers = [c.value for c in ws[1]]
+    for col in ("اولویت", "کد مشتری", "موبایل", "مسئول پیگیری", "نوع اقدام",
+                "اقدام پیشنهادی", "ارزش (تومان)", "نوع ارزش", "درجه‌ی اتکا",
+                "دلیل", "متن پیشنهادی تماس/پیامک"):
+        assert col in headers, f"ستون «{col}» در فهرست اقدام نیست"
+
+    v_col = headers.index("ارزش (تومان)") + 1
+    vals = [ws.cell(row=i, column=v_col).value for i in range(2, ws.max_row + 1)]
+    nums = [v for v in vals if isinstance(v, (int, float))]
+    assert nums, "هیچ ارزش ریالی در فهرست نیست"
+    assert all(v > 0 for v in nums)
+    assert nums == sorted(nums, reverse=True), "فهرست باید نزولی ریالی باشد"
+
+    # شیت خلاصه شامل ردیف جمع کل است
+    s = wb["خلاصه‌ی فرصت‌ها"]
+    s_headers = [c.value for c in s[1]]
+    assert "جمع ارزش (تومان)" in s_headers
+    kinds = [s.cell(row=i, column=1).value for i in range(2, s.max_row + 1)]
+    assert "جمع کل" in kinds
+
+
+def test_export_next_purchase_value_columns():
+    sid = _analyzed_session()
+    ws = _fetch(sid, "next_purchase")["پیش‌بینی خرید بعدی"]
+    headers = [c.value for c in ws[1]]
+    for col in ("ریسک ریزش", "ارزش مورد انتظار ۳۰ روز", "ارزش عمر ۱۲ ماه", "درجه‌ی اتکا"):
+        assert col in headers, f"ستون «{col}» نیست"

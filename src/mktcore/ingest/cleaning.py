@@ -139,6 +139,21 @@ def _parse_dates(series: pd.Series) -> pd.Series:
     return pd.to_datetime(series.map(_parse_one_date), errors="coerce")
 
 
+def _detect_discount_is_amount(df: pd.DataFrame) -> bool:
+    """تخفیف «مبلغی» است یا «نسبتی»؟ (اکثر مقادیر ناصفر بزرگ‌تر از ۱ → مبلغ).
+
+    تفسیر اشتباه، درآمد مشتق‌شده را چند برابر/کسری می‌کند؛ پس یک‌بار تعیین و در
+    attrs ثبت می‌شود تا همه‌ی مصرف‌کننده‌ها (از جمله KPI) همان را ببینند.
+    """
+    if _DISCOUNT not in df.columns:
+        return False
+    d = pd.to_numeric(df[_DISCOUNT], errors="coerce").dropna()
+    nonzero = d[d != 0]
+    if nonzero.empty:
+        return False
+    return bool((nonzero.abs() > 1).mean() > 0.8)
+
+
 _DOC_RETURN = re.compile(r"برگشت|مرجوع|return", re.IGNORECASE)
 _DOC_SALE = re.compile(r"فروش|فاکتور|sale|invoice", re.IGNORECASE)
 
@@ -223,15 +238,23 @@ def clean_frame(df: pd.DataFrame) -> pd.DataFrame:
         if col in out.columns:
             out[col] = out[col].map(_clean_label)
 
+    # تفسیر ستون تخفیف یک‌جا تعیین و ثبت می‌شود تا cleaning و kpis هم‌نظر باشند
+    discount_is_amount = _detect_discount_is_amount(out)
+    out.attrs["discount_is_amount"] = discount_is_amount
+
     # مشتق درآمد در صورت نبود مقدار ولی وجود تعداد و قیمت واحد
-    if _REVENUE in out.columns and _QUANTITY in out.columns and _UNIT_PRICE in out.columns:
-        need = out[_REVENUE].isna() & out[_QUANTITY].notna() & out[_UNIT_PRICE].notna()
-        disc = out[_DISCOUNT] if _DISCOUNT in out.columns else 0.0
-        out.loc[need, _REVENUE] = (
-            out.loc[need, _QUANTITY] * out.loc[need, _UNIT_PRICE] * (1 - (disc if isinstance(disc, float) else out.loc[need, _DISCOUNT].fillna(0)))
-        )
-    elif _REVENUE not in out.columns and _QUANTITY in out.columns and _UNIT_PRICE in out.columns:
-        out[_REVENUE] = out[_QUANTITY] * out[_UNIT_PRICE]
+    if _QUANTITY in out.columns and _UNIT_PRICE in out.columns:
+        gross_line = out[_QUANTITY] * out[_UNIT_PRICE]
+        if _DISCOUNT in out.columns:
+            d = out[_DISCOUNT].fillna(0)
+            derived = (gross_line - d) if discount_is_amount else gross_line * (1 - d)
+        else:
+            derived = gross_line
+        if _REVENUE in out.columns:
+            need = out[_REVENUE].isna() & out[_QUANTITY].notna() & out[_UNIT_PRICE].notna()
+            out.loc[need, _REVENUE] = derived[need]
+        else:
+            out[_REVENUE] = derived
 
     # حذف ردیف‌های بدون تاریخ یا درآمد معتبر — با ثبت ممیزی (شماره ردیف + دلیل)
     exclusions: list[pd.DataFrame] = []

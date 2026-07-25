@@ -170,6 +170,10 @@ def bundle_to_dict(bundle: MetricsBundle, *, currency: str = "تومان") -> di
              "status": c.status, "overdue_days": c.overdue_days,
              "likely_products": c.likely_products, "expected_value": c.expected_value,
              "buy_probability_30d": c.buy_probability_30d,
+             "churn_risk": getattr(c, "churn_risk", None),
+             "expected_value_30d": getattr(c, "expected_value_30d", None),
+             "clv_12m": getattr(c, "clv_12m", None),
+             "value_confidence": getattr(c, "value_confidence", None),
              "recommendations": [{"product": r.product, "reason": r.reason}
                                  for r in c.recommendations]}
             for c in bundle.next_purchase.due_now(30)
@@ -277,6 +281,35 @@ def bundle_to_dict(bundle: MetricsBundle, *, currency: str = "تومان") -> di
             "status": v.status,
             "checks": [{"id": c.check_id, "title": c.title,
                         "status": c.status, "detail": c.detail} for c in v.checks],
+        }
+
+    ap = getattr(bundle, "actions", None)
+    if ap is not None and ap.available:
+        data["actions"] = {
+            "total_value": ap.total_value,
+            "summary": ap.summary,
+            "items": [
+                {"rank": a.rank, "kind": a.kind, "customer_id": a.customer_id,
+                 "product": a.product, "action": a.action_fa, "reason": a.reason_fa,
+                 "value_rial": a.value_rial, "value_kind": a.value_kind,
+                 "confidence": a.confidence, "probability": a.probability,
+                 "owner": a.owner, "last_purchase": a.last_purchase}
+                for a in ap.top(50)
+            ],
+        }
+
+    cal = getattr(bundle, "probability_calibration", None)
+    if cal is not None:
+        data["probability_calibration"] = {
+            "n_eval": cal.n_eval,
+            "window_days": cal.window_days,
+            "brier": cal.brier,
+            "baseline_brier": cal.baseline_brier,
+            "beats_baseline": cal.beats_baseline,
+            "actual_rate": cal.actual_rate,
+            "mean_predicted": cal.mean_predicted,
+            "bias": round(cal.bias, 4),
+            "bins": cal.bins,
         }
 
     return data

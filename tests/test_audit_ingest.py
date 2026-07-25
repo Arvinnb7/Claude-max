@@ -83,3 +83,33 @@ def test_source_row_does_not_leak_into_numeric_aggregations():
     clean = clean_frame(_mapped_frame(raw))
     k = compute_kpis(clean)
     assert k.total_revenue == 600.0
+
+
+def test_discount_interpretation_ratio_vs_amount():
+    """تفسیر تخفیف یک‌بار تعیین و در attrs ثبت شود؛ مشتق درآمد از همان پیروی کند."""
+    from mktcore.analysis.kpis import compute_kpis
+
+    # حالت نسبتی: تخفیف ۰.۱ → درآمد = ۱۰۰۰×۲×۰.۹
+    ratio = pd.DataFrame({
+        "تاریخ": [f"1402/01/{i + 1:02d}" for i in range(12)],  # ردیف‌های متمایز
+        "مبلغ": [""] * 12,  # خالی → از تعداد×قیمت مشتق می‌شود
+        "تعداد": [2] * 12,
+        "قیمت واحد": [1000] * 12,
+        "تخفیف": [0.1] * 12,
+    })
+    m = SchemaMapper()
+    mapping = {ColumnRole.DATE: "تاریخ", ColumnRole.REVENUE: "مبلغ",
+               ColumnRole.QUANTITY: "تعداد",
+               ColumnRole.UNIT_PRICE: "قیمت واحد", ColumnRole.DISCOUNT: "تخفیف"}
+    clean = clean_frame(m.apply(ratio, mapping))
+    assert clean.attrs["discount_is_amount"] is False
+    assert clean["revenue"].iloc[0] == 1800.0
+    assert compute_kpis(clean).discount_total is None  # نسبت جمع‌پذیر نیست
+
+    # حالت مبلغی: تخفیف ۵۰۰ تومان → درآمد = ۲۰۰۰ − ۵۰۰
+    amount = ratio.copy()
+    amount["تخفیف"] = 500
+    clean2 = clean_frame(m.apply(amount, mapping))
+    assert clean2.attrs["discount_is_amount"] is True
+    assert clean2["revenue"].iloc[0] == 1500.0
+    assert compute_kpis(clean2).discount_total == 500.0 * 12

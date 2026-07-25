@@ -199,7 +199,7 @@ export default function Dashboard({
         ))}
       </div>
 
-      {tab === "kpi" && <KpiTab data={data} unit={unit} />}
+      {tab === "kpi" && <KpiTab data={data} unit={unit} sessionId={sessionId} />}
       {tab === "segments" && <SegmentsTab data={data} unit={unit} sessionId={sessionId} />}
       {tab === "products" && <ProductsTab data={data} unit={unit} sessionId={sessionId} />}
       {tab === "cycle" && <CycleTab data={data} />}
@@ -224,7 +224,7 @@ export default function Dashboard({
   );
 }
 
-function KpiTab({ data, unit }: { data: AnalyzeResponse; unit: string }) {
+function KpiTab({ data, unit, sessionId }: { data: AnalyzeResponse; unit: string; sessionId: string }) {
   const k = data.kpis;
   return (
     <div className="space-y-6">
@@ -262,6 +262,96 @@ function KpiTab({ data, unit }: { data: AnalyzeResponse; unit: string }) {
         <StatCard label="نرخ مشتری تکراری" value={pct(k.repeat_rate)} icon={<Repeat size={18} />} tone="green" />
         <StatCard label="حاشیه‌ی سود ناخالص" value={pct(k.gross_margin)} icon={<TrendingUp size={18} />} />
       </div>
+
+      {data.actions && (
+        <Card>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <SectionTitle
+              title="فرصت‌های ارزش‌دار"
+              subtitle="همه‌ی فرصت‌های فروش، مرتب بر اساس ارزش ریالی — «ارزش فرصت» یعنی اگر مشتری خرید کند چقدر پول در میان است"
+            />
+            <a href={exportUrl(sessionId, "actions")}>
+              <Button variant="primary">
+                <Download size={16} /> دانلود فهرست اقدام (اکسل)
+              </Button>
+            </a>
+          </div>
+
+          <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <StatCard
+              label="جمع ارزش فرصت‌ها"
+              value={`${compact(data.actions.total_value)} ${unit}`}
+              icon={<Target size={18} />}
+            />
+            {data.actions.summary.slice(0, 3).map((s, i) => (
+              <StatCard
+                key={i}
+                label={s["نوع اقدام"]}
+                value={`${compact(s["جمع ارزش"])} ${unit}`}
+                hint={`${toFa(num(s["تعداد"]))} مورد`}
+                tone={i === 0 ? "accent" : "green"}
+              />
+            ))}
+          </div>
+
+          <div className="scrollbar-thin overflow-x-auto">
+            <table className="w-full min-w-[52rem] text-right text-sm">
+              <thead className="text-xs" style={{ color: "var(--muted)" }}>
+                <tr>
+                  <th className="px-3 py-2">#</th>
+                  <th className="px-3 py-2">مشتری</th>
+                  <th className="px-3 py-2">اقدام</th>
+                  <th className="px-3 py-2">محصول</th>
+                  <th className="px-3 py-2">ارزش</th>
+                  <th className="px-3 py-2">اتکا</th>
+                  <th className="px-3 py-2">مسئول</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.actions.items.slice(0, 10).map((a) => (
+                  <tr key={a.rank} className="border-t border-ink-100 dark:border-ink-800">
+                    <td className="px-3 py-2 tnum">{toFa(num(a.rank))}</td>
+                    <td className="whitespace-nowrap px-3 py-2">{a.customer_id}</td>
+                    <td className="px-3 py-2">
+                      {a.action}
+                      <div className="text-xs" style={{ color: "var(--muted)" }} title={a.reason}>
+                        {a.reason}
+                      </div>
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-2">{a.product ?? "—"}</td>
+                    <td className="whitespace-nowrap px-3 py-2 tnum">
+                      {compact(a.value_rial)} {unit}
+                      <div className="text-xs" style={{ color: "var(--muted)" }}>
+                        {a.value_kind}
+                      </div>
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-2 text-xs">{a.confidence}</td>
+                    <td className="whitespace-nowrap px-3 py-2">{a.owner ?? "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+
+      {data.probability_calibration && (
+        <Alert tone={data.probability_calibration.beats_baseline ? "info" : "warn"}>
+          <span className="tnum">
+            {data.probability_calibration.beats_baseline
+              ? `دقت احتمال‌های خرید سنجیده شد: خطای مدل ${toFa(
+                  data.probability_calibration.brier.toFixed(3),
+                )} در برابر ${toFa(
+                  data.probability_calibration.baseline_brier.toFixed(3),
+                )} برای حدس ساده — یعنی احتمال‌ها قابل اتکا هستند`
+              : `هشدار: احتمال‌های خرید بهتر از حدس ساده نیستند (${toFa(
+                  data.probability_calibration.brier.toFixed(3),
+                )} در برابر ${toFa(data.probability_calibration.baseline_brier.toFixed(3))})`}
+            {" "}(آزمون روی {toFa(num(data.probability_calibration.n_eval))} مشتری با پنهان‌کردن{" "}
+            {toFa(num(data.probability_calibration.window_days))} روز آخر داده).
+          </span>
+        </Alert>
+      )}
 
       {data.trends.partial_month && (
         <Alert tone="info">

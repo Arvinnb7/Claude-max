@@ -83,6 +83,25 @@ def build_payload(bundle: MetricsBundle, *, currency: str = "تومان") -> dic
     if getattr(bundle, "pacing", None) and bundle.pacing is not None:
         payload["pacing_ماهانه"] = bundle.pacing.compact()
 
+    ap = getattr(bundle, "actions", None)
+    if ap is not None and ap.available:
+        # اعداد ریالی از کد می‌آیند؛ مدل زبانی فقط باید همین‌ها را نقل کند
+        payload["فرصت‌های_ارزش‌دار"] = {
+            "جمع_ارزش_تومان": round(ap.total_value),
+            "خلاصه": [{"نوع": s["نوع اقدام"], "تعداد": s["تعداد"],
+                       "جمع_ارزش": round(s["جمع ارزش"])} for s in ap.summary],
+            "اقدام‌های_برتر": ap.compact(10),
+        }
+
+    cal = getattr(bundle, "probability_calibration", None)
+    if cal is not None:
+        payload["کالیبراسیون_احتمال"] = {
+            "تعداد_آزمون": cal.n_eval,
+            "خطای_مدل_brier": cal.brier,
+            "خطای_حدس_پایه": cal.baseline_brier,
+            "بهتر_از_پایه": cal.beats_baseline,
+        }
+
     return payload
 
 

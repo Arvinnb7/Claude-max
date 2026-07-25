@@ -160,8 +160,41 @@ export interface AnalyzeResponse {
     likely_products: string[];
     expected_value: number;
     buy_probability_30d: number | null;
+    churn_risk: number | null;
+    expected_value_30d: number | null;
+    clv_12m: number | null;
+    value_confidence: string | null;
     recommendations: { product: string; reason: string }[];
   }[];
+  actions?: {
+    total_value: number;
+    summary: { "نوع اقدام": string; "تعداد": number; "جمع ارزش": number; "نوع ارزش": string }[];
+    items: {
+      rank: number;
+      kind: string;
+      customer_id: string;
+      product: string | null;
+      action: string;
+      reason: string;
+      value_rial: number;
+      value_kind: string;
+      confidence: string;
+      probability: number | null;
+      owner: string | null;
+      last_purchase: string | null;
+    }[];
+  };
+  probability_calibration?: {
+    n_eval: number;
+    window_days: number;
+    brier: number;
+    baseline_brier: number;
+    beats_baseline: boolean;
+    actual_rate: number;
+    mean_predicted: number;
+    bias: number;
+    bins: { "از": number; "تا": number; "تعداد": number; "پیش‌بینی": number; "واقعی": number }[];
+  };
   basket_eval?: {
     n_eval: number;
     hitrate_at_5: number;

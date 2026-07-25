@@ -18,9 +18,11 @@ _CUSTOMER = standard_column(ColumnRole.CUSTOMER_ID)
 _DATE = standard_column(ColumnRole.DATE)
 _ORDER = standard_column(ColumnRole.ORDER_ID)
 
-EXPORT_SECTIONS = ("segments", "next_purchase", "products", "diagnostics", "audit")
+EXPORT_SECTIONS = ("actions", "segments", "next_purchase", "products",
+                   "diagnostics", "audit")
 
 EXPORT_FA_NAMES = {
+    "actions": "فهرست-اقدام",
     "segments": "سگمنت‌های-مشتریان",
     "next_purchase": "پیش‌بینی-خرید-بعدی",
     "products": "محصولات",
@@ -109,7 +111,11 @@ def _next_purchase_sheets(bundle, clean) -> list[tuple[str, pd.DataFrame]]:
         "وضعیت": c.status,
         "تأخیر (روز)": c.overdue_days,
         "احتمال خرید ۳۰ روز": c.buy_probability_30d,
+        "ریسک ریزش": getattr(c, "churn_risk", None),
         "ارزش مورد انتظار": round(c.expected_value),
+        "ارزش مورد انتظار ۳۰ روز": getattr(c, "expected_value_30d", None),
+        "ارزش عمر ۱۲ ماه": getattr(c, "clv_12m", None),
+        "درجه‌ی اتکا": getattr(c, "value_confidence", "") or "",
         "سبد محتمل": "، ".join(c.likely_products),
         "دلیل پیشنهاد": "، ".join(f"{r.product} ({r.reason})" for r in c.recommendations),
     } for c in customers]
@@ -186,6 +192,44 @@ def _diagnostics_sheets(bundle, clean) -> list[tuple[str, pd.DataFrame]]:
     return sheets
 
 
+
+def _actions_sheets(bundle, clean) -> list[tuple[str, pd.DataFrame]]:
+    """فهرست اقدام: تحویل عملیاتی تیم فروش، مرتب بر اساس ارزش ریالی."""
+    ap = getattr(bundle, "actions", None)
+    if ap is None or not ap.available:
+        raise EmptySection("فهرست اقدامی ساخته نشد؛ داده‌ی مشتری/محصول کافی نیست.")
+
+    rows = [{
+        "اولویت": a.rank,
+        "کد مشتری": a.customer_id,
+        "موبایل": a.phone or "",
+        "مسئول پیگیری": a.owner or "",
+        "نوع اقدام": a.kind,
+        "اقدام پیشنهادی": a.action_fa,
+        "محصول": a.product or "",
+        "ارزش (تومان)": round(a.value_rial),
+        "نوع ارزش": a.value_kind,
+        "احتمال خرید ۳۰ روز": a.probability,
+        "درجه‌ی اتکا": a.confidence,
+        "دلیل": a.reason_fa,
+        "آخرین خرید": a.last_purchase or "",
+        "تاریخ پیش‌بینی خرید": a.predicted_next_date or "",
+        "متن پیشنهادی تماس/پیامک": a.message_fa or "",
+    } for a in ap.actions]
+
+    summary = [{
+        "نوع اقدام": s["نوع اقدام"],
+        "تعداد": s["تعداد"],
+        "جمع ارزش (تومان)": round(s["جمع ارزش"]),
+        "نوع ارزش": s["نوع ارزش"],
+    } for s in ap.summary]
+    summary.append({"نوع اقدام": "جمع کل", "تعداد": len(ap.actions),
+                    "جمع ارزش (تومان)": round(ap.total_value), "نوع ارزش": ""})
+
+    return [("فهرست اقدام", pd.DataFrame(rows)),
+            ("خلاصه‌ی فرصت‌ها", pd.DataFrame(summary))]
+
+
 def _audit_sheets(extras: dict) -> list[tuple[str, pd.DataFrame]]:
     """شیت‌های ممیزی: ردیف‌های حذف‌شده (با شماره ردیف فایل و دلیل) و برگشت‌ها."""
     sheets: list[tuple[str, pd.DataFrame]] = []
@@ -212,6 +256,7 @@ def _audit_sheets(extras: dict) -> list[tuple[str, pd.DataFrame]]:
 
 
 _BUILDERS = {
+    "actions": _actions_sheets,
     "segments": _segments_sheets,
     "next_purchase": _next_purchase_sheets,
     "products": _products_sheets,
