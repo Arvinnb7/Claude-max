@@ -151,3 +151,14 @@ def test_single_total_column_stays_revenue():
     })
     s = _m(df)
     assert s.mapping.get(ColumnRole.REVENUE) == "قیمت کل"
+
+
+def test_header_signature_stable_across_writing_variants():
+    from mktcore.ingest.mapper import header_signature
+
+    base = header_signature(["تاریخ", "مبلغ کل", "نام مشتری"])
+    reordered = header_signature(["نام مشتری", "تاریخ", "مبلغ کل"])
+    arabic_yk = header_signature(["تاريخ", "مبلغ كل", "نام مشتري"])
+    spaced = header_signature(["  تاریخ ", "مبلغ  کل", "نام مشتری"])
+    assert base == reordered == arabic_yk == spaced
+    assert base != header_signature(["تاریخ", "مبلغ", "نام مشتری"])

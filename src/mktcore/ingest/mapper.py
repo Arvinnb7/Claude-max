@@ -8,8 +8,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import warnings
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -165,6 +167,18 @@ def _norm(text: str) -> str:
     text = re.sub(r"[_\-/.()،]+", " ", text)
     text = re.sub(r"\s+", " ", text)
     return text.strip()
+
+
+def header_signature(columns: Iterable[object]) -> str:
+    """امضای ساختار فایل بر پایه‌ی نام سرستون‌ها (نه محتوا).
+
+    محتوای فایل هر ماه عوض می‌شود ولی سرستون‌ها ثابت می‌مانند؛ پس این امضا
+    کلید درستی برای «همان نگاشت قبلی را به‌کار ببر» است. ترتیب ستون‌ها و
+    تفاوت‌های نوشتاری (ي/ك عربی، نیم‌فاصله، ارقام فارسی، فاصله‌ی اضافه) اثری
+    ندارند چون از `_norm` و مجموعه‌ی مرتب استفاده می‌شود.
+    """
+    norm = sorted({_norm(str(c)) for c in columns if str(c).strip()})
+    return hashlib.sha256("|".join(norm).encode("utf-8")).hexdigest()
 
 
 _CURRENCY_WORDS = ("ریال", "تومان", "rial", "toman", "irr", "irt")
@@ -504,6 +518,7 @@ class SchemaMapper:
 
 
 __all__ = [
+    "header_signature",
     "SchemaMapper", "MappingSuggestion", "RoleGuess", "ColumnProfile", "Mapping",
     "NUMERIC_ROLES", "CATEGORICAL_ROLES", "to_number", "AUTO_SELECT_THRESHOLD",
 ]

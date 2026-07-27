@@ -5,7 +5,19 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _default_data_dir() -> Path:
+    """مسیر پیش‌فرض داده، لنگرانداخته به ریشه‌ی مخزن.
+
+    پیش‌تر مسیر نسبی «data» بود و نسبت به پوشه‌ی اجرا حل می‌شد؛ اجرای سرور از
+    پوشه‌ی دیگر یک ذخیره‌گاه خالی جدید می‌ساخت و کاربر فکر می‌کرد حافظه پاک شده.
+    وقتی نشانه‌ی مخزن (pyproject.toml) نباشد (نصب به‌عنوان پکیج) رفتار قبلی می‌ماند.
+    """
+    root = Path(__file__).resolve().parents[2]
+    return root / "data" if (root / "pyproject.toml").exists() else Path("data")
 
 
 class Settings(BaseSettings):
@@ -42,8 +54,18 @@ class Settings(BaseSettings):
     mkt_output_dir: Path = Path("outputs")
 
     # ماندگاری و کارهای طولانی
-    mkt_data_dir: Path = Path("data")
-    mkt_session_ttl_hours: int = 72
+    mkt_data_dir: Path = Field(default_factory=lambda: _default_data_dir())
+    # سیاست نگه‌داری — در همه‌ی این کلیدها ۰ به‌معنی «هرگز» است.
+    # نتیجه‌ی تحلیل (داشبورد) هرگز خودکار حذف نمی‌شود؛ فقط فایل‌های سنگین هرس
+    # می‌شوند: raw.pkl فقط برای «تحلیل مجدد» لازم است و clean/bundle برای
+    # گزارش PDF و خروجی اکسل.
+    mkt_retention_raw_days: int = 30
+    mkt_retention_heavy_days: int = 180
+    mkt_retention_delete_days: int = 0  # حذف کامل نشست — پیش‌فرض: هرگز
+    mkt_retention_jobs_days: int = 14  # پاک‌سازی رکورد jobهای تمام‌شده
+    # منسوخ: قبلاً نشست‌ها را بعد از این مدت حذف می‌کرد. دیگر اثری ندارد و فقط
+    # برای هشدار مهاجرت خوانده می‌شود (None = کاربر تنظیمش نکرده است).
+    mkt_session_ttl_hours: int | None = None
     mkt_max_upload_mb: int = 100
     # سقف ردیف خواندن فایل (محافظ حافظه در برابر used-range بادکرده)
     mkt_max_rows: int = 400_000
@@ -79,6 +101,27 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.mkt_cors_origins.split(",") if o.strip()]
+
+    @property
+    def data_dir_abs(self) -> Path:
+        """مسیر مطلق داده — برای لاگ و تشخیص «حافظه کجاست»."""
+        return Path(self.mkt_data_dir).expanduser().resolve()
+
+    @property
+    def retention_policy(self) -> dict:
+        """سیاست نگه‌داری برای نمایش در API و لاگ (۰ = هرگز)."""
+        return {
+            "raw_days": self.mkt_retention_raw_days,
+            "heavy_days": self.mkt_retention_heavy_days,
+            "delete_days": self.mkt_retention_delete_days,
+            "jobs_days": self.mkt_retention_jobs_days,
+            "policy_fa": (
+                "تحلیل‌ها تا زمانی که خودتان حذف نکنید نگه داشته می‌شوند؛ "
+                f"فایل خام بعد از {self.mkt_retention_raw_days} روز و فایل‌های سنگین "
+                f"بعد از {self.mkt_retention_heavy_days} روز بایگانی می‌شوند "
+                "(داشبورد باقی می‌ماند)."
+            ),
+        }
 
 
 @lru_cache(maxsize=1)

@@ -37,7 +37,7 @@ from mktcore.ingest.currency import (  # noqa: E402
     conversion_factor,
     convert_monetary_columns,
 )
-from mktcore.ingest.mapper import SchemaMapper  # noqa: E402
+from mktcore.ingest.mapper import SchemaMapper, header_signature  # noqa: E402
 from mktcore.ingest.profiler import profile_frame  # noqa: E402
 from mktcore.ingest.schema import REQUIRED_ROLES, ColumnRole, standard_column  # noqa: E402
 from mktcore.locale_fa import ROLE_LABELS_FA, format_number_fa  # noqa: E402
@@ -63,7 +63,8 @@ async def lifespan(app: FastAPI):
         logger.warning("recovered %d stale jobs after restart", recovered)
     # هیچ‌کدام از کارهای startup نباید بتوانند بالا آمدن API را متوقف کنند
     try:
-        store.cleanup_expired()
+        pruned = store.run_retention()
+        logger.info("سیاست نگه‌داری اجرا شد: %s", pruned)
     except Exception:
         logger.exception("پاکسازی نشست‌های منقضی ناموفق بود؛ API ادامه می‌دهد")
     try:
@@ -101,13 +102,29 @@ def _columns_payload(df) -> dict:
             "low_confidence": bool(g and not g.auto and g.confidence > 0),
         })
     preview = df.head(15).astype(str).to_dict(orient="records")
-    return {
-        "columns": [str(c) for c in df.columns],
+    columns = [str(c) for c in df.columns]
+    payload = {
+        "columns": columns,
         "roles": roles,
         "preview": preview,
         "n_rows": int(len(df)),
         "missing_required": [ROLE_LABELS_FA[r.value] for r in suggestion.missing_required],
+        "header_signature": header_signature(columns),
     }
+
+    # حافظه‌ی نگاشت: اگر فایلی با همین ساختار سرستون قبلاً تحلیل شده، نگاشت و
+    # واحد پول همان بار برگردانده می‌شود تا کاربر دوباره دستی وارد نکند.
+    prof = store.get_mapping_profile(payload["header_signature"])
+    if prof:
+        kept = {r: c for r, c in prof["mapping"].items() if c in columns}
+        payload["saved_mapping"] = kept
+        payload["saved_dropped_roles"] = [
+            ROLE_LABELS_FA.get(r, r) for r in prof["mapping"] if r not in kept
+        ]
+        payload["saved_file_currency"] = prof["file_currency"]
+        payload["saved_display_currency"] = prof["display_currency"]
+        payload["saved_use_count"] = prof["use_count"]
+    return payload
 
 
 @app.get("/api/health")
@@ -120,6 +137,8 @@ def health() -> dict:
         "currency": s.mkt_currency,
         "sms_enabled": s.sms_configured,
         "scheduler": scheduler_status()["running"],
+        "data_dir": str(store.data_dir.resolve()),
+        "retention": s.retention_policy,
     }
 
 
@@ -305,6 +324,13 @@ def analyze(req: AnalyzeRequest) -> dict:
         store.save_side_frame(sid, "exclusions", get_exclusions(clean))
         store.save_bundle(sid, bundle)
         store.set_mapping(sid, {r.value: c for r, c in mapping.items()})
+        sig = (store.get_session(sid).columns_payload or {}).get("header_signature")
+        if sig:
+            store.upsert_mapping_profile(
+                sig, columns=(store.get_session(sid).columns_payload or {}).get("columns", []),
+                mapping={r.value: c for r, c in mapping.items()},
+                file_currency=req.file_currency, display_currency=req.display_currency,
+            )
 
         payload = bundle_to_dict(bundle, currency=req.display_currency)
         payload["quality"]["warnings"] = profile_frame(clean).warnings
@@ -365,19 +391,86 @@ def job_status(job_id: str) -> dict:
     return out
 
 
+@app.get("/api/sessions")
+def list_sessions(limit: int = 20, offset: int = 0, analyzed: bool = False) -> dict:
+    """فهرست تحلیل‌های ذخیره‌شده (سبک — بدون پارس کردن نتیجه‌ی کامل تحلیل)."""
+    items, total = store.list_sessions(
+        limit=max(1, min(limit, 100)), offset=max(0, offset), analyzed_only=analyzed)
+    return {
+        "items": items,
+        "total": total,
+        "latest_analyzed_id": store.latest_session_with_analysis(),
+        "retention": get_settings().retention_policy,
+    }
+
+
 @app.get("/api/session/{session_id}")
 def session_info(session_id: str) -> dict:
-    """بازیابی وضعیت نشست برای فرانت (بعد از reload/ری‌استارت)."""
+    """بازیابی وضعیت نشست برای فرانت (بعد از reload/ری‌استارت/بستن تب)."""
     session = store.get_session(session_id)
     if session is None:
         return {"exists": False}
+    if session.has_analysis:
+        store.touch_opened(session_id)
     return {
         "exists": True,
+        "created_at": session.created_at,
         "filename": session.filename,
+        "label": getattr(session, "label", None),
+        "archived": store.is_archived(session_id),
+        "files": store.session_files(session_id),
+        "mapping": session.mapping,
         "columns_payload": session.columns_payload,
         "analysis": session.analysis,
         "strategy": session.strategy,
         "campaign": session.campaign,
+    }
+
+
+@app.delete("/api/session/{session_id}")
+def delete_session(session_id: str) -> dict:
+    """حذف کامل و دائمی یک تحلیل (تنها راه حذف — سیستم خودش حذف نمی‌کند)."""
+    if not store.delete_session(session_id):
+        raise HTTPException(status_code=404,
+                            detail="این نشست پیدا نشد؛ ممکن است قبلاً حذف شده باشد.")
+    return {"deleted": True}
+
+
+class SessionLabelRequest(BaseModel):
+    label: str | None = None
+
+
+@app.patch("/api/session/{session_id}")
+def rename_session(session_id: str, req: SessionLabelRequest = Body(...)) -> dict:
+    """نام دلخواه برای تحلیل (مثلاً «فروش شهریور ۱۴۰۴»)."""
+    label = (req.label or "").strip() or None
+    if label is not None and len(label) > 80:
+        raise HTTPException(status_code=400, detail="نام انتخابی طولانی است (حداکثر ۸۰ نویسه).")
+    if not store.set_label(session_id, label):
+        raise HTTPException(status_code=404, detail="این نشست پیدا نشد.")
+    items, _ = store.list_sessions(limit=100)
+    item = next((i for i in items if i["id"] == session_id), None)
+    return item or {"id": session_id, "label": label}
+
+
+@app.get("/api/storage")
+def storage_info() -> dict:
+    """محل واقعی «حافظه»ی سیستم و مصرف فضا (برای رفع ابهام مسیر داده)."""
+    s = get_settings()
+    items, total = store.list_sessions(limit=1)
+    sessions_bytes = 0
+    for p in store.sessions_dir.rglob("*"):
+        if p.is_file():
+            sessions_bytes += p.stat().st_size
+    db_size = store.db_path.stat().st_size if store.db_path.exists() else 0
+    return {
+        "data_dir": str(store.data_dir.resolve()),
+        "db_path": str(store.db_path.resolve()),
+        "db_size": db_size,
+        "sessions_total": total,
+        "sessions_bytes": sessions_bytes,
+        "sessions_mb": round(sessions_bytes / 1024 / 1024, 1),
+        "retention": s.retention_policy,
     }
 
 
@@ -386,11 +479,29 @@ class StrategyRequest(BaseModel):
     session_id: str
 
 
+_ARCHIVED_FA = (
+    "داده‌های سنگین این تحلیل برای آزاد کردن فضا بایگانی شده‌اند. داشبورد و اعداد "
+    "کامل‌اند، اما برای گزارش PDF، خروجی اکسل، استراتژی هوش مصنوعی و پیامک باید "
+    "همان فایل را دوباره بارگذاری و تحلیل کنید."
+)
+
+
 def _require_analyzed(session_id: str):
     session = store.get_session(session_id)
-    if session is None or not session.has_analysis:
+    if session is None:
+        raise HTTPException(
+            status_code=404,
+            detail="این نشست پیدا نشد؛ ممکن است حذف شده باشد. فایل را دوباره بارگذاری کنید.",
+        )
+    if not session.has_analysis:
         raise HTTPException(status_code=404, detail="ابتدا تحلیل را اجرا کنید.")
     return session
+
+
+def _require_heavy(session_id: str) -> None:
+    """گارد فایل‌های سنگین: پیام روشن به‌جای «تحلیل را دوباره اجرا کنید»."""
+    if store.is_archived(session_id) or not store.session_files(session_id)["heavy"]:
+        raise HTTPException(status_code=410, detail=_ARCHIVED_FA)
 
 
 def _require_publishable(session_id: str) -> None:
@@ -407,6 +518,7 @@ def _require_publishable(session_id: str) -> None:
 @app.post("/api/strategy")
 def strategy(req: StrategyRequest = Body(...)) -> dict:
     _require_analyzed(req.session_id)
+    _require_heavy(req.session_id)
     _require_publishable(req.session_id)
     if not api_key_available():
         raise HTTPException(status_code=503, detail="کلید ANTHROPIC_API_KEY تنظیم نشده است.")
@@ -459,6 +571,7 @@ def campaign(req: StrategyRequest = Body(...)) -> dict:
 @app.get("/api/report")
 def report(session_id: str, fmt: str = "pdf"):
     session = _require_analyzed(session_id)
+    _require_heavy(session_id)
     bundle = store.load_bundle(session_id)
     if bundle is None:
         raise HTTPException(status_code=404, detail="نتیجه‌ی تحلیل یافت نشد؛ تحلیل را دوباره اجرا کنید.")
@@ -491,6 +604,7 @@ def export_excel(session_id: str, section: str):
     if section not in EXPORT_SECTIONS:
         raise HTTPException(status_code=400, detail="بخش نامعتبر برای خروجی اکسل.")
     _require_analyzed(session_id)
+    _require_heavy(session_id)
     bundle = store.load_bundle(session_id)
     clean = store.load_clean(session_id)
     if bundle is None or clean is None:

@@ -154,7 +154,7 @@ export function UploadStep({
         <Card>
           <div className="flex items-center gap-3 text-sm" style={{ color: "var(--muted)" }}>
             <FileSpreadsheet size={18} className="text-brand-500" />
-            داده‌ی شما فقط برای تحلیل در همین نشست استفاده می‌شود و جایی ذخیره‌ی دائم نمی‌شود.
+            داده و نتیجه‌ی تحلیل روی همین سرور ذخیره می‌شود تا تحلیل‌های قبلی را از دست ندهید؛ هر زمان بخواهید می‌توانید حذفشان کنید.
           </div>
         </Card>
       </div>
@@ -181,11 +181,20 @@ export function MappingStep({
   loading: boolean;
 }) {
   const init: Record<string, string> = {};
-  for (const r of data.roles) if (r.suggested) init[r.role] = r.suggested;
+  for (const r of data.roles) {
+    // نگاشت ذخیره‌شده‌ی فایلی با همین ساختار سرستون بر حدس خودکار مقدم است
+    const saved = data.saved_mapping?.[r.role];
+    if (saved) init[r.role] = saved;
+    else if (r.suggested) init[r.role] = r.suggested;
+  }
   const [mapping, setMapping] = useState<Record<string, string>>(init);
   const [ackLowConf, setAckLowConf] = useState(false);
-  const [fileCurrency, setFileCurrency] = useState("تومان");
-  const [displayCurrency, setDisplayCurrency] = useState("تومان");
+  const [fileCurrency, setFileCurrency] = useState(data.saved_file_currency || "تومان");
+  const [displayCurrency, setDisplayCurrency] = useState(
+    data.saved_display_currency || "تومان",
+  );
+  const hasSaved = Boolean(data.saved_mapping && Object.keys(data.saved_mapping).length);
+  const droppedRoles = data.saved_dropped_roles ?? [];
 
   const requiredMissing = data.roles
     .filter((r) => r.required && !mapping[r.role])
@@ -216,6 +225,23 @@ export function MappingStep({
     <div className="space-y-5">
       {data.warnings && data.warnings.length > 0 && (
         <Alert tone="warn">{data.warnings.join(" ")}</Alert>
+      )}
+
+      {hasSaved && (
+        <Alert tone="info">
+          <div className="space-y-1">
+            <span>
+              نگاشت ستون‌ها و واحد پول از تحلیل قبلیِ فایلی با همین ساختار بازیابی شد؛ اگر
+              درست است فقط «تأیید و تحلیل» را بزنید.
+            </span>
+            {droppedRoles.length > 0 && (
+              <div className="text-sm">
+                این ستون‌ها در فایل جدید پیدا نشدند و باید دوباره انتخاب شوند:{" "}
+                <b>{droppedRoles.join("، ")}</b>
+              </div>
+            )}
+          </div>
+        </Alert>
       )}
 
       <Card>

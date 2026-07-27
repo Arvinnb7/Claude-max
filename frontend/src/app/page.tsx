@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { BarChart3, BrainCircuit, Target, X } from "lucide-react";
 
-import { analyze, getHealthWithRetry, getSessionInfo } from "@/lib/api";
+import { analyze, getHealthWithRetry, getSessionInfo, listSessions } from "@/lib/api";
 import type {
   AnalyzeResponse,
   CampaignResponse,
@@ -12,26 +12,54 @@ import type {
   UploadResponse,
 } from "@/lib/types";
 import Dashboard from "@/components/Dashboard";
+import RecentSessions from "@/components/RecentSessions";
 import { MappingStep, Stepper, UploadStep } from "@/components/steps";
 import { ThemeToggle } from "@/components/ThemeToggle";
-import { Alert, ProgressBar, Spinner } from "@/components/ui";
+import { Alert, Button, ProgressBar, Spinner } from "@/components/ui";
 
 type Stage = "upload" | "mapping" | "dashboard";
 
-const SS_SESSION = "mkt.session_id";
-const SS_STAGE = "mkt.stage";
+// نشانی تحلیل در localStorage می‌ماند تا با بستن تب گم نشود (پیش‌تر
+// sessionStorage بود و هر بار کاربر مجبور می‌شد از اول شروع کند).
+const LS_SESSION = "mkt.last_session";
+const SS_FRESH = "mkt.fresh_start"; // «داده‌ی جدید» فقط در همین تب، بازیابی خودکار را خاموش می‌کند
+const LEGACY_SESSION = "mkt.session_id";
+const LEGACY_STAGE = "mkt.stage";
 
-function saveStage(sessionId: string | null, stage: Stage) {
+function rememberSession(sessionId: string | null) {
   try {
     if (sessionId) {
-      sessionStorage.setItem(SS_SESSION, sessionId);
-      sessionStorage.setItem(SS_STAGE, stage);
+      localStorage.setItem(LS_SESSION, sessionId);
+      sessionStorage.removeItem(SS_FRESH);
     } else {
-      sessionStorage.removeItem(SS_SESSION);
-      sessionStorage.removeItem(SS_STAGE);
+      localStorage.removeItem(LS_SESSION);
+      sessionStorage.setItem(SS_FRESH, "1");
     }
   } catch {
-    /* sessionStorage در دسترس نیست (مثلاً حالت خصوصی) — بدون ذخیره ادامه بده */
+    /* حافظه‌ی مرورگر در دسترس نیست (حالت خصوصی) — بدون ذخیره ادامه بده */
+  }
+}
+
+function readRememberedSession(): string | null {
+  try {
+    const current = localStorage.getItem(LS_SESSION);
+    if (current) return current;
+    // مهاجرت یک‌باره از کلید قدیمی sessionStorage
+    const legacy = sessionStorage.getItem(LEGACY_SESSION);
+    sessionStorage.removeItem(LEGACY_SESSION);
+    sessionStorage.removeItem(LEGACY_STAGE);
+    if (legacy) localStorage.setItem(LS_SESSION, legacy);
+    return legacy;
+  } catch {
+    return null;
+  }
+}
+
+function isFreshStart(): boolean {
+  try {
+    return sessionStorage.getItem(SS_FRESH) === "1";
+  } catch {
+    return false;
   }
 }
 
@@ -49,6 +77,10 @@ export default function Home() {
   const [serverDown, setServerDown] = useState(false);
   const [bannerDismissed, setBannerDismissed] = useState(false);
   const [restoreNotice, setRestoreNotice] = useState<string | null>(null);
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [archived, setArchived] = useState(false);
+  const [showRecents, setShowRecents] = useState(false);
+  const [serverUnreachable, setServerUnreachable] = useState(false);
 
   // سلامت سرور با retry — تا یک قطعی لحظه‌ای بنر خطا نیاورد
   useEffect(() => {
@@ -68,52 +100,71 @@ export default function Home() {
     };
   }, []);
 
-  // بازیابی نشست بعد از reload — رفع «برگشتن به صفحه‌ی اول»
+  // بازیابی حافظه: نشانی ماندگار → اگر نبود، آخرین تحلیل ذخیره‌شده روی سرور
+  const openSession = useCallback(async (sid: string, opts?: { notice?: string }) => {
+    const info = await getSessionInfo(sid);
+    if (!info.exists) return false;
+    if (!info.columns_payload) {
+      setRestoreNotice(
+        "پردازش قبلی فایل ناتمام ماند (احتمالاً سرور در میانه‌ی کار متوقف شد)؛ لطفاً فایل را دوباره بارگذاری کنید.",
+      );
+      rememberSession(null);
+      return false;
+    }
+    setUpload(info.columns_payload);
+    setSessionId(sid);
+    rememberSession(sid);
+    setArchived(Boolean(info.archived));
+    if (info.analysis) {
+      setAnalysis(info.analysis);
+      setStrategy(info.strategy ?? null);
+      setCampaign(info.campaign ?? null);
+      setStage("dashboard");
+    } else {
+      setStage("mapping");
+    }
+    if (opts?.notice) setRestoreNotice(opts.notice);
+    setShowRecents(false);
+    return true;
+  }, []);
+
+  const boot = useCallback(async () => {
+    setServerUnreachable(false);
+    const remembered = readRememberedSession();
+    try {
+      if (remembered) {
+        if (await openSession(remembered)) return;
+        rememberSession(null);
+      }
+      if (isFreshStart()) return; // کاربر در همین تب «داده‌ی جدید» زده است
+      const list = await listSessions(1, true);
+      if (list.latest_analyzed_id) {
+        await openSession(list.latest_analyzed_id, {
+          notice: remembered
+            ? "تحلیل قبلی پیدا نشد؛ آخرین تحلیل ذخیره‌شده باز شد."
+            : undefined,
+        });
+      }
+    } catch {
+      // سرور خاموش/در حال راه‌اندازی است — نشانی را پاک نمی‌کنیم
+      setServerUnreachable(true);
+    }
+  }, [openSession]);
+
   useEffect(() => {
     let cancelled = false;
-    let sid: string | null = null;
-    try {
-      sid = sessionStorage.getItem(SS_SESSION);
-    } catch {
-      /* noop */
-    }
-    const restore = sid
-      ? getSessionInfo(sid)
-          .then((info) => {
-            if (cancelled) return;
-            if (!info.exists) {
-              saveStage(null, "upload");
-              return;
-            }
-            if (!info.columns_payload) {
-              // آپلود قبلی هرگز کامل نشد (مثلاً سرور وسط کار متوقف شد)
-              setRestoreNotice(
-                "پردازش قبلی فایل ناتمام ماند (احتمالاً سرور در میانه‌ی کار متوقف شد)؛ لطفاً فایل را دوباره بارگذاری کنید.",
-              );
-              saveStage(null, "upload");
-              return;
-            }
-            setUpload(info.columns_payload);
-            if (info.analysis) {
-              setAnalysis(info.analysis);
-              setStrategy(info.strategy ?? null);
-              setCampaign(info.campaign ?? null);
-              setStage("dashboard");
-            } else {
-              setStage("mapping");
-            }
-          })
-          .catch(() => {
-            /* سرور در دسترس نیست یا نشست منقضی شده — از صفحه‌ی آپلود شروع می‌شود */
-          })
-      : Promise.resolve();
-    restore.finally(() => {
-      if (!cancelled) setBooting(false);
+    // queueMicrotask تا setState همگام درون effect رخ ندهد (قاعده‌ی react-hooks)
+    queueMicrotask(() => {
+      if (cancelled) return;
+      const task = boot();
+      task.finally(() => {
+        if (!cancelled) setBooting(false);
+      });
     });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [boot]);
 
   async function handleConfirm(
     mapping: Record<string, string>,
@@ -136,7 +187,7 @@ export default function Home() {
       );
       setAnalysis(res);
       setStage("dashboard");
-      saveStage(upload.session_id, "dashboard");
+      rememberSession(upload.session_id);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -152,7 +203,7 @@ export default function Home() {
     setCampaign(null);
     setError(null);
     setStage("upload");
-    saveStage(null, "upload");
+    rememberSession(null);
   }
 
   const stepIndex = stage === "upload" ? 0 : stage === "mapping" ? 1 : 2;
@@ -236,9 +287,37 @@ export default function Home() {
               </div>
             )}
 
+            {serverUnreachable && (
+              <div className="mb-6">
+                <Alert tone="warn">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <span>
+                      اتصال به سرور برقرار نشد؛ تحلیل‌های قبلی پاک نشده‌اند و پس از راه‌اندازی
+                      سرور بازیابی می‌شوند.
+                    </span>
+                    <Button variant="outline" onClick={() => void boot()}>
+                      تلاش دوباره
+                    </Button>
+                  </div>
+                </Alert>
+              </div>
+            )}
+
             {error && (
               <div className="mb-6">
                 <Alert tone="error">{error}</Alert>
+              </div>
+            )}
+
+            {showRecents && (
+              <div className="mb-6 animate-fade-up">
+                <RecentSessions
+                  activeId={sessionId}
+                  onOpen={(sid) => void openSession(sid)}
+                  onDeleted={(sid) => {
+                    if (sid === sessionId) reset();
+                  }}
+                />
               </div>
             )}
 
@@ -256,12 +335,25 @@ export default function Home() {
                     تحلیل کند، فروش را پیش‌بینی کند، تارگت بگذارد و برنامه‌ی عملیاتی بدهد.
                   </p>
                 </div>
+                {!showRecents && (
+                  <div className="mb-6">
+                    <RecentSessions
+                      activeId={sessionId}
+                      onOpen={(sid) => void openSession(sid)}
+                      onDeleted={(sid) => {
+                        if (sid === sessionId) reset();
+                      }}
+                    />
+                  </div>
+                )}
                 <UploadStep
-                  onSession={(sid) => saveStage(sid, "upload")}
+                  onSession={(sid) => rememberSession(sid)}
                   onLoaded={(r) => {
                     setUpload(r);
                     setStage("mapping");
-                    saveStage(r.session_id, "mapping");
+                    rememberSession(r.session_id);
+                    setSessionId(r.session_id);
+                    setArchived(false);
                   }}
                 />
               </div>
@@ -277,6 +369,7 @@ export default function Home() {
                   />
                 ) : (
                   <MappingStep
+                    key={upload.session_id}
                     data={upload}
                     loading={analyzing}
                     onBack={reset}
@@ -295,7 +388,9 @@ export default function Home() {
                   smsEnabled={health?.sms_enabled ?? false}
                   initialStrategy={strategy}
                   initialCampaign={campaign}
+                  archived={archived}
                   onReset={reset}
+                  onShowRecents={() => setShowRecents((v) => !v)}
                 />
               </div>
             )}

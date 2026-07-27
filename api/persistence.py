@@ -12,6 +12,7 @@ WAL همزمانی threadها را تحمل می‌کند؛ چند پروسه ه
 from __future__ import annotations
 
 import json
+import logging
 import pickle
 import shutil
 import sqlite3
@@ -25,6 +26,8 @@ from typing import TYPE_CHECKING, Any
 import pandas as pd
 
 from mktcore.config import get_settings
+
+logger = logging.getLogger("mktcore.persistence")
 
 if TYPE_CHECKING:
     from mktcore.pipeline import MetricsBundle
@@ -65,7 +68,59 @@ CREATE TABLE IF NOT EXISTS outbox (
     provider TEXT,
     dry_run INTEGER NOT NULL DEFAULT 1
 );
+CREATE TABLE IF NOT EXISTS mapping_profiles (
+    signature TEXT PRIMARY KEY,
+    columns_json TEXT NOT NULL,
+    mapping_json TEXT NOT NULL,
+    file_currency TEXT,
+    display_currency TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    use_count INTEGER NOT NULL DEFAULT 1
+);
 """
+
+_SCHEMA_VERSION = 2
+
+# ستون‌های افزوده‌شده به جدول موجود — با PRAGMA table_info محافظت می‌شوند تا
+# دیتابیس فعلی کاربر (۸ ستون) بدون از دست رفتن ردیف مهاجرت کند.
+_ADDED_COLUMNS = (
+    ("sessions", "label", "TEXT"),
+    ("sessions", "archived_at", "REAL"),
+    ("sessions", "summary_json", "TEXT"),
+    ("sessions", "last_opened_at", "REAL"),
+)
+
+_INDICES = (
+    "CREATE INDEX IF NOT EXISTS idx_sessions_created ON sessions(created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_jobs_session ON jobs(session_id, status)",
+)
+
+
+def _summary_from_analysis(payload: dict) -> dict:
+    """خلاصه‌ی سبک برای فهرست نشست‌ها (تا هرگز analysis_json بزرگ پارس نشود)."""
+    q = payload.get("quality") or {}
+    k = payload.get("kpis") or {}
+    m = payload.get("manifest") or {}
+    return {
+        "n_rows": q.get("n_rows") or m.get("clean_rows"),
+        "date_min": q.get("date_min"),
+        "date_max": q.get("date_max"),
+        "total_revenue": k.get("total_revenue"),
+        "currency": payload.get("currency"),
+        "validation_status": (payload.get("validation") or {}).get("status"),
+        "analyzed_at": m.get("analyzed_at"),
+        "pipeline_version": m.get("pipeline_version"),
+    }
+
+
+def _summary_from_columns(payload: dict) -> dict:
+    """خلاصه‌ی نشست‌های تحلیل‌نشده (فایل آپلود شده ولی تحلیل نشده)."""
+    return {
+        "n_rows": payload.get("n_rows"),
+        "n_columns": len(payload.get("columns") or []),
+        "header_signature": payload.get("header_signature"),
+    }
 
 
 @dataclass
@@ -80,6 +135,8 @@ class SessionRecord:
     analysis: dict | None = None
     strategy: dict | None = None
     campaign: dict | None = None
+    label: str | None = None
+    archived_at: float | None = None
 
     @property
     def has_analysis(self) -> bool:
@@ -113,14 +170,27 @@ class PersistentStore:
 
     def __init__(self, data_dir: Path | None = None) -> None:
         settings = get_settings()
-        self.data_dir = Path(data_dir or settings.mkt_data_dir)
+        self.data_dir = Path(data_dir or settings.mkt_data_dir).expanduser()
         self.sessions_dir = self.data_dir / "sessions"
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = self.data_dir / "app.db"
-        self.ttl_seconds = settings.mkt_session_ttl_hours * 3600
+        self.retention = settings.retention_policy
         self._lock = threading.Lock()
         self._frame_cache: dict[tuple[str, str], Any] = {}
         self._init_db()
+        # «حافظه کجاست؟» باید در لاگ صریح باشد — مسیر نسبی + mkdir بی‌صدا
+        # باعث می‌شد اجرای سرور از پوشه‌ی دیگر مثل «پاک شدن همه‌چیز» به‌نظر برسد.
+        logger.info(
+            "ذخیره‌گاه داده: %s (دیتابیس: %s، موجود: %s) — نگه‌داری: %s",
+            self.data_dir.resolve(), self.db_path.name, self.db_path.exists(),
+            self.retention["policy_fa"],
+        )
+        if settings.mkt_session_ttl_hours is not None:
+            logger.warning(
+                "MKT_SESSION_TTL_HOURS=%s منسوخ است و دیگر نشست‌ها را حذف نمی‌کند؛ "
+                "از کلیدهای MKT_RETENTION_* استفاده کنید.",
+                settings.mkt_session_ttl_hours,
+            )
 
     # ---------------------------------------------------------------- پایه
     def _conn(self) -> sqlite3.Connection:
@@ -132,7 +202,37 @@ class PersistentStore:
 
     def _init_db(self) -> None:
         with self._conn() as c:
-            c.executescript(_SCHEMA)
+            c.executescript(_SCHEMA)  # executescript خودش commit می‌کند
+            for table, col, decl in _ADDED_COLUMNS:
+                have = {r["name"] for r in c.execute(f"PRAGMA table_info({table})")}
+                if col not in have:
+                    c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+                    logger.info("مهاجرت: ستون %s.%s اضافه شد", table, col)
+            for ddl in _INDICES:
+                c.execute(ddl)
+            version = c.execute("PRAGMA user_version").fetchone()[0]
+            if version < _SCHEMA_VERSION:
+                self._backfill_summaries(c)
+                c.execute(f"PRAGMA user_version = {int(_SCHEMA_VERSION)}")
+                logger.info("مهاجرت طرح‌واره: %s → %s", version, _SCHEMA_VERSION)
+
+    def _backfill_summaries(self, c: sqlite3.Connection) -> None:
+        """پر کردن summary_json نشست‌های قبلی (idempotent؛ فقط ردیف‌های NULL)."""
+        rows = c.execute(
+            "SELECT id, analysis_json, columns_json FROM sessions WHERE summary_json IS NULL"
+        ).fetchall()
+        for r in rows:
+            try:
+                summary: dict = {}
+                if r["columns_json"]:
+                    summary.update(_summary_from_columns(json.loads(r["columns_json"])))
+                if r["analysis_json"]:
+                    summary.update(_summary_from_analysis(json.loads(r["analysis_json"])))
+                if summary:
+                    c.execute("UPDATE sessions SET summary_json = ? WHERE id = ?",
+                              (_j(summary), r["id"]))
+            except Exception:  # noqa: BLE001 - یک ردیف خراب نباید بالا آمدن API را بشکند
+                logger.exception("backfill خلاصه‌ی نشست %s ناموفق بود", r["id"])
 
     def _sdir(self, sid: str) -> Path:
         return self.sessions_dir / sid
@@ -170,9 +270,8 @@ class PersistentStore:
             row = c.execute("SELECT * FROM sessions WHERE id = ?", (sid,)).fetchone()
         if row is None:
             return None
-        if time.time() - row["created_at"] > self.ttl_seconds:
-            self.delete_session(sid)
-            return None
+        # هیچ حذفی هنگام خواندن انجام نمی‌شود: پیش‌تر نشستِ گذشته از TTL دقیقاً
+        # در لحظه‌ی بازکردن پاک می‌شد و کاربر «حافظه ندارد» را تجربه می‌کرد.
         return SessionRecord(
             id=row["id"],
             created_at=row["created_at"],
@@ -182,48 +281,252 @@ class PersistentStore:
             analysis=_uj(row["analysis_json"]),
             strategy=_uj(row["strategy_json"]),
             campaign=_uj(row["campaign_json"]),
+            label=row["label"],
+            archived_at=row["archived_at"],
         )
 
-    def delete_session(self, sid: str) -> None:
-        self._cache_drop(sid)
+    def delete_session(self, sid: str) -> bool:
+        """حذف کامل نشست (فقط با درخواست صریح کاربر یا سیاست delete_days)."""
         with self._conn() as c:
-            c.execute("DELETE FROM sessions WHERE id = ?", (sid,))
-        shutil.rmtree(self._sdir(sid), ignore_errors=True)
+            cur = c.execute("DELETE FROM sessions WHERE id = ?", (sid,))
+            existed = cur.rowcount > 0
+        self._cache_drop(sid)
+        sdir = self._sdir(sid)
+        shutil.rmtree(sdir, ignore_errors=True)
+        if sdir.exists():  # روی ویندوز قفل فایل ممکن است مانع شود
+            logger.warning("پوشه‌ی نشست %s حذف نشد: %s", sid, sdir)
+        return existed
 
-    def cleanup_expired(self) -> int:
-        """حذف نشست‌های منقضی؛ تعداد حذف‌شده را برمی‌گرداند."""
-        cutoff = time.time() - self.ttl_seconds
+    # -------------------------------------------------- سیاست نگه‌داری (هرس)
+    _HEAVY_FILES = ("clean.parquet", "clean.pkl", "bundle.pkl",
+                    "returns.parquet", "returns.pkl",
+                    "exclusions.parquet", "exclusions.pkl")
+
+    def _busy_sessions(self) -> set[str]:
         with self._conn() as c:
             rows = c.execute(
-                "SELECT id FROM sessions WHERE created_at < ?", (cutoff,)
+                "SELECT DISTINCT session_id FROM jobs "
+                "WHERE status IN ('queued','running') AND session_id IS NOT NULL"
             ).fetchall()
-        for r in rows:
-            self.delete_session(r["id"])
-        return len(rows)
+        return {r["session_id"] for r in rows}
+
+    def run_retention(
+        self,
+        *,
+        raw_days: int | None = None,
+        heavy_days: int | None = None,
+        delete_days: int | None = None,
+        jobs_days: int | None = None,
+    ) -> dict:
+        """هرس فایل‌های سنگین طبق سیاست؛ نتیجه‌ی تحلیل هرگز خودکار حذف نمی‌شود.
+
+        در همه‌ی پارامترها ۰ (یا None با پیش‌فرض ۰) به‌معنی «هرگز» است. نشستِ
+        «آخرین تحلیل» و نشست‌های دارای job در حال اجرا هرس نمی‌شوند.
+        """
+        pol = self.retention
+        raw_days = pol["raw_days"] if raw_days is None else raw_days
+        heavy_days = pol["heavy_days"] if heavy_days is None else heavy_days
+        delete_days = pol["delete_days"] if delete_days is None else delete_days
+        jobs_days = pol["jobs_days"] if jobs_days is None else jobs_days
+
+        now = time.time()
+        protected = {s for s in (self.latest_session_with_analysis(),) if s}
+        protected |= self._busy_sessions()
+        result = {"raw_pruned": 0, "archived": 0, "deleted": 0, "jobs_pruned": 0}
+
+        with self._conn() as c:
+            rows = c.execute("SELECT id, created_at, archived_at FROM sessions").fetchall()
+        for row in rows:
+            sid, age_days = row["id"], (now - row["created_at"]) / 86400.0
+            if delete_days > 0 and age_days > delete_days and sid not in protected:
+                if self.delete_session(sid):
+                    result["deleted"] += 1
+                continue
+            if sid in protected:
+                continue
+            if raw_days > 0 and age_days > raw_days:
+                raw = self._sdir(sid) / "raw.pkl"
+                if raw.exists():
+                    raw.unlink(missing_ok=True)
+                    self._cache_drop(sid)
+                    result["raw_pruned"] += 1
+            if heavy_days > 0 and age_days > heavy_days and row["archived_at"] is None:
+                removed = False
+                for name in self._HEAVY_FILES:
+                    p = self._sdir(sid) / name
+                    if p.exists():
+                        p.unlink(missing_ok=True)
+                        removed = True
+                if removed:
+                    self._cache_drop(sid)  # کش نباید فایل بایگانی‌شده را سرو کند
+                    with self._conn() as c:
+                        c.execute("UPDATE sessions SET archived_at = ? WHERE id = ?",
+                                  (now, sid))
+                    result["archived"] += 1
+
+        if jobs_days > 0:
+            cutoff = now - jobs_days * 86400.0
+            with self._conn() as c:
+                cur = c.execute(
+                    "DELETE FROM jobs WHERE status IN ('done','error') AND updated_at < ?",
+                    (cutoff,),
+                )
+                result["jobs_pruned"] = cur.rowcount or 0
+
+        if any(result.values()):
+            logger.info("هرس نگه‌داری: %s", result)
+        return result
+
+    def cleanup_expired(self) -> int:
+        """سازگاری با فراخوان‌های قدیمی: اجرای سیاست نگه‌داری."""
+        r = self.run_retention()
+        return r["deleted"]
 
     def latest_session_with_analysis(self) -> str | None:
-        """جدیدترین نشستی که تحلیل کامل دارد (برای زمان‌بند)."""
+        """جدیدترین نشستی که تحلیل کامل دارد (برای زمان‌بند و بازیابی خودکار)."""
         with self._conn() as c:
             row = c.execute(
-                "SELECT id, created_at FROM sessions "
-                "WHERE analysis_json IS NOT NULL ORDER BY created_at DESC LIMIT 1"
+                "SELECT id FROM sessions WHERE analysis_json IS NOT NULL "
+                "ORDER BY COALESCE(last_opened_at, created_at) DESC LIMIT 1"
             ).fetchone()
-        if row is None or time.time() - row["created_at"] > self.ttl_seconds:
-            return None
-        return row["id"]
+        return None if row is None else row["id"]
 
     def _set_field(self, sid: str, column: str, value) -> None:
         with self._conn() as c:
             c.execute(f"UPDATE sessions SET {column} = ? WHERE id = ?", (_j(value), sid))
 
+    def _merge_summary(self, sid: str, extra: dict) -> None:
+        """به‌روزرسانی summary_json (خلاصه‌ی سبک فهرست) بدون دست‌زدن به بقیه."""
+        with self._conn() as c:
+            row = c.execute("SELECT summary_json FROM sessions WHERE id = ?",
+                            (sid,)).fetchone()
+            current = _uj(row["summary_json"]) if row and row["summary_json"] else {}
+            current.update({k: v for k, v in extra.items() if v is not None})
+            c.execute("UPDATE sessions SET summary_json = ? WHERE id = ?",
+                      (_j(current), sid))
+
     def set_columns_payload(self, sid: str, payload: dict) -> None:
         self._set_field(sid, "columns_json", payload)
+        self._merge_summary(sid, _summary_from_columns(payload))
 
     def set_mapping(self, sid: str, mapping: dict) -> None:
         self._set_field(sid, "mapping_json", mapping)
 
     def set_analysis(self, sid: str, analysis_payload: dict) -> None:
         self._set_field(sid, "analysis_json", analysis_payload)
+        self._merge_summary(sid, _summary_from_analysis(analysis_payload))
+        # تحلیل تازه = فایل‌های سنگین دوباره موجودند
+        with self._conn() as c:
+            c.execute("UPDATE sessions SET archived_at = NULL WHERE id = ?", (sid,))
+
+    # ------------------------------------------------- فهرست و مدیریت نشست‌ها
+    def session_files(self, sid: str) -> dict:
+        d = self._sdir(sid)
+        return {
+            "raw": (d / "raw.pkl").exists(),
+            "heavy": (d / "bundle.pkl").exists() and any(
+                (d / n).exists() for n in ("clean.parquet", "clean.pkl")),
+        }
+
+    def list_sessions(self, *, limit: int = 20, offset: int = 0,
+                      analyzed_only: bool = False) -> tuple[list[dict], int]:
+        """فهرست نشست‌ها بدون پارس کردن analysis_json (فقط summary_json سبک)."""
+        where = "WHERE analysis_json IS NOT NULL" if analyzed_only else ""
+        with self._conn() as c:
+            total = c.execute(f"SELECT COUNT(*) FROM sessions {where}").fetchone()[0]
+            rows = c.execute(
+                "SELECT id, created_at, filename, label, archived_at, summary_json, "
+                "last_opened_at, analysis_json IS NOT NULL AS has_analysis, "
+                "strategy_json IS NOT NULL AS has_strategy, "
+                "campaign_json IS NOT NULL AS has_campaign, "
+                "columns_json IS NOT NULL AS has_columns "
+                f"FROM sessions {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                (limit, offset),
+            ).fetchall()
+
+        items: list[dict] = []
+        for r in rows:
+            summary = _uj(r["summary_json"]) or {}
+            if not summary and r["has_analysis"]:  # خودترمیمی برای ردیف‌های قدیمی
+                try:
+                    with self._conn() as c:
+                        raw = c.execute("SELECT analysis_json FROM sessions WHERE id = ?",
+                                        (r["id"],)).fetchone()["analysis_json"]
+                    summary = _summary_from_analysis(json.loads(raw))
+                    self._merge_summary(r["id"], summary)
+                except Exception:  # noqa: BLE001
+                    logger.exception("ساخت خلاصه‌ی نشست %s ناموفق بود", r["id"])
+            files = self.session_files(r["id"])
+            items.append({
+                "id": r["id"],
+                "created_at": r["created_at"],
+                "filename": r["filename"],
+                "label": r["label"],
+                "title": r["label"] or r["filename"] or "بدون نام",
+                "has_analysis": bool(r["has_analysis"]),
+                "has_strategy": bool(r["has_strategy"]),
+                "has_campaign": bool(r["has_campaign"]),
+                "has_columns": bool(r["has_columns"]),
+                "archived": bool(r["archived_at"]) or (r["has_analysis"] and not files["heavy"]),
+                "archived_at": r["archived_at"],
+                "last_opened_at": r["last_opened_at"],
+                "files": files,
+                **{k: summary.get(k) for k in
+                   ("n_rows", "date_min", "date_max", "total_revenue", "currency",
+                    "validation_status")},
+            })
+        return items, int(total)
+
+    def set_label(self, sid: str, label: str | None) -> bool:
+        with self._conn() as c:
+            cur = c.execute("UPDATE sessions SET label = ? WHERE id = ?", (label, sid))
+            return cur.rowcount > 0
+
+    def touch_opened(self, sid: str) -> None:
+        with self._conn() as c:
+            c.execute("UPDATE sessions SET last_opened_at = ? WHERE id = ?",
+                      (time.time(), sid))
+
+    def is_archived(self, sid: str) -> bool:
+        with self._conn() as c:
+            row = c.execute("SELECT archived_at FROM sessions WHERE id = ?",
+                            (sid,)).fetchone()
+        return bool(row and row["archived_at"])
+
+    # ------------------------------------------------ پروفایل نگاشت ستون‌ها
+    def get_mapping_profile(self, signature: str) -> dict | None:
+        with self._conn() as c:
+            row = c.execute("SELECT * FROM mapping_profiles WHERE signature = ?",
+                            (signature,)).fetchone()
+        if row is None:
+            return None
+        return {
+            "signature": row["signature"],
+            "columns": _uj(row["columns_json"]) or [],
+            "mapping": _uj(row["mapping_json"]) or {},
+            "file_currency": row["file_currency"],
+            "display_currency": row["display_currency"],
+            "updated_at": row["updated_at"],
+            "use_count": row["use_count"],
+        }
+
+    def upsert_mapping_profile(self, signature: str, *, columns: list[str],
+                               mapping: dict, file_currency: str | None = None,
+                               display_currency: str | None = None) -> None:
+        now = time.time()
+        with self._conn() as c:
+            c.execute(
+                "INSERT INTO mapping_profiles (signature, columns_json, mapping_json, "
+                "file_currency, display_currency, created_at, updated_at, use_count) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 1) "
+                "ON CONFLICT(signature) DO UPDATE SET "
+                "columns_json=excluded.columns_json, mapping_json=excluded.mapping_json, "
+                "file_currency=excluded.file_currency, "
+                "display_currency=excluded.display_currency, "
+                "updated_at=excluded.updated_at, use_count=use_count+1",
+                (signature, _j(columns), _j(mapping), file_currency, display_currency,
+                 now, now),
+            )
 
     def set_strategy(self, sid: str, strategy_dict: dict) -> None:
         self._set_field(sid, "strategy_json", strategy_dict)

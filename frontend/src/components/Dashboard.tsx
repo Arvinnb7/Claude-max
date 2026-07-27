@@ -7,6 +7,7 @@ import {
   BrainCircuit,
   Download,
   FileText,
+  History,
   LineChart as LineIcon,
   Megaphone,
   Repeat,
@@ -77,7 +78,9 @@ export default function Dashboard({
   smsEnabled = false,
   initialStrategy = null,
   initialCampaign = null,
+  archived = false,
   onReset,
+  onShowRecents,
 }: {
   data: AnalyzeResponse;
   sessionId: string;
@@ -85,7 +88,9 @@ export default function Dashboard({
   smsEnabled?: boolean;
   initialStrategy?: StrategyResponse | null;
   initialCampaign?: CampaignResponse | null;
+  archived?: boolean;
   onReset: () => void;
+  onShowRecents?: () => void;
 }) {
   const [tab, setTab] = useState<Tab>("kpi");
   const unit = data.currency;
@@ -126,17 +131,36 @@ export default function Dashboard({
             {toFa(num(data.quality.n_rows))} رکورد
           </p>
         </div>
-        <div className="flex gap-2">
-          <a href={reportUrl(sessionId, "pdf")} target="_blank" rel="noopener noreferrer">
-            <Button variant="primary">
-              <FileText size={16} /> دانلود گزارش جامع PDF
+        <div className="flex flex-wrap gap-2">
+          {archived ? (
+            <Button variant="outline" disabled>
+              <FileText size={16} /> گزارش PDF (بایگانی‌شده)
             </Button>
-          </a>
+          ) : (
+            <a href={reportUrl(sessionId, "pdf")} target="_blank" rel="noopener noreferrer">
+              <Button variant="primary">
+                <FileText size={16} /> دانلود گزارش جامع PDF
+              </Button>
+            </a>
+          )}
+          {onShowRecents && (
+            <Button variant="outline" onClick={onShowRecents}>
+              <History size={16} /> تحلیل‌های قبلی
+            </Button>
+          )}
           <Button variant="outline" onClick={onReset}>
             داده‌ی جدید
           </Button>
         </div>
       </div>
+
+      {archived && (
+        <Alert tone="warn">
+          داده‌های سنگین این تحلیل برای آزاد کردن فضا بایگانی شده‌اند. همه‌ی اعداد و نمودارهای
+          این داشبورد کامل‌اند، اما برای گزارش PDF، خروجی اکسل، استراتژی هوش مصنوعی و پیامک
+          باید همان فایل را دوباره بارگذاری و تحلیل کنید.
+        </Alert>
+      )}
 
       {data.validation && data.validation.status !== "PASS" && (
         <Alert tone={data.validation.status === "FAIL" ? "error" : "warn"}>

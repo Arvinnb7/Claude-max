@@ -5,6 +5,7 @@ import type {
   HealthResponse,
   JobStatus,
   SessionInfo,
+  SessionListResponse,
   SMSResult,
   StrategyResponse,
   UploadResponse,
@@ -133,6 +134,33 @@ export async function getSessionInfo(sessionId: string): Promise<SessionInfo> {
   return handle<SessionInfo>(
     await fetch(`${BASE}/api/session/${encodeURIComponent(sessionId)}`, {
       cache: "no-store",
+    }),
+  );
+}
+
+// --------------------------------------------------- فهرست و مدیریت نشست‌ها
+export async function listSessions(limit = 20, analyzed = false): Promise<SessionListResponse> {
+  return handle<SessionListResponse>(
+    await fetch(`${BASE}/api/sessions?limit=${limit}&analyzed=${analyzed}`, {
+      cache: "no-store",
+    }),
+  );
+}
+
+export async function deleteSession(session_id: string): Promise<{ deleted: boolean }> {
+  return handle<{ deleted: boolean }>(
+    await fetch(`${BASE}/api/session/${encodeURIComponent(session_id)}`, {
+      method: "DELETE",
+    }),
+  );
+}
+
+export async function renameSession(session_id: string, label: string | null): Promise<unknown> {
+  return handle<unknown>(
+    await fetch(`${BASE}/api/session/${encodeURIComponent(session_id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ label }),
     }),
   );
 }

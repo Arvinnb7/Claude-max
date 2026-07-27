@@ -97,7 +97,7 @@ def start_scheduler() -> bool:
         lambda: run_cycle_scan(), "cron", hour=settings.mkt_schedule_hour, minute=0,
         id="cycle-scan", replace_existing=True,
     )
-    sched.add_job(store.cleanup_expired, "interval", hours=6, id="session-cleanup",
+    sched.add_job(store.run_retention, "interval", hours=6, id="session-cleanup",
                   replace_existing=True)
     sched.start()
     _scheduler = sched

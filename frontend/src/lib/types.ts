@@ -18,6 +18,48 @@ export interface UploadResponse {
   preview: Record<string, string>[];
   n_rows: number;
   warnings?: string[];
+  header_signature?: string;
+  /** نگاشت ذخیره‌شده‌ی فایلی با همین ساختار سرستون (حافظه‌ی نگاشت) */
+  saved_mapping?: Record<string, string>;
+  saved_dropped_roles?: string[];
+  saved_file_currency?: string | null;
+  saved_display_currency?: string | null;
+  saved_use_count?: number;
+}
+
+export interface SessionListItem {
+  id: string;
+  created_at: number;
+  filename: string | null;
+  label: string | null;
+  title: string;
+  has_analysis: boolean;
+  has_strategy: boolean;
+  has_campaign: boolean;
+  has_columns: boolean;
+  archived: boolean;
+  archived_at: number | null;
+  last_opened_at: number | null;
+  files: { raw: boolean; heavy: boolean };
+  n_rows: number | null;
+  date_min: string | null;
+  date_max: string | null;
+  total_revenue: number | null;
+  currency: string | null;
+  validation_status: string | null;
+}
+
+export interface SessionListResponse {
+  items: SessionListItem[];
+  total: number;
+  latest_analyzed_id: string | null;
+  retention: {
+    raw_days: number;
+    heavy_days: number;
+    delete_days: number;
+    jobs_days: number;
+    policy_fa: string;
+  };
 }
 
 export interface KPIs {
@@ -368,6 +410,11 @@ export interface JobStatus {
 
 export interface SessionInfo {
   exists: boolean;
+  created_at?: number;
+  label?: string | null;
+  archived?: boolean;
+  files?: { raw: boolean; heavy: boolean };
+  mapping?: Record<string, string> | null;
   filename?: string | null;
   columns_payload?: UploadResponse | null;
   analysis?: AnalyzeResponse | null;
