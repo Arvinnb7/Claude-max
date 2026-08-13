@@ -1,0 +1,113 @@
+"""پل بین تحلیل موجود و دفتر کل canonical — با جداسازی کاملِ خطا.
+
+این تنها جایی است که مسیر کارکنِ تحلیل به لایه‌ی جدید وصل می‌شود، و عمداً
+باریک‌ترین پل ممکن است:
+
+* **هرگز استثنا بالا نمی‌دهد.** اگر نوشتن دفتر کل شکست بخورد، تحلیل و داشبورد
+  دقیقاً مثل قبل کار می‌کنند و فقط یک هشدار در پاسخ می‌آید. یک قابلیت جدید
+  نباید بتواند قابلیت قدیمیِ سالم را از کار بیندازد.
+* **فریم و باندل را تغییر نمی‌دهد** — فقط می‌خواند.
+* **بعد از** `save_bundle` صدا زده می‌شود، پس حتی خطای مهلک هم نتیجه‌ی
+  ذخیره‌شده‌ی تحلیل را از بین نمی‌برد.
+* با `MKT_CANONICAL_ENABLE=0` کاملاً خاموش می‌شود (کلید فرار عملیاتی).
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+import pandas as pd
+
+from mktcore.config import get_settings
+
+logger = logging.getLogger("mktcore.canonical_hook")
+
+
+def canonical_enabled() -> bool:
+    return bool(get_settings().mkt_canonical_enable)
+
+
+def record_analysis(
+    clean: pd.DataFrame,
+    bundle: Any,
+    *,
+    session_id: str,
+    filename: str | None = None,
+    dataset_key: str | None = None,
+    sheet_name: str = "",
+    display_currency: str = "تومان",
+    file_currency: str | None = None,
+) -> dict | None:
+    """نوشتن نتیجه‌ی همین تحلیل در دفتر کل. خطا → `None` + لاگ.
+
+    خروجی برای کلید `payload["canonical"]` است: **کلیدی افزودنی و شرطی**، پس
+    هیچ مصرف‌کننده‌ی فعلی‌ای آن را نمی‌بیند مگر بخواهد.
+    """
+    if not canonical_enabled():
+        return None
+    try:
+        from mktcore.db.repo_import import write_import
+
+        result = write_import(
+            clean,
+            dataset_key=dataset_key,
+            session_id=session_id,
+            filename=filename,
+            sheet_name=sheet_name,
+            display_currency=display_currency,
+            file_currency=file_currency,
+            kpis=getattr(bundle, "kpis", None),
+            validation_status=getattr(getattr(bundle, "validation", None), "status", None),
+        )
+        payload = result.to_dict()
+        payload["ok"] = True
+        payload["note_fa"] = (
+            "این تحلیل در دفتر کل ثبت شد؛ مشتریان و کالاها بین بارگذاری‌ها به هم وصل می‌شوند."
+        )
+        payload["features_written"] = _record_features(
+            clean, bundle, display_currency=display_currency,
+        )
+        payload["opportunities"] = _run_opportunities(
+            clean, bundle, session_id=session_id, display_currency=display_currency,
+        )
+        return payload
+    except Exception:  # noqa: BLE001 - جداسازی عمدی: تحلیل نباید قربانی دفتر کل شود
+        logger.exception("ثبت در دفتر کل canonical ناموفق بود (نشست %s)", session_id)
+        return {
+            "ok": False,
+            "note_fa": (
+                "ثبت این تحلیل در دفتر کل انجام نشد؛ گزارش‌ها و داشبورد دست‌نخورده‌اند. "
+                "پیوند مشتری بین بارگذاری‌ها برای این نوبت به‌روز نشده است."
+            ),
+        }
+
+
+def _record_features(clean: pd.DataFrame, bundle: Any, *, display_currency: str) -> int:
+    """عکس ویژگی مشتری. شکستش نباید ثبتِ موفقِ دفتر کل را باطل کند."""
+    try:
+        from mktcore.db.repo_features import write_customer_features
+
+        return write_customer_features(clean, bundle, display_currency=display_currency)
+    except Exception:  # noqa: BLE001 - همان جداسازی، یک لایه پایین‌تر
+        logger.exception("نوشتن عکس ویژگی مشتری ناموفق بود")
+        return 0
+
+
+def _run_opportunities(
+    clean: pd.DataFrame, bundle: Any, *, session_id: str | None, display_currency: str,
+) -> dict | None:
+    """اجرای موتور فرصت‌ها. مثل بقیه‌ی این پل، شکستش کسی را نمی‌کُشد."""
+    try:
+        from mktcore.opportunities import run_opportunity_engine
+
+        result = run_opportunity_engine(
+            bundle, clean, session_id=session_id, display_currency=display_currency,
+        )
+        return result.to_dict() if result else None
+    except Exception:  # noqa: BLE001 - همان جداسازی
+        logger.exception("اجرای موتور فرصت‌ها ناموفق بود")
+        return None
+
+
+__all__ = ["canonical_enabled", "record_analysis"]

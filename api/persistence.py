@@ -68,6 +68,11 @@ CREATE TABLE IF NOT EXISTS outbox (
     provider TEXT,
     dry_run INTEGER NOT NULL DEFAULT 1
 );
+CREATE TABLE IF NOT EXISTS app_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT,
+    updated_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS mapping_profiles (
     signature TEXT PRIMARY KEY,
     columns_json TEXT NOT NULL,
@@ -94,6 +99,9 @@ _ADDED_COLUMNS = (
 _INDICES = (
     "CREATE INDEX IF NOT EXISTS idx_sessions_created ON sessions(created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_jobs_session ON jobs(session_id, status)",
+    # بدون این، هر بررسی «آیا اخیراً به این مشتری پیام داده‌ایم؟» یک پیمایش کامل
+    # جدول بود — به‌ازای **هر** گیرنده در هر اسکن.
+    "CREATE INDEX IF NOT EXISTS idx_outbox_customer ON outbox(customer_id, created_at DESC)",
 )
 
 
@@ -678,15 +686,31 @@ class PersistentStore:
     def add_outbox(self, *, kind: str, status: str, session_id: str | None = None,
                    audience: str | None = None, customer_id: str | None = None,
                    phone: str | None = None, message: str | None = None,
-                   provider: str | None = None, dry_run: bool = True) -> None:
+                   provider: str | None = None, dry_run: bool = True) -> int:
+        """ثبت یک ردیف در outbox و برگرداندن شناسه‌ی آن.
+
+        شناسه برای الگوی «ادعا سپس ارسال» لازم است: اول ردیف با وضعیت «در حال
+        ارسال» ثبت می‌شود، بعد ارسال انجام می‌شود، بعد وضعیت به‌روز می‌شود.
+        """
         with self._conn() as c:
-            c.execute(
+            cur = c.execute(
                 "INSERT INTO outbox (created_at, session_id, kind, audience, "
                 "customer_id, phone, message, status, provider, dry_run) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (time.time(), session_id, kind, audience, customer_id, phone,
                  message, status, provider, int(dry_run)),
             )
+            return int(cur.lastrowid or 0)
+
+    def update_outbox_status(self, outbox_id: int, *, status: str,
+                             provider: str | None = None) -> None:
+        """به‌روزرسانی وضعیت یک ردیف outbox پس از تلاش برای ارسال."""
+        with self._conn() as c:
+            if provider is None:
+                c.execute("UPDATE outbox SET status = ? WHERE id = ?", (status, outbox_id))
+            else:
+                c.execute("UPDATE outbox SET status = ?, provider = ? WHERE id = ?",
+                          (status, provider, outbox_id))
 
     def list_outbox(self, limit: int = 50) -> list[dict]:
         with self._conn() as c:
@@ -707,6 +731,38 @@ class PersistentStore:
             vals.append(audience)
         with self._conn() as c:
             return c.execute(q + "LIMIT 1", vals).fetchone() is not None
+
+    # ------------------------------------------------ کلید/مقدارِ کوچکِ برنامه
+    def get_meta(self, key: str) -> str | None:
+        """مقدار یک کلید متادیتا (مثل «آخرین اجرای موفق زمان‌بند»)."""
+        with self._conn() as c:
+            row = c.execute("SELECT value FROM app_meta WHERE key = ?", (key,)).fetchone()
+        return None if row is None else row["value"]
+
+    def set_meta(self, key: str, value: str) -> None:
+        with self._conn() as c:
+            c.execute(
+                "INSERT INTO app_meta (key, value, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value, "
+                "updated_at = excluded.updated_at",
+                (key, value, time.time()),
+            )
+
+    def recent_contact_customer_ids(self, within_days: float = 14.0) -> set[str]:
+        """مشتریانی که در بازه‌ی اخیر پیامی گرفته‌اند — یک پرس‌وجو برای همه.
+
+        `outbox_exists_recent` برای بررسی تک‌نفره است؛ فیلتر «خستگی تماس» در
+        موتور فرصت‌ها باید هزاران مشتری را یک‌جا بررسی کند و صدا زدن آن در حلقه
+        یعنی هزاران رفت‌وبرگشت.
+        """
+        cutoff = time.time() - within_days * 86400
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT DISTINCT customer_id FROM outbox "
+                "WHERE customer_id IS NOT NULL AND created_at > ?",
+                (cutoff,),
+            ).fetchall()
+        return {str(r["customer_id"]) for r in rows}
 
 
 # نمونه‌ی سراسری (تک-پروسه)

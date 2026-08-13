@@ -1,0 +1,530 @@
+"""مدل‌های canonical — دفتر کل پایدارِ فروش، هویت و کیفیت داده.
+
+این جداول **جایگزین** خط لوله‌ی تحلیل نیستند؛ چیزی را نگه می‌دارند که یک نشستِ
+تنها نمی‌تواند بدهد:
+
+* **هویت پایدار مشتری و محصول** بین بارگذاری‌های مختلف (تحلیل امروز فقط داخل یک
+  فایل مشتری را می‌شناسد؛ فایل ماه بعد همان مشتری را غریبه می‌بیند).
+* **دفتر خطوط فروش با کلید idempotent** تا تحلیل دوباره‌ی یک فایل، جمع‌ها را دو
+  برابر نکند و تصحیح نگاشت ستون به‌جای ردیف تکراری، مقدار را به‌روز کند.
+* **آشتی ماندگار هر بارگذاری** تا «آیا این بارگذاری قابل انتشار بود؟» ماه‌ها بعد
+  هم قابل اثبات باشد.
+
+`business_id` روی همه‌ی جداول است (سند §۳۳): امروز یک business پیش‌فرض ساخته
+می‌شود، ولی جداکردنِ بعدیِ داده‌ی چند کسب‌وکار به مهاجرت داده نیاز ندارد.
+
+**بهای تمام‌شده**: ستون‌های `*cost*` ساخته می‌شوند ولی تا وقتی داده‌ی بهای خرید
+وجود ندارد **NULL می‌مانند**. هیچ عدد درآمدی «سود» نامیده نمی‌شود.
+"""
+
+from __future__ import annotations
+
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
+from sqlalchemy.orm import Mapped, mapped_column
+
+from .base import Base, now_ts
+
+# ---------------------------------------------------------------- کسب‌وکار
+
+
+class Business(Base):
+    """واحد جداسازی داده. امروز یکی است؛ فردا چند مستأجر."""
+
+    __tablename__ = "businesses"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    slug: Mapped[str] = mapped_column(String(64), unique=True)
+    name: Mapped[str] = mapped_column(String(255))
+    # واحد نمایشِ ترجیحی این کسب‌وکار. مبالغ ذخیره‌شده همیشه ریال‌اند؛ این فقط
+    # برای برگرداندن عدد به واحدی است که کاربر انتظار دارد.
+    display_currency: Mapped[str] = mapped_column(String(16), default="تومان")
+    created_at: Mapped[float] = mapped_column(Float, default=now_ts)
+
+
+# ---------------------------------------------------------------- بارگذاری
+
+
+class ImportBatch(Base):
+    """یک بارگذاری فایل. `dataset_key` هشِ محتوای فایل است، پس یک فایل یکسان
+    همیشه همان دسته را می‌گیرد و تحلیل دوباره‌اش `revision` را بالا می‌برد."""
+
+    __tablename__ = "import_batches"
+    __table_args__ = (
+        UniqueConstraint("business_id", "dataset_key", "revision"),
+        Index("ix_import_batches_business_created", "business_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    business_id: Mapped[int] = mapped_column(ForeignKey("businesses.id"), index=True)
+    dataset_key: Mapped[str] = mapped_column(String(64), index=True)
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    # نشستِ تحلیلی که این بارگذاری را ساخت (پیوند به لایه‌ی legacy، بدون FK چون
+    # مالک آن جدول `api/persistence.py` است و این لایه نباید قیدی رویش بگذارد).
+    session_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    filename: Mapped[str | None] = mapped_column(String(255))
+    sheet_name: Mapped[str | None] = mapped_column(String(255))
+
+    file_currency: Mapped[str | None] = mapped_column(String(16))
+    display_currency: Mapped[str | None] = mapped_column(String(16))
+    # چند ریال در یک واحدِ فایل — تبدیل انجام‌شده در مرز نوشتن، برای ممیزی
+    rial_per_file_unit: Mapped[int | None] = mapped_column(Integer)
+
+    # حسابرسی ردیف: خام = تمیز + حذفی + تکراری + برگشتی
+    rows_total: Mapped[int | None] = mapped_column(Integer)
+    rows_clean: Mapped[int | None] = mapped_column(Integer)
+    rows_invalid: Mapped[int | None] = mapped_column(Integer)
+    rows_duplicate: Mapped[int | None] = mapped_column(Integer)
+    rows_returns: Mapped[int | None] = mapped_column(Integer)
+
+    lines_inserted: Mapped[int] = mapped_column(Integer, default=0)
+    lines_updated: Mapped[int] = mapped_column(Integer, default=0)
+
+    date_min: Mapped[str | None] = mapped_column(String(10))
+    date_max: Mapped[str | None] = mapped_column(String(10))
+    net_sales_rial: Mapped[int | None] = mapped_column(BigInteger)
+
+    # PASS / PASS_WITH_WARNINGS / FAIL — همان دروازه‌ی تحلیل، کپی‌شده برای ممیزی
+    validation_status: Mapped[str | None] = mapped_column(String(32))
+    # OK / RECONCILED / MISMATCH — نتیجه‌ی آشتی نوشتن (مستقل از دروازه‌ی تحلیل)
+    reconcile_status: Mapped[str | None] = mapped_column(String(32))
+    notes_json: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[float] = mapped_column(Float, default=now_ts, index=True)
+
+
+class ImportReconciliation(Base):
+    """آشتی هر بارگذاری: «آنچه تحلیل گفت» در برابر «آنچه در دفتر کل نشست».
+
+    این جدول عمداً از `bundle.validation.checks` جداست: افزودن به آن‌ها دروازه‌ی
+    انتشار (`_require_publishable`) را می‌بست و تولید استراتژی را بی‌دلیل مسدود
+    می‌کرد. اینجا شواهد نوشتن ثبت می‌شود، نه صحتِ داده‌ی ورودی.
+    """
+
+    __tablename__ = "import_reconciliation"
+    __table_args__ = (
+        UniqueConstraint("batch_id", "check_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    batch_id: Mapped[int] = mapped_column(
+        ForeignKey("import_batches.id", ondelete="CASCADE"), index=True
+    )
+    check_id: Mapped[str] = mapped_column(String(32))
+    label_fa: Mapped[str] = mapped_column(String(255))
+    expected_text: Mapped[str | None] = mapped_column(String(64))
+    actual_text: Mapped[str | None] = mapped_column(String(64))
+    delta_text: Mapped[str | None] = mapped_column(String(64))
+    tolerance_text: Mapped[str | None] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(16))  # OK / WARN / MISMATCH
+    detail_fa: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[float] = mapped_column(Float, default=now_ts)
+
+
+# ------------------------------------------------------------------ هویت
+
+
+class Customer(Base):
+    """مشتری پایدار. `canonical_key` کلیدی است که تحلیل با آن کار می‌کند، پس
+    اعداد داشبورد و دفتر کل روی یک تعریف از «مشتری» می‌ایستند."""
+
+    __tablename__ = "customers"
+    __table_args__ = (
+        UniqueConstraint("business_id", "canonical_key"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    business_id: Mapped[int] = mapped_column(ForeignKey("businesses.id"), index=True)
+    canonical_key: Mapped[str] = mapped_column(String(128), index=True)
+    display_name: Mapped[str | None] = mapped_column(String(255))
+    phone_e164: Mapped[str | None] = mapped_column(String(20), index=True)
+    email: Mapped[str | None] = mapped_column(String(255))
+    first_order_date: Mapped[str | None] = mapped_column(String(10))
+    last_order_date: Mapped[str | None] = mapped_column(String(10))
+    # «چطور این مشتری شناسایی شد» — deterministic تنها روش مجازِ فعلی است؛
+    # تطبیق فازیِ نام عمداً پیاده نشده (ریسک ادغام دو مشتری واقعی).
+    resolution_method: Mapped[str] = mapped_column(String(32), default="raw_key")
+    created_at: Mapped[float] = mapped_column(Float, default=now_ts)
+    updated_at: Mapped[float] = mapped_column(Float, default=now_ts)
+
+
+class CustomerKey(Base):
+    """شناسه‌های یک مشتری (کلید خام فایل، موبایل نرمال‌شده، ایمیل).
+
+    یکتاییِ (business, key_type, key_value) همان چیزی است که اجازه می‌دهد فایل
+    ماه بعد به همان مشتری وصل شود.
+    """
+
+    __tablename__ = "customer_keys"
+    __table_args__ = (
+        UniqueConstraint("business_id", "key_type", "key_value"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    business_id: Mapped[int] = mapped_column(ForeignKey("businesses.id"), index=True)
+    customer_id: Mapped[int] = mapped_column(
+        ForeignKey("customers.id", ondelete="CASCADE"), index=True
+    )
+    key_type: Mapped[str] = mapped_column(String(16))  # raw_key / phone / email
+    key_value: Mapped[str] = mapped_column(String(255))
+    # فقط پیوندهای قطعی نوشته می‌شوند؛ عدد برای ممیزی و فیلترهای آینده است.
+    confidence_bp: Mapped[int] = mapped_column(Integer, default=10000)
+    first_seen_at: Mapped[float] = mapped_column(Float, default=now_ts)
+
+
+# ----------------------------------------------------------------- کاتالوگ
+
+
+class Product(Base):
+    """محصول پایدار با نامِ نرمال‌شده. ویژگی‌ها **از داده** استخراج می‌شوند
+    (اندازه/واحد بسته)؛ هیچ فرضِ دامنه‌ای hardcode نشده چون کسب‌وکار چنددامنه است."""
+
+    __tablename__ = "products"
+    __table_args__ = (
+        UniqueConstraint("business_id", "canonical_name"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    business_id: Mapped[int] = mapped_column(ForeignKey("businesses.id"), index=True)
+    canonical_name: Mapped[str] = mapped_column(String(255), index=True)
+    display_name: Mapped[str] = mapped_column(String(255))
+    category: Mapped[str | None] = mapped_column(String(255))
+    brand: Mapped[str | None] = mapped_column(String(255))
+    # اندازه‌ی بسته: مقدار ×۱۰۰۰ + واحدِ نرمال‌شده (g/kg/ml/l/عدد) — مبنای
+    # «تعدیل مقدار» در چرخه‌ی خرید. استخراج‌نشده → NULL، نه صفر.
+    pack_size_milli: Mapped[int | None] = mapped_column(BigInteger)
+    pack_unit: Mapped[str | None] = mapped_column(String(16))
+    # بهای تمام‌شده در دست نیست → این ستون‌ها NULL می‌مانند (مسدود، نه فراموش‌شده)
+    last_unit_cost_rial: Mapped[int | None] = mapped_column(BigInteger)
+    cost_confidence: Mapped[str | None] = mapped_column(String(16))
+    created_at: Mapped[float] = mapped_column(Float, default=now_ts)
+    updated_at: Mapped[float] = mapped_column(Float, default=now_ts)
+
+
+class ProductAlias(Base):
+    """نام‌های خامی که به یک محصول اشاره می‌کنند (فاصله/نیم‌فاصله/ی‌وک متفاوت)."""
+
+    __tablename__ = "product_aliases"
+    __table_args__ = (
+        UniqueConstraint("business_id", "alias_norm"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    business_id: Mapped[int] = mapped_column(ForeignKey("businesses.id"), index=True)
+    product_id: Mapped[int] = mapped_column(
+        ForeignKey("products.id", ondelete="CASCADE"), index=True
+    )
+    alias_norm: Mapped[str] = mapped_column(String(255), index=True)
+    alias_raw: Mapped[str] = mapped_column(String(255))
+    source: Mapped[str] = mapped_column(String(32), default="import")
+    created_at: Mapped[float] = mapped_column(Float, default=now_ts)
+
+
+# ------------------------------------------------------------------ فروش
+
+
+class Order(Base):
+    """سرِ فاکتور. جمع‌ها از خطوط ساخته می‌شوند، پس همیشه با آن‌ها آشتی‌اند."""
+
+    __tablename__ = "orders"
+    __table_args__ = (
+        UniqueConstraint("business_id", "order_key"),
+        Index("ix_orders_business_date", "business_id", "order_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    business_id: Mapped[int] = mapped_column(ForeignKey("businesses.id"), index=True)
+    order_key: Mapped[str] = mapped_column(String(128), index=True)
+    customer_id: Mapped[int | None] = mapped_column(
+        ForeignKey("customers.id", ondelete="SET NULL"), index=True
+    )
+    order_date: Mapped[str] = mapped_column(String(10), index=True)  # ISO میلادی
+    gross_rial: Mapped[int] = mapped_column(BigInteger, default=0)
+    returns_rial: Mapped[int] = mapped_column(BigInteger, default=0)
+    net_rial: Mapped[int] = mapped_column(BigInteger, default=0)
+    discount_rial: Mapped[int | None] = mapped_column(BigInteger)
+    line_count: Mapped[int] = mapped_column(Integer, default=0)
+    branch: Mapped[str | None] = mapped_column(String(255))
+    salesperson: Mapped[str | None] = mapped_column(String(255))
+    channel: Mapped[str | None] = mapped_column(String(255))
+    region: Mapped[str | None] = mapped_column(String(255))
+    batch_id: Mapped[int | None] = mapped_column(
+        ForeignKey("import_batches.id", ondelete="SET NULL"), index=True
+    )
+    created_at: Mapped[float] = mapped_column(Float, default=now_ts)
+    updated_at: Mapped[float] = mapped_column(Float, default=now_ts)
+
+
+class OrderLine(Base):
+    """قلم فروش — دانه‌بندی پایه‌ی همه‌چیز.
+
+    `line_uid = sha256(business|dataset|sheet|source_row)`: `source_row` از قبل
+    در فریم تمیز وجود دارد و از تعریف «تکراری» مستثناست، پس یک ردیفِ مشخص در یک
+    فایلِ مشخص همیشه همان کلید را می‌گیرد → درج دوباره upsert است نه ردیف نو.
+    """
+
+    __tablename__ = "order_lines"
+    __table_args__ = (
+        UniqueConstraint("line_uid"),
+        Index("ix_order_lines_business_date", "business_id", "line_date"),
+        Index("ix_order_lines_customer_date", "customer_id", "line_date"),
+        Index("ix_order_lines_product_date", "product_id", "line_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    line_uid: Mapped[str] = mapped_column(String(64), index=True)
+    business_id: Mapped[int] = mapped_column(ForeignKey("businesses.id"), index=True)
+    batch_id: Mapped[int] = mapped_column(
+        ForeignKey("import_batches.id", ondelete="CASCADE"), index=True
+    )
+    order_id: Mapped[int | None] = mapped_column(
+        ForeignKey("orders.id", ondelete="SET NULL"), index=True
+    )
+    customer_id: Mapped[int | None] = mapped_column(
+        ForeignKey("customers.id", ondelete="SET NULL"), index=True
+    )
+    product_id: Mapped[int | None] = mapped_column(
+        ForeignKey("products.id", ondelete="SET NULL"), index=True
+    )
+
+    line_date: Mapped[str] = mapped_column(String(10), index=True)
+    quantity_milli: Mapped[int | None] = mapped_column(BigInteger)
+    unit_price_rial: Mapped[int | None] = mapped_column(BigInteger)
+    revenue_rial: Mapped[int] = mapped_column(BigInteger)
+    gross_amount_rial: Mapped[int | None] = mapped_column(BigInteger)
+    # تخفیف مبلغی و نسبتی هرگز هم‌زمان پر نمی‌شوند؛ تفسیر در پاک‌سازی تعیین شده
+    discount_rial: Mapped[int | None] = mapped_column(BigInteger)
+    discount_rate_bp: Mapped[int | None] = mapped_column(Integer)
+    # بهای تمام‌شده‌ی همین خط (نه واحد). اگر فایل ستون بها نداشته باشد NULL
+    # می‌ماند — هرگز صفر، چون صفر یعنی «رایگان» و سود را جعلی می‌کند.
+    cost_rial: Mapped[int | None] = mapped_column(BigInteger)
+    cost_confidence: Mapped[str | None] = mapped_column(String(16))
+
+    is_return: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    # provenance: با این دو ستون می‌شود از هر عددِ گزارش به ردیف فایل رسید
+    source_row: Mapped[int | None] = mapped_column(Integer)
+    sheet_name: Mapped[str | None] = mapped_column(String(255))
+    raw_customer_key: Mapped[str | None] = mapped_column(String(255))
+    raw_product_name: Mapped[str | None] = mapped_column(String(255))
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[float] = mapped_column(Float, default=now_ts)
+    updated_at: Mapped[float] = mapped_column(Float, default=now_ts)
+
+
+# ------------------------------------------------------------ ویژگی مشتری
+
+
+class CustomerFeature(Base):
+    """عکس ماندگارِ ویژگی‌های مشتری در یک زمان مشخص.
+
+    محاسبه همان‌جایی می‌ماند که هست (`analysis/*` روی pandas — تست‌شده و درست)؛
+    اینجا فقط **نتیجه** با `as_of` و نسخه ثبت می‌شود تا «آن‌موقع چه می‌دانستیم»
+    قابل بازسازی باشد — پیش‌نیازِ سنجش صادقانه‌ی اثر.
+    """
+
+    __tablename__ = "customer_features"
+    __table_args__ = (
+        UniqueConstraint("business_id", "customer_id", "as_of_date", "feature_version"),
+        Index("ix_customer_features_business_asof", "business_id", "as_of_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    business_id: Mapped[int] = mapped_column(ForeignKey("businesses.id"), index=True)
+    customer_id: Mapped[int] = mapped_column(
+        ForeignKey("customers.id", ondelete="CASCADE"), index=True
+    )
+    as_of_date: Mapped[str] = mapped_column(String(10), index=True)
+    feature_version: Mapped[int] = mapped_column(Integer, default=1)
+
+    n_orders: Mapped[int | None] = mapped_column(Integer)
+    n_lines: Mapped[int | None] = mapped_column(Integer)
+    monetary_rial: Mapped[int | None] = mapped_column(BigInteger)
+    aov_rial: Mapped[int | None] = mapped_column(BigInteger)
+    recency_days: Mapped[int | None] = mapped_column(Integer)
+    tenure_days: Mapped[int | None] = mapped_column(Integer)
+    avg_gap_days: Mapped[float | None] = mapped_column(Float)
+    expected_gap_days: Mapped[float | None] = mapped_column(Float)
+    overdue_days: Mapped[float | None] = mapped_column(Float)
+    p_alive_bp: Mapped[int | None] = mapped_column(Integer)
+    clv_rial: Mapped[int | None] = mapped_column(BigInteger)
+    segment: Mapped[str | None] = mapped_column(String(64))
+    lifecycle_state: Mapped[str | None] = mapped_column(String(64))
+    cycle_status: Mapped[str | None] = mapped_column(String(64))
+    top_product: Mapped[str | None] = mapped_column(String(255))
+    # درآمدمحور است، نه سودمحور — نام ستون همین را می‌گوید تا کسی اشتباه نکند
+    value_at_risk_rial: Mapped[int | None] = mapped_column(BigInteger)
+    created_at: Mapped[float] = mapped_column(Float, default=now_ts)
+
+
+# -------------------------------------------------------------------- فرصت
+
+
+class OpportunityRun(Base):
+    """یک اجرای موتور فرصت‌ها. بدون این، نمی‌شود گفت یک فرصت از کجا آمده."""
+
+    __tablename__ = "opportunity_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    business_id: Mapped[int] = mapped_column(ForeignKey("businesses.id"), index=True)
+    session_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    as_of_date: Mapped[str] = mapped_column(String(10), index=True)
+    engine_version: Mapped[int] = mapped_column(Integer, default=1)
+    candidates_generated: Mapped[int] = mapped_column(Integer, default=0)
+    candidates_filtered: Mapped[int] = mapped_column(Integer, default=0)
+    opportunities_created: Mapped[int] = mapped_column(Integer, default=0)
+    opportunities_refreshed: Mapped[int] = mapped_column(Integer, default=0)
+    opportunities_superseded: Mapped[int] = mapped_column(Integer, default=0)
+    opportunities_expired: Mapped[int] = mapped_column(Integer, default=0)
+    notes_json: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[float] = mapped_column(Float, default=now_ts, index=True)
+
+
+class Opportunity(Base):
+    """فرصت ماندگار با چرخه‌ی حیات.
+
+    تفاوت با «فهرست اقدام» فعلی: آن یک خروجی لحظه‌ای است که با هر تحلیل از نو
+    ساخته می‌شود. این یک **موجودیت** است — پذیرفته می‌شود، به کسی سپرده می‌شود،
+    نتیجه می‌گیرد، و تاریخچه‌اش می‌ماند. بدون آن، حلقه‌ی «پیشنهاد → اقدام →
+    نتیجه» بسته نمی‌شود.
+
+    `dedupe_key` تضمین می‌کند اجرای دوباره‌ی موتور، همان فرصت را دوباره نسازد؛
+    فرصتِ موجود **تازه‌سازی** می‌شود و وضعیت انسانی‌اش (پذیرفته/رد شده)
+    بازنویسی نمی‌شود.
+    """
+
+    __tablename__ = "opportunities"
+    __table_args__ = (
+        UniqueConstraint("business_id", "dedupe_key"),
+        Index("ix_opportunities_business_status", "business_id", "status"),
+        Index("ix_opportunities_business_score", "business_id", "score_rial"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    business_id: Mapped[int] = mapped_column(ForeignKey("businesses.id"), index=True)
+    dedupe_key: Mapped[str] = mapped_column(String(128), index=True)
+
+    customer_id: Mapped[int | None] = mapped_column(
+        ForeignKey("customers.id", ondelete="CASCADE"), index=True
+    )
+    product_id: Mapped[int | None] = mapped_column(
+        ForeignKey("products.id", ondelete="SET NULL"), index=True
+    )
+    kind: Mapped[str] = mapped_column(String(64), index=True)
+    generator: Mapped[str] = mapped_column(String(64))
+    generator_version: Mapped[int] = mapped_column(Integer, default=1)
+
+    title_fa: Mapped[str] = mapped_column(String(255))
+    action_fa: Mapped[str] = mapped_column(Text)
+    reason_fa: Mapped[str] = mapped_column(Text)
+    message_fa: Mapped[str | None] = mapped_column(Text)
+
+    # ارزشِ مورد انتظار، **درآمدی** — نه سود. نام فیلد عمداً «سود» نیست.
+    expected_value_rial: Mapped[int] = mapped_column(BigInteger, default=0)
+    # همان عدد است که برای رتبه‌بندی به‌کار می‌رود؛ جدا نگه داشته می‌شود تا
+    # تغییر فرمول رتبه‌بندی، ارزشِ گزارش‌شده را دستکاری نکند.
+    score_rial: Mapped[int] = mapped_column(BigInteger, default=0, index=True)
+    value_kind: Mapped[str] = mapped_column(String(32))  # ارزش فرصت / ارزش در معرض خطر
+    probability_bp: Mapped[int | None] = mapped_column(Integer)
+    confidence: Mapped[str | None] = mapped_column(String(32))
+
+    # علّیت: این‌ها تا وجود شواهد آزمایشی **NULL می‌مانند**. پرکردنشان با عدد
+    # مشاهده‌ای یعنی ادعای اثر بدون آزمایش.
+    attributed_revenue_rial: Mapped[int | None] = mapped_column(BigInteger)
+    incremental_revenue_rial: Mapped[int | None] = mapped_column(BigInteger)
+    experiment_id: Mapped[str | None] = mapped_column(String(64))
+
+    # open / accepted / dismissed / snoozed / done / expired / superseded
+    status: Mapped[str] = mapped_column(String(32), default="open", index=True)
+    status_reason_fa: Mapped[str | None] = mapped_column(Text)
+    assigned_to: Mapped[str | None] = mapped_column(String(255), index=True)
+    owner_hint: Mapped[str | None] = mapped_column(String(255))
+    snooze_until: Mapped[str | None] = mapped_column(String(10))
+    due_date: Mapped[str | None] = mapped_column(String(10), index=True)
+    expires_at: Mapped[str | None] = mapped_column(String(10), index=True)
+
+    first_seen_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("opportunity_runs.id", ondelete="SET NULL")
+    )
+    last_seen_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("opportunity_runs.id", ondelete="SET NULL")
+    )
+    seen_count: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[float] = mapped_column(Float, default=now_ts, index=True)
+    updated_at: Mapped[float] = mapped_column(Float, default=now_ts)
+
+
+class OpportunityFactor(Base):
+    """شواهد یک فرصت — چرا ساخته شد و از کدام فیلترها گذشت.
+
+    قاعده‌ی «هر فرصت شواهد دارد» اینجا اجرا می‌شود: فیلترهایی که به دلیل نبود
+    داده کاری نمی‌کنند (موجودی، حاشیه) هم **صریح** ثبت می‌شوند، تا کسی گمان
+    نکند بررسی شده‌اند.
+    """
+
+    __tablename__ = "opportunity_factors"
+    __table_args__ = (
+        UniqueConstraint("opportunity_id", "code"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    opportunity_id: Mapped[int] = mapped_column(
+        ForeignKey("opportunities.id", ondelete="CASCADE"), index=True
+    )
+    code: Mapped[str] = mapped_column(String(64))
+    label_fa: Mapped[str] = mapped_column(String(255))
+    # evidence / filter_pass / filter_skip / filter_block
+    outcome: Mapped[str] = mapped_column(String(32))
+    detail_fa: Mapped[str | None] = mapped_column(Text)
+    value_text: Mapped[str | None] = mapped_column(String(128))
+    created_at: Mapped[float] = mapped_column(Float, default=now_ts)
+
+
+class OpportunityEvent(Base):
+    """رخدادهای چرخه‌ی حیات — فقط افزودنی (append-only).
+
+    وضعیتِ جاری روی خود فرصت است؛ این جدول «چه کسی، کِی، چه کرد» را نگه می‌دارد
+    که برای ممیزی و برای سنجش اثر لازم است.
+    """
+
+    __tablename__ = "opportunity_events"
+    __table_args__ = (
+        Index("ix_opportunity_events_opportunity_created", "opportunity_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    opportunity_id: Mapped[int] = mapped_column(
+        ForeignKey("opportunities.id", ondelete="CASCADE"), index=True
+    )
+    event_type: Mapped[str] = mapped_column(String(32))
+    from_status: Mapped[str | None] = mapped_column(String(32))
+    to_status: Mapped[str | None] = mapped_column(String(32))
+    actor: Mapped[str | None] = mapped_column(String(255))
+    note_fa: Mapped[str | None] = mapped_column(Text)
+    payload_json: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[float] = mapped_column(Float, default=now_ts, index=True)
+
+
+__all__ = [
+    "Business",
+    "Customer",
+    "CustomerFeature",
+    "CustomerKey",
+    "ImportBatch",
+    "ImportReconciliation",
+    "Opportunity",
+    "OpportunityEvent",
+    "OpportunityFactor",
+    "OpportunityRun",
+    "Order",
+    "OrderLine",
+    "Product",
+    "ProductAlias",
+]

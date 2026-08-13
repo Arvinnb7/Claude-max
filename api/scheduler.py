@@ -9,7 +9,9 @@
 from __future__ import annotations
 
 import logging
+from datetime import date, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from mktcore.config import get_settings
 from mktcore.execution import render_messages, send_campaign
@@ -23,6 +25,8 @@ _scheduler: Any | None = None  # گارد double-start
 
 CYCLE_KIND = "cycle_notification"
 AUDIENCE_KEY = "چرخه_عقب‌افتاده"
+# کلید «آخرین اجرای موفق» — مبنای جبران اجرای ازدست‌رفته پس از ری‌استارت
+LAST_SCAN_KEY = "scheduler.cycle_scan.last_run_date"
 
 
 def run_cycle_scan(*, limit: int = 200, dedupe_days: float = 7.0) -> dict:
@@ -50,6 +54,21 @@ def run_cycle_scan(*, limit: int = 200, dedupe_days: float = 7.0) -> dict:
     real_send = settings.mkt_auto_sms and settings.sms_configured
     messages = render_messages(settings.mkt_cycle_sms_template, fresh)
 
+    # الگوی «ادعا سپس ارسال»: پیش‌تر اول ارسال می‌شد و بعد ثبت؛ مرگ پروسه بین آن
+    # دو یعنی پیامک رفته ولی ثبت نشده، و اجرای فردا **دوباره** می‌فرستاد. حالا
+    # ردیف با وضعیت «در حال ارسال» ادعا می‌شود، پس dedupe اجرای بعدی آن را
+    # می‌بیند حتی اگر به‌روزرسانی وضعیت هرگز انجام نشود.
+    claimed: list[tuple[int, str]] = []
+    for m in messages:
+        outbox_id = store.add_outbox(
+            kind=CYCLE_KIND, session_id=sid, audience=AUDIENCE_KEY,
+            customer_id=m.customer_id, phone=m.phone, message=m.text,
+            status="در حال ارسال" if real_send else "آماده (آزمایشی)",
+            provider=settings.mkt_sms_provider if real_send else "dry-run",
+            dry_run=not real_send,
+        )
+        claimed.append((outbox_id, m.customer_id))
+
     sent = 0
     if real_send and messages:
         result = send_campaign(
@@ -59,18 +78,12 @@ def run_cycle_scan(*, limit: int = 200, dedupe_days: float = 7.0) -> dict:
         )
         sent = result.sent
         status_of = {d.get("مشتری"): d.get("وضعیت", "") for d in result.details}
-    else:
-        status_of = {}
+        for outbox_id, customer_id in claimed:
+            store.update_outbox_status(
+                outbox_id, status=status_of.get(customer_id) or "ارسال شد",
+            )
 
-    for m in messages:
-        store.add_outbox(
-            kind=CYCLE_KIND, session_id=sid, audience=AUDIENCE_KEY,
-            customer_id=m.customer_id, phone=m.phone, message=m.text,
-            status=(status_of.get(m.customer_id) or ("ارسال شد" if real_send else "آماده (آزمایشی)")),
-            provider=settings.mkt_sms_provider if real_send else "dry-run",
-            dry_run=not real_send,
-        )
-
+    store.set_meta(LAST_SCAN_KEY, _today_tehran().isoformat())
     summary = {
         "status": "ok", "session_id": sid,
         "بررسی‌شده": len(recipients), "ثبت‌شده": len(fresh), "ارسال_واقعی": sent,
@@ -78,6 +91,40 @@ def run_cycle_scan(*, limit: int = 200, dedupe_days: float = 7.0) -> dict:
     }
     logger.info("cycle scan: %s", summary)
     return summary
+
+
+def catch_up_missed_scan() -> dict:
+    """اجرای جبرانیِ اسکنِ ازدست‌رفته پس از ری‌استارت.
+
+    زمان‌بند روی `MemoryJobStore` است، پس اگر سرور در ساعت اجرا خاموش باشد آن
+    نوبت **بی‌صدا** حذف می‌شود و کسی خبردار نمی‌شود. اینجا آخرین اجرای موفق
+    خوانده می‌شود و اگر امروز اجرا نشده و ساعتِ برنامه گذشته، همان‌جا جبران
+    می‌شود. اجرای اضافه بی‌ضرر است چون dedupe اجازه‌ی پیام تکراری نمی‌دهد.
+    """
+    settings = get_settings()
+    if not settings.mkt_scheduler_enable:
+        return {"status": "disabled"}
+
+    today = _today_tehran()
+    last = store.get_meta(LAST_SCAN_KEY)
+    if last == today.isoformat():
+        return {"status": "already_ran", "تاریخ": last}
+    if _now_tehran().hour < settings.mkt_schedule_hour:
+        return {"status": "not_due_yet", "ساعت_برنامه": settings.mkt_schedule_hour}
+
+    logger.info("اجرای جبرانی اسکن چرخه (آخرین اجرا: %s)", last or "هرگز")
+    return run_cycle_scan()
+
+
+def _now_tehran() -> datetime:
+    try:
+        return datetime.now(ZoneInfo("Asia/Tehran"))
+    except Exception:  # noqa: BLE001 - نبود tzdata نباید زمان‌بند را بشکند
+        return datetime.now()
+
+
+def _today_tehran() -> date:
+    return _now_tehran().date()
 
 
 def start_scheduler() -> bool:
@@ -126,7 +173,14 @@ def scheduler_status() -> dict:
         "schedule_hour": settings.mkt_schedule_hour,
         "auto_sms": settings.mkt_auto_sms,
         "sms_configured": settings.sms_configured,
+        "last_run_date": store.get_meta(LAST_SCAN_KEY),
     }
 
 
-__all__ = ["run_cycle_scan", "start_scheduler", "stop_scheduler", "scheduler_status"]
+__all__ = [
+    "catch_up_missed_scan",
+    "run_cycle_scan",
+    "scheduler_status",
+    "start_scheduler",
+    "stop_scheduler",
+]

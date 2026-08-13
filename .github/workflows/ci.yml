@@ -15,8 +15,12 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
+      - name: System libraries (WeasyPrint)
+        run: sudo apt-get update && sudo apt-get install -y libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b libcairo2
       - name: Install
-        run: pip install -e ".[api,dev]"
+        # همه‌ی افزونه‌ها نصب می‌شوند تا مسیرهای PDF و پیش‌بینی هم در CI اجرا شوند
+        # (پیش‌تر فقط api,dev نصب می‌شد و آن تست‌ها بی‌صدا skip می‌شدند)
+        run: pip install -e ".[api,dev,connectors,pdf,xls,forecast]"
       - name: Lint
         run: ruff check .
       - name: Tests

@@ -72,6 +72,11 @@ class Settings(BaseSettings):
     # اگر job در حال اجرا این‌قدر ثانیه بدون ضربان بماند → خطای شفاف (watchdog)
     mkt_job_stale_seconds: int = 300
 
+    # دفتر کل canonical (هویت پایدار مشتری/کالا بین بارگذاری‌ها).
+    # کلید فرار عملیاتی: ۰ یعنی هیچ نوشتنی در جداول جدید انجام نشود — تحلیل و
+    # داشبورد دقیقاً مثل قبل کار می‌کنند.
+    mkt_canonical_enable: bool = True
+
     # امنیت شبکه
     mkt_cors_origins: str = "http://localhost:3000"
 

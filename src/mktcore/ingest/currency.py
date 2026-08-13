@@ -11,11 +11,29 @@ import pandas as pd
 
 CURRENCIES = ("تومان", "ریال")
 
-_RIAL_PER_UNIT = {"ریال": 1.0, "تومان": 10.0}
+# تنها منبع حقیقت نسبت واحدها. صحیح (نه float) است تا لایه‌ی ماندگاری بتواند
+# مبالغ را بدون اتلاف دقت به ریالِ عدد صحیح تبدیل کند.
+_RIAL_PER_UNIT = {"ریال": 1, "تومان": 10}
 
-# ستون‌های استاندارد مبلغی. discount نسبت است (نه مبلغ) و quantity شمارشی —
-# هرگز تبدیل نمی‌شوند.
+# ستون‌های استاندارد مبلغی که همیشه تبدیل می‌شوند. quantity شمارشی است و
+# discount ممکن است نسبت باشد؛ هر دو از این فهرست بیرون‌اند.
 MONETARY_COLUMNS = ("revenue", "cost", "unit_price", "gross_amount")
+
+# ستون تخفیف فقط وقتی مبلغی است تبدیل می‌شود (نسبتی بی‌واحد است).
+_DISCOUNT_COLUMN = "discount"
+
+
+def rial_per_unit(currency: str) -> int:
+    """چند ریال در یک واحدِ داده‌شده است؟ (تومان → ۱۰، ریال → ۱)
+
+    مرزِ نوشتن در جداول canonical از این تابع استفاده می‌کند تا مبلغِ واحدِ
+    نمایش را به ریالِ عدد صحیح تبدیل کند.
+    """
+    if currency not in _RIAL_PER_UNIT:
+        raise ValueError(
+            f"واحد پول نامعتبر است: «{currency}» — فقط «تومان» یا «ریال» مجاز است."
+        )
+    return _RIAL_PER_UNIT[currency]
 
 
 def conversion_factor(file_currency: str, display_currency: str) -> float:
@@ -28,6 +46,19 @@ def conversion_factor(file_currency: str, display_currency: str) -> float:
     return _RIAL_PER_UNIT[file_currency] / _RIAL_PER_UNIT[display_currency]
 
 
+def _columns_to_convert(df: pd.DataFrame) -> tuple[str, ...]:
+    """ستون‌های مبلغی این فریم، با احتساب تخفیفِ مبلغی.
+
+    تفسیر «مبلغی/نسبتی» یک بار در پاک‌سازی تعیین و در `attrs` ثبت شده است؛
+    اگر مبلغی باشد باید مثل بقیه‌ی مبالغ تبدیل شود، وگرنه `discount_total`
+    در KPI به‌اندازه‌ی نسبت واحدها (ده برابر) غلط می‌شود.
+    """
+    cols = MONETARY_COLUMNS
+    if df.attrs.get("discount_is_amount") and _DISCOUNT_COLUMN in df.columns:
+        cols = (*cols, _DISCOUNT_COLUMN)
+    return cols
+
+
 def convert_monetary_columns(df: pd.DataFrame, factor: float) -> pd.DataFrame:
     """اعمال ضریب تبدیل روی ستون‌های مبلغی؛ با ضریب ۱ همان df برمی‌گردد.
 
@@ -36,8 +67,9 @@ def convert_monetary_columns(df: pd.DataFrame, factor: float) -> pd.DataFrame:
     """
     if factor == 1.0:
         return df
+    columns = _columns_to_convert(df)
     out = df.copy()
-    for col in MONETARY_COLUMNS:
+    for col in columns:
         if col in out.columns:
             out[col] = out[col] * factor
 
@@ -46,7 +78,7 @@ def convert_monetary_columns(df: pd.DataFrame, factor: float) -> pd.DataFrame:
     returns = get_returns(df)
     if len(returns):
         ret = returns.copy()
-        for col in MONETARY_COLUMNS:
+        for col in columns:
             if col in ret.columns:
                 ret[col] = ret[col] * factor
         out.attrs["returns_df"] = SideFrame(ret)
@@ -54,4 +86,10 @@ def convert_monetary_columns(df: pd.DataFrame, factor: float) -> pd.DataFrame:
     return out
 
 
-__all__ = ["CURRENCIES", "MONETARY_COLUMNS", "conversion_factor", "convert_monetary_columns"]
+__all__ = [
+    "CURRENCIES",
+    "MONETARY_COLUMNS",
+    "conversion_factor",
+    "convert_monetary_columns",
+    "rial_per_unit",
+]

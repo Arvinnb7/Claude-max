@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import sys
+import threading
 import time
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -29,6 +30,7 @@ from pydantic import BaseModel  # noqa: E402
 from mktcore.ai.client import api_key_available  # noqa: E402
 from mktcore.config import get_settings  # noqa: E402
 from mktcore.connectors import ExcelCsvConnector  # noqa: E402
+from mktcore.db.migrations import ensure_schema as ensure_canonical_schema  # noqa: E402
 from mktcore.execution import build_audience, render_messages, send_campaign  # noqa: E402
 from mktcore.execution.audience import AUDIENCE_KINDS  # noqa: E402
 from mktcore.ingest.cleaning import clean_frame, get_exclusions, get_returns  # noqa: E402
@@ -44,16 +46,29 @@ from mktcore.locale_fa import ROLE_LABELS_FA, format_number_fa  # noqa: E402
 from mktcore.pipeline import run_analysis  # noqa: E402
 from mktcore.synthetic import generate_synthetic_sales  # noqa: E402
 
+from .canonical_hook import canonical_enabled, record_analysis  # noqa: E402
 from .export import EXPORT_FA_NAMES, EXPORT_SECTIONS, EmptySection, build_export  # noqa: E402
 from .jobs import JobError, submit_job  # noqa: E402
 from .persistence import store  # noqa: E402
 from .scheduler import (  # noqa: E402
+    catch_up_missed_scan,
     run_cycle_scan,
     scheduler_status,
     start_scheduler,
     stop_scheduler,
 )
 from .serialize import bundle_to_dict, campaign_to_dict, strategy_to_dict  # noqa: E402
+from .v1 import router as v1_router  # noqa: E402
+
+
+def _catch_up_scheduler() -> None:
+    """اجرای جبرانی، ایزوله از بالا آمدن API."""
+    try:
+        result = catch_up_missed_scan()
+        if result.get("status") == "ok":
+            logger.info("اسکن جبرانی چرخه انجام شد: %s", result)
+    except Exception:
+        logger.exception("اسکن جبرانی چرخه ناموفق بود")
 
 
 @asynccontextmanager
@@ -71,6 +86,20 @@ async def lifespan(app: FastAPI):
         start_scheduler()
     except Exception:
         logger.exception("زمان‌بند اجرا نشد؛ API بدون زمان‌بند ادامه می‌دهد")
+    # جبران نوبتِ ازدست‌رفته: زمان‌بند در حافظه است، پس خاموشیِ سرور در ساعت
+    # اجرا آن نوبت را بی‌صدا حذف می‌کرد. در thread جدا تا بالا آمدن API را
+    # معطل نکند.
+    try:
+        threading.Thread(target=_catch_up_scheduler, name="cycle-catch-up",
+                         daemon=True).start()
+    except Exception:
+        logger.exception("اجرای جبرانی زمان‌بند شروع نشد؛ API ادامه می‌دهد")
+    # طرح‌واره‌ی دفتر کل — تنبل هم ساخته می‌شود، این فقط زودتر انجامش می‌دهد
+    try:
+        if canonical_enabled():
+            ensure_canonical_schema()
+    except Exception:
+        logger.exception("آماده‌سازی دفتر کل ناموفق بود؛ API بدون آن ادامه می‌دهد")
     yield
     stop_scheduler()
 
@@ -83,6 +112,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# مسیرهای دفتر کل — **افزودنی**؛ هیچ endpoint موجودی جابه‌جا یا حذف نمی‌شود.
+app.include_router(v1_router)
 
 
 def _columns_payload(df) -> dict:
@@ -335,6 +367,22 @@ def analyze(req: AnalyzeRequest) -> dict:
         payload = bundle_to_dict(bundle, currency=req.display_currency)
         payload["quality"]["warnings"] = profile_frame(clean).warnings
         cp = store.get_session(sid).columns_payload or {}
+
+        # ثبت در دفتر کل canonical — بعد از ذخیره‌ی نتیجه و با جداسازی کامل خطا،
+        # پس هیچ شکستی در این مسیر به تحلیل و داشبورد سرایت نمی‌کند.
+        progress(94, "ثبت در دفتر کل")
+        canonical = record_analysis(
+            clean, bundle,
+            session_id=sid,
+            filename=store.get_session(sid).filename,
+            dataset_key=cp.get("file_sha256"),
+            sheet_name=(cp.get("sheets") or [""])[0] or "",
+            display_currency=req.display_currency,
+            file_currency=req.file_currency,
+        )
+        if canonical is not None:
+            payload["canonical"] = canonical
+
         payload["manifest"] = {
             "source_file": store.get_session(sid).filename,
             "file_sha256": cp.get("file_sha256"),

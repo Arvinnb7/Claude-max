@@ -7,24 +7,51 @@
 
 | کد | تسک | وضعیت |
 |---|---|---|
-| C0 | اسناد فاز صفر (حسابرسی، معماری هدف، قواعد مالی، بازگشت) | `in_progress` |
-| C1 | تست‌های مبنا (تله‌ی رگرسیون رفتار فعلی) | `not_started` |
-| C2 | rial_per_unit + رفع باگ تبدیل تخفیف مبلغی | `not_started` |
-| C3 | sqlalchemy به deps اصلی + لایه‌ی db (engine/base/migrations) | `not_started` |
-| C4 | mktcore/money.py — تبدیل ریال صحیح | `not_started` |
-| C5 | identity/phone.py — نرمال‌سازی موبایل ایرانی + ماسک | `not_started` |
-| C6 | catalog/normalize.py — نام محصول + اندازه‌ی بسته (عمومی) | `not_started` |
-| C7 | مدل‌های canonical + repo_import (idempotent) | `not_started` |
-| C8 | سیم‌کشی به analyze job + kill-switch + جداسازی خطا | `not_started` |
-| C9 | حل هویت مشتری + حل محصول | `not_started` |
-| C10 | آشتی + /api/v1/imports + /api/v1/data-quality | `not_started` |
-| C11 | snapshot ویژگی مشتری + /api/v1/customers | `not_started` |
-| C12 | موتور فرصت‌ها (contract/adapters/filters/ranking/lifecycle) | `not_started` |
-| C13 | /api/v1/opportunities + accept/dismiss/snooze | `not_started` |
-| C14 | مولدهای باقی‌مانده + lifecycle_state | `not_started` |
-| C15 | فرانت: صندوق فرصت‌ها | `not_started` |
-| C16 | فرانت: پرونده مشتری + پنل کیفیت داده | `not_started` |
-| C17 | fixtureهای طلایی + نهایی‌سازی وضعیت | `not_started` |
+| C0 | اسناد فاز صفر (حسابرسی، معماری هدف، قواعد مالی، بازگشت) | `validated` |
+| C1 | تست‌های مبنا (تله‌ی رگرسیون رفتار فعلی) | `validated` — ۱۰ تست |
+| C2 | rial_per_unit + رفع باگ تبدیل تخفیف مبلغی | `validated` — ۷ تست |
+| C3 | sqlalchemy به deps اصلی + لایه‌ی db (engine/base/migrations) | `validated` — ۹ تست |
+| C4 | mktcore/money.py — تبدیل ریال صحیح | `validated` — ۱۲ تست |
+| C5 | identity/phone.py — نرمال‌سازی موبایل ایرانی + ماسک | `validated` — ۲۴ تست |
+| C6 | catalog/normalize.py — نام محصول + اندازه‌ی بسته (عمومی) | `validated` — ۲۹ تست |
+| C7 | مدل‌های canonical + repo_import (idempotent) | `validated` — ۱۵ تست |
+| C8 | سیم‌کشی به analyze job + kill-switch + جداسازی خطا | `validated` — ۴ تست |
+| C9 | حل هویت مشتری + حل محصول | `validated` (داخل C7) |
+| C10 | آشتی + /api/v1/imports + /api/v1/data-quality | `validated` — کنترل‌های L01–L07 |
+| C11 | snapshot ویژگی مشتری + /api/v1/customers | `validated` |
+| C12 | موتور فرصت‌ها (contract/adapters/filters/ranking/lifecycle) | `validated` — ۱۹ تست |
+| C13 | /api/v1/opportunities + accept/dismiss/snooze | `validated` |
+| C14 | مولدهای باقی‌مانده + lifecycle_state | `deferred` — پایین را ببینید |
+| C15 | فرانت: صندوق فرصت‌ها | `implemented` — build و eslint سبز |
+| C16 | فرانت: پرونده مشتری + پنل کیفیت داده | `implemented` — build و eslint سبز |
+| C17 | سناریوهای طلایی + نهایی‌سازی وضعیت | `validated` — ۱۲ سناریو |
+
+## باگ‌های حسابرسی
+
+| # | باگ | وضعیت |
+|---|---|---|
+| ۱ | تبدیل نشدن تخفیف مبلغی (خطای ۱۰ برابری در `discount_total`) | `fixed` — `test_currency_discount_unit.py` |
+| ۲ | `run_cycle_scan` اول می‌فرستد بعد ثبت می‌کند (ریسک ارسال دوباره) | `fixed` — الگوی «ادعا سپس ارسال» |
+| ۳ | اجرای ازدست‌رفته‌ی زمان‌بند پس از ری‌استارت | `fixed` — `catch_up_missed_scan` + `app_meta` |
+| ۴ | نبود ایندکس روی `outbox.customer_id` | `fixed` — ایندکس مرکب با `created_at` |
+| ۵ | انتخاب parser فقط با پسوند فایل | `fixed` — تشخیص با امضای بایت، ۷ تست |
+| ۶ | نبود fixture واقعی `.xls`/`.xlsb` | `blocked` — دلیل پایین |
+| ۷ | CI افزونه‌های pdf/forecast را نصب نمی‌کرد | `fixed` — نصب کامل + کتابخانه‌های سیستمی |
+| ۸ | `sqlalchemy` در افزونه‌ی نادرست | `fixed` — به وابستگی اصلی منتقل شد |
+
+## باگ‌هایی که حین پیاده‌سازی خودِ ارتقا پیدا و رفع شدند
+
+اینها در حسابرسی اولیه دیده نشده بودند؛ با تست‌های خودِ ارتقا آشکار شدند:
+
+| باگ | چه می‌شد | رفع |
+|---|---|---|
+| `api/v1.py` «بهای تمام‌شده نداریم» را ثابت می‌گفت | به کاربری که ستون بها داشت دروغ می‌گفت | جمله از پوشش واقعی ساخته می‌شود (`_cost_coverage`) |
+| فیلتر کف حاشیه با وجودِ صرفِ ستون بها «قبول» ثبت می‌کرد | ادعای بررسی‌ای که انجام نشده بود | تا تعیین‌نشدن کف، `filter_skip` با دلیل |
+| `net_sales_rial` دسته برگشت‌ها را جمع می‌کرد نه کسر | فروش خالصِ دسته بیش‌برآورد می‌شد | خطوط برگشتی از قبل منفی‌اند؛ جمع ساده |
+| موتور SQLAlchemy با تغییر مسیر داده `dispose` می‌شد | اتصالِ در حال تراکنش قفل SQLite را نگه می‌داشت و نوشتن‌های بعدی تا ابد منتظر می‌ماندند | نگه‌داری موتور به‌ازای URL |
+| دو نامزد با کلید یکتای یکسان در یک اجرا | نقض قید یکتایی و rollback کل اجرا | اولی برنده، دومی رد می‌شود |
+| دو کلید خام که به یک مشتری حل شده‌اند | نقض قید یکتای عکس ویژگی و از دست رفتن کل عکس‌برداری | جمع‌بندی در `_group_by_resolved_customer` |
+| نوشتن هزاران فرصت در هر اجرا | صندوقِ غیرقابل‌استفاده + کندی واقعی | سقف ۵۰۰ با **گزارش صریح** تعداد حذف‌شده |
 
 ## موارد مسدود / واگذارشده
 
@@ -36,12 +63,46 @@
 | مدل uplift / اثر علّی | `blocked: داده‌ی گروه کنترل وجود ندارد (فاز بعد)` |
 | احراز هویت / RBAC / audit log | `deferred: خارج از دامنه‌ی این فازها` |
 | Postgres / Celery / Alembic | `deferred: تصمیم مستند در TARGET_ARCHITECTURE` |
+| fixture واقعی `.xls` و `.xlsb` | `blocked: کتابخانه‌ی نویسنده وجود ندارد` |
+| ماشین حالت چرخه‌ی عمر ۱۱حالته (`lifecycle_state`) | `deferred: ستون ساخته شده، پرکردنش نیازمند تعریف کسب‌وکاری است` |
+| رضایت تماس (consent) | `blocked: داده‌ی رضایت در فایل فروش وجود ندارد` |
+| قواعد سازگاری کالا | `blocked: کسب‌وکار چنددامنه است؛ قاعده باید توسط کاربر تعریف شود` |
+
+### چرا fixture واقعی `.xls`/`.xlsb` ساخته نشد
+
+برای نوشتن این دو قالب در پایتون کتابخانه‌ی زنده‌ای وجود ندارد: `xlwt` (تنها
+نویسنده‌ی `.xls`) رهاشده است و pandas پشتیبانی‌اش را حذف کرده؛ برای `.xlsb`
+اصلاً هیچ نویسنده‌ای وجود ندارد. افزودن یک وابستگی متروک فقط برای ساخت
+fixture، ریسک بیشتری از خودِ شکاف دارد. **راهی که به‌جایش رفته شد:** تشخیص
+قالب از امضای بایت‌ها که مسیر `.xls` را با فایل واقعیِ OLE2 (بدون نیاز به
+نویسنده) پوشش می‌دهد — `test_format_detection.py`. اگر فایل `.xls`/`.xlsb`
+واقعی در دسترس قرار گیرد، افزودنش به `tests/fixtures/` کافی است.
+
+### چرا `lifecycle_state` پر نمی‌شود
+
+ستون در `customer_features` ساخته شده و API آن را برمی‌گرداند، ولی مقدارش
+`NULL` است. ماشین حالت ۱۱حالته‌ی سند، آستانه‌های کسب‌وکاری می‌خواهد (مثلاً
+«از چند روز بی‌خریدی، مشتری خفته است؟») که با حدس‌زدن، برچسبِ غلط تولید
+می‌کند. سگمنت RFM و وضعیت چرخه — که هر دو از داده مشتق‌اند — از قبل پر
+می‌شوند و کار عملی را انجام می‌دهند.
 
 ## سنجه‌های پذیرش
 
-- [ ] تحلیل دوباره‌ی همان فایل ردیف تکراری نمی‌سازد (idempotent)
-- [ ] جمع ریالی دفتر کل با KPI داشبورد در تلرانس مستند آشتی می‌کند
-- [ ] هر فرصت شواهد کامل دارد (مولد+نسخه، سفارش‌های منبع، کدهای دلیل، فاکتورهای فیلتر)
-- [ ] هیچ عدد درآمدی «سود» نامیده نمی‌شود
-- [ ] هیچ فیلد علّی بدون شواهد آزمایشی پر نمی‌شود
-- [ ] ۱۵۰ تست موجود + تست‌های جدید سبز
+- [x] تحلیل دوباره‌ی همان فایل ردیف تکراری نمی‌سازد (idempotent)
+      — `test_reimport_is_idempotent`، `test_corrected_mapping_updates_values_without_duplicating_rows`
+- [x] جمع ریالی دفتر کل با KPI داشبورد در تلرانس مستند آشتی می‌کند
+      — کنترل‌های L01–L07 در `import_reconciliation`
+- [x] هر فرصت شواهد کامل دارد (مولد+نسخه، کدهای دلیل، فاکتورهای فیلتر)
+      — `test_engine_creates_opportunities_with_evidence`؛ فیلترهای بدون داده
+      با `filter_skip` ثبت می‌شوند نه `filter_pass`
+- [x] هیچ عدد درآمدی «سود» نامیده نمی‌شود — `cost_rial` بدون داده NULL می‌ماند
+      (`test_cost_stays_null_when_file_has_no_cost_column`)
+- [x] هیچ فیلد علّی بدون شواهد آزمایشی پر نمی‌شود — `test_causal_fields_stay_null`
+- [x] هیچ فیلتری بدون داده «تأیید» ثبت نمی‌کند
+      — `test_missing_data_filters_are_skipped_not_passed`،
+      `test_cost_data_alone_does_not_make_margin_check_pass`
+- [x] سیستم هرگز تخفیف پیشنهاد نمی‌کند — `test_no_offer_or_discount_is_ever_generated`
+- [x] ۱۵۰ تست موجود + تست‌های جدید سبز
+- [x] هیچ تغییری در `PRAGMA user_version` و جداول legacy
+      — `test_canonical_migration_does_not_bump_user_version`
+- [x] شکست دفتر کل تحلیل را نمی‌شکند — `test_hook_never_raises_on_internal_failure`

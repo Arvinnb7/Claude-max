@@ -67,12 +67,61 @@ class ExcelCsvConnector(DataConnector):
         self.path = Path(path) if path else None
         self.content = content
         self.filename = filename or (self.path.name if self.path else "uploaded")
-        self._ext = Path(self.filename).suffix.lower()
+        self._ext = self._detect_format(Path(self.filename).suffix.lower())
+
+    def _detect_format(self, ext: str) -> str:
+        """قالب واقعی فایل از **امضای بایت‌ها**، با بازگشت به پسوند.
+
+        پسوند دروغ می‌گوید: کاربران فایل `.xls` را با نام `.xlsx` ذخیره می‌کنند
+        (اکسل هشدار می‌دهد و آن‌ها رد می‌کنند)، سامانه‌ها فایل بدون پسوند
+        می‌فرستند، و مرورگر گاهی `.csv` را `.xls` نام می‌گذارد. تشخیص از محتوا
+        یعنی فایل درست خوانده می‌شود یا با خطای روشن رد می‌شود — نه اینکه با
+        parser اشتباه به هم بریزد.
+        """
+        try:
+            head = self._peek(8)
+        except OSError:
+            return ext
+
+        if head[:4] == b"PK\x03\x04":
+            # ZIP: هم xlsx/xlsm است هم xlsb — تفاوت در محتوای داخل آرشیو
+            if ext in (".xlsx", ".xlsm", ".xlsb"):
+                return ext
+            return self._zip_flavor()
+        if head[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1":
+            return ".xls"  # فرمت قدیمی OLE2
+        if ext in _EXCEL_EXT:
+            # پسوند اکسل ولی امضای غیراکسل → احتمالاً CSV با نام اشتباه
+            return ".csv"
+        return ext or ".csv"
+
+    def _zip_flavor(self) -> str:
+        """داخل آرشیو را نگاه می‌کند تا xlsb را از xlsx جدا کند."""
+        import zipfile
+
+        try:
+            with zipfile.ZipFile(io.BytesIO(self._bytes())) as zf:
+                names = set(zf.namelist())
+        except (zipfile.BadZipFile, OSError):
+            return ".xlsx"
+        if any(n.endswith(".bin") and "worksheets/" in n for n in names):
+            return ".xlsb"
+        return ".xlsx"
+
+    def _peek(self, n: int) -> bytes:
+        """چند بایت اول، بدون خواندن کل فایل از دیسک."""
+        if self.content is not None:
+            return self.content[:n]
+        if self.path is None:  # pragma: no cover - سازنده جلوی این را می‌گیرد
+            return b""
+        with self.path.open("rb") as fh:
+            return fh.read(n)
 
     def _bytes(self) -> bytes:
         if self.content is not None:
             return self.content
-        assert self.path is not None
+        if self.path is None:  # pragma: no cover - سازنده جلوی این را می‌گیرد
+            raise ValueError("نه مسیر فایل و نه محتوای آن در دسترس است.")
         return self.path.read_bytes()
 
     def list_sources(self) -> list[str]:

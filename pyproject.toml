@@ -13,6 +13,9 @@ authors = [{ name = "Claude-max" }]
 dependencies = [
     "pandas>=2.0",
     "numpy>=1.24",
+    # لایه‌ی canonical (جداول مشتری/محصول/سفارش/فرصت) روی همین SQLite می‌نشیند و
+    # با تغییر URL به Postgres منتقل می‌شود؛ پس وابستگی اصلی است نه افزونه‌ای.
+    "sqlalchemy>=2.0",
     "scikit-learn>=1.3",
     "scipy>=1.10",
     "statsmodels>=0.14",
@@ -33,7 +36,7 @@ dependencies = [
 
 [project.optional-dependencies]
 forecast = ["prophet>=1.1"]
-connectors = ["sqlalchemy>=2.0", "httpx>=0.27"]
+connectors = ["httpx>=0.27"]
 pdf = ["weasyprint>=60"]
 xls = ["xlrd>=2.0"]
 api = ["fastapi>=0.110", "uvicorn[standard]>=0.27", "python-multipart>=0.0.9", "apscheduler>=3.10,<4", "tzdata"]

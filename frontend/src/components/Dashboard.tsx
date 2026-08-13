@@ -5,9 +5,12 @@ import {
   AlertTriangle,
   Boxes,
   BrainCircuit,
+  Database,
   Download,
   FileText,
   History,
+  IdCard,
+  Inbox,
   LineChart as LineIcon,
   Megaphone,
   Repeat,
@@ -22,6 +25,9 @@ import {
 
 import { exportUrl, reportUrl } from "@/lib/api";
 import { CampaignTab, CycleTab, DiagnosticsTab, PerformanceTab, ProductsTab } from "./AdvancedTabs";
+import CustomerDirectory from "./CustomerDirectory";
+import DataQualityPanel from "./DataQualityPanel";
+import OpportunityInbox from "./OpportunityInbox";
 
 import { getStrategy } from "@/lib/api";
 import { compact, num, pct, toFa } from "@/lib/format";
@@ -46,7 +52,10 @@ type Tab =
   | "targets"
   | "diagnostics"
   | "ai"
-  | "campaign";
+  | "campaign"
+  | "opportunities"
+  | "customers"
+  | "ledger";
 
 const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
   { id: "kpi", label: "شاخص‌ها", icon: <TrendingUp size={16} /> },
@@ -59,6 +68,11 @@ const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
   { id: "diagnostics", label: "تشخیص و تأمین", icon: <Stethoscope size={16} /> },
   { id: "ai", label: "استراتژی AI", icon: <BrainCircuit size={16} /> },
   { id: "campaign", label: "کمپین و پیام‌ها", icon: <Megaphone size={16} /> },
+  // تب‌های دفتر کل — **افزوده** به انتها؛ ترتیب تب‌های قبلی حفظ می‌شود تا
+  // شناسه‌ی تبِ ذخیره‌شده در sessionStorage همچنان معتبر بماند.
+  { id: "opportunities", label: "صندوق فرصت‌ها", icon: <Inbox size={16} /> },
+  { id: "customers", label: "پرونده مشتریان", icon: <IdCard size={16} /> },
+  { id: "ledger", label: "دفتر کل و کیفیت", icon: <Database size={16} /> },
 ];
 
 const DIM_LABELS: Record<string, string> = {
@@ -233,6 +247,9 @@ export default function Dashboard({
       {tab === "diagnostics" && (
         <DiagnosticsTab data={data} unit={unit} sessionId={sessionId} />
       )}
+      {tab === "opportunities" && <OpportunityInbox />}
+      {tab === "customers" && <CustomerDirectory />}
+      {tab === "ledger" && <DataQualityPanel />}
       {tab === "ai" && (
         <AiTab sessionId={sessionId} aiAvailable={aiAvailable} initial={initialStrategy} />
       )}
