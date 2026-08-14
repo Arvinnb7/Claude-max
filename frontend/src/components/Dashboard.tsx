@@ -8,6 +8,7 @@ import {
   Database,
   Download,
   FileText,
+  FlaskConical,
   History,
   IdCard,
   Inbox,
@@ -25,6 +26,7 @@ import {
 
 import { exportUrl, reportUrl } from "@/lib/api";
 import { CampaignTab, CycleTab, DiagnosticsTab, PerformanceTab, ProductsTab } from "./AdvancedTabs";
+import CampaignImpact from "./CampaignImpact";
 import CustomerDirectory from "./CustomerDirectory";
 import DataQualityPanel from "./DataQualityPanel";
 import OpportunityInbox from "./OpportunityInbox";
@@ -54,6 +56,7 @@ type Tab =
   | "ai"
   | "campaign"
   | "opportunities"
+  | "campaigns"
   | "customers"
   | "ledger";
 
@@ -71,6 +74,7 @@ const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
   // تب‌های دفتر کل — **افزوده** به انتها؛ ترتیب تب‌های قبلی حفظ می‌شود تا
   // شناسه‌ی تبِ ذخیره‌شده در sessionStorage همچنان معتبر بماند.
   { id: "opportunities", label: "صندوق فرصت‌ها", icon: <Inbox size={16} /> },
+  { id: "campaigns", label: "اثر کمپین‌ها", icon: <FlaskConical size={16} /> },
   { id: "customers", label: "پرونده مشتریان", icon: <IdCard size={16} /> },
   { id: "ledger", label: "دفتر کل و کیفیت", icon: <Database size={16} /> },
 ];
@@ -248,6 +252,7 @@ export default function Dashboard({
         <DiagnosticsTab data={data} unit={unit} sessionId={sessionId} />
       )}
       {tab === "opportunities" && <OpportunityInbox />}
+      {tab === "campaigns" && <CampaignImpact />}
       {tab === "customers" && <CustomerDirectory />}
       {tab === "ledger" && <DataQualityPanel />}
       {tab === "ai" && (

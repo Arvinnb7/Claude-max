@@ -46,6 +46,7 @@ from mktcore.locale_fa import ROLE_LABELS_FA, format_number_fa  # noqa: E402
 from mktcore.pipeline import run_analysis  # noqa: E402
 from mktcore.synthetic import generate_synthetic_sales  # noqa: E402
 
+from .campaigns_api import router as campaigns_router  # noqa: E402
 from .canonical_hook import canonical_enabled, record_analysis  # noqa: E402
 from .export import EXPORT_FA_NAMES, EXPORT_SECTIONS, EmptySection, build_export  # noqa: E402
 from .jobs import JobError, submit_job  # noqa: E402
@@ -113,8 +114,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# مسیرهای دفتر کل — **افزودنی**؛ هیچ endpoint موجودی جابه‌جا یا حذف نمی‌شود.
+# مسیرهای دفتر کل و کمپین — **افزودنی**؛ هیچ endpoint موجودی جابه‌جا نمی‌شود.
 app.include_router(v1_router)
+app.include_router(campaigns_router)
 
 
 def _columns_payload(df) -> dict:

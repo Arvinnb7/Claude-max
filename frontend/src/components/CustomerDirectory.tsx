@@ -20,6 +20,17 @@ type OrderBy = (typeof ORDERS)[number]["id"];
 
 const PAGE = 25;
 
+/** رنگ حالت چرخه‌ی عمر — همان قرارداد رنگی `Customer360`. */
+function lifecycleTone(
+  state: string | null,
+): "brand" | "green" | "accent" | "rose" | "gray" {
+  if (["vip", "loyal", "growing", "reactivated"].includes(state ?? "")) return "green";
+  if (state === "slipping") return "accent";
+  if (["at_risk", "dormant", "lost"].includes(state ?? "")) return "rose";
+  if (["new", "activated", "established"].includes(state ?? "")) return "brand";
+  return "gray";
+}
+
 function segmentTone(segment: string | null): "brand" | "green" | "accent" | "gray" | "rose" {
   if (!segment) return "gray";
   if (segment.includes("قهرمان") || segment.includes("وفادار")) return "green";
@@ -158,6 +169,7 @@ export default function CustomerDirectory() {
             <thead>
               <tr className="text-start" style={{ color: "var(--muted)" }}>
                 <th className="p-2 text-start font-medium">مشتری</th>
+                <th className="p-2 text-start font-medium">حالت</th>
                 <th className="p-2 text-start font-medium">سگمنت</th>
                 <th className="p-2 text-start font-medium">جمع خرید</th>
                 <th className="p-2 text-start font-medium">سفارش</th>
@@ -174,6 +186,15 @@ export default function CustomerDirectory() {
                       <div className="text-xs tnum" style={{ color: "var(--muted)" }}>
                         {toFa(c.phone_masked)}
                       </div>
+                    )}
+                  </td>
+                  <td className="p-2">
+                    {c.features?.lifecycle_label ? (
+                      <Badge tone={lifecycleTone(c.features.lifecycle_state)}>
+                        {c.features.lifecycle_label}
+                      </Badge>
+                    ) : (
+                      "—"
                     )}
                   </td>
                   <td className="p-2">

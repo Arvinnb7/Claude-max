@@ -7,6 +7,31 @@ import { toFa } from "@/lib/format";
 
 import { Alert, Badge, Card, SectionTitle, Spinner, StatCard } from "./ui";
 
+/** رنگ حالت: سبز = رابطه‌ی سالم، نارنجی = هشدار، قرمز = در حال از دست رفتن. */
+function lifecycleTone(
+  state: string | null,
+): "brand" | "green" | "accent" | "rose" | "gray" {
+  switch (state) {
+    case "vip":
+    case "loyal":
+    case "growing":
+    case "reactivated":
+      return "green";
+    case "slipping":
+      return "accent";
+    case "at_risk":
+    case "dormant":
+    case "lost":
+      return "rose";
+    case "new":
+    case "activated":
+    case "established":
+      return "brand";
+    default:
+      return "gray";
+  }
+}
+
 /**
  * پرونده‌ی مشتری — هرچه از این مشتری می‌دانیم، در طول **همه‌ی** بارگذاری‌ها.
  *
@@ -71,6 +96,9 @@ export default function Customer360({
         />
 
         <div className="mb-3 flex flex-wrap items-center gap-2">
+          {f?.lifecycle_label && (
+            <Badge tone={lifecycleTone(f.lifecycle_state)}>{f.lifecycle_label}</Badge>
+          )}
           {f?.segment && <Badge tone="brand">{f.segment}</Badge>}
           {f?.cycle_status && <Badge tone="accent">چرخه: {f.cycle_status}</Badge>}
           {c.phone_masked ? (
@@ -118,6 +146,47 @@ export default function Customer360({
           {data.economics_note_fa}
         </p>
       </Card>
+
+      {data.lifecycle_timeline.length > 0 && (
+        <Card>
+          <SectionTitle
+            title="مسیر رابطه"
+            subtitle="هر تغییر حالت با دلیلش — لحظه‌ی گذار، همان لحظه‌ی اقدام است."
+          />
+          <ol className="space-y-3">
+            {data.lifecycle_timeline.map((t, i) => (
+              <li key={`${t.as_of}-${t.to}-${i}`} className="flex gap-3 text-sm">
+                <div className="mt-1 shrink-0">
+                  <span
+                    className="block h-2.5 w-2.5 rounded-full"
+                    style={{ background: "var(--muted)" }}
+                  />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="tnum text-xs" style={{ color: "var(--muted)" }}>
+                      {t.as_of}
+                    </span>
+                    {t.from_label && (
+                      <>
+                        <Badge tone="gray">{t.from_label}</Badge>
+                        <span style={{ color: "var(--muted)" }}>←</span>
+                      </>
+                    )}
+                    <Badge tone={lifecycleTone(t.to)}>{t.to_label}</Badge>
+                  </div>
+                  {t.reason && <p className="mt-1">{t.reason}</p>}
+                  {t.basis_label && (
+                    <p className="mt-0.5 text-xs" style={{ color: "var(--muted)" }}>
+                      {t.basis_label}
+                    </p>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ol>
+        </Card>
+      )}
 
       {data.feature_history.length > 1 && (
         <Card>

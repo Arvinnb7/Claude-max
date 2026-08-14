@@ -248,6 +248,61 @@ def test_opportunity_404():
     assert client.post("/api/v1/opportunities/99999999/accept", json={}).status_code == 404
 
 
+def test_dismiss_reasons_are_a_closed_vocabulary():
+    """متن آزاد قابل شمارش نیست؛ فهرست بسته سیگنال کیفیت می‌دهد (§۳۰)."""
+    body = client.get("/api/v1/dismiss-reasons").json()
+    codes = {r["code"] for r in body["items"]}
+    assert {"not_relevant", "product_incompatible", "bought_elsewhere",
+            "bad_contact", "out_of_stock", "value_too_low", "duplicate"} <= codes
+    assert all(r["label"] for r in body["items"])
+    # سند تصریح می‌کند این بازخورد حقیقتِ بی‌طرف نیست
+    assert "بی‌طرف" in body["note_fa"]
+
+
+def test_dismiss_with_a_reason_is_recorded():
+    _run_sample_analysis()
+    target = client.get("/api/v1/opportunities", params={"status": "open"}).json()
+    oid = target["items"][0]["id"]
+
+    r = client.post(f"/api/v1/opportunities/{oid}/dismiss",
+                    json={"reason_code": "out_of_stock"})
+    assert r.status_code == 200
+    assert r.json()["status"] == "dismissed"
+    assert r.json()["status_reason"] == "کالا موجود نیست"
+
+    detail = client.get(f"/api/v1/opportunities/{oid}").json()
+    dismissals = [e for e in detail["events"] if e["type"] == "dismiss"]
+    assert dismissals
+    assert dismissals[0]["note"] == "کالا موجود نیست"
+
+
+def test_invalid_dismiss_reason_is_rejected():
+    _run_sample_analysis()
+    oid = client.get("/api/v1/opportunities").json()["items"][0]["id"]
+    r = client.post(f"/api/v1/opportunities/{oid}/dismiss",
+                    json={"reason_code": "دلیل ساختگی"})
+    assert r.status_code == 400
+    assert "نامعتبر" in r.json()["detail"]
+
+
+def test_generator_quality_aggregates_operator_feedback():
+    _run_sample_analysis()
+    items = client.get("/api/v1/opportunities", params={"status": "open"}).json()["items"]
+    client.post(f"/api/v1/opportunities/{items[0]['id']}/dismiss",
+                json={"reason_code": "value_too_low"})
+    client.post(f"/api/v1/opportunities/{items[1]['id']}/accept", json={})
+
+    body = client.get("/api/v1/opportunity-quality").json()
+    assert body["available"] is True
+    assert body["items"]
+    row = body["items"][0]
+    assert {"generator", "total", "accepted", "dismissed", "acceptance_rate"} <= set(row)
+    # نرخ فقط روی تصمیم‌گرفته‌شده‌ها محاسبه می‌شود، نه روی کل صندوق
+    assert row["undecided"] >= 0
+    assert any(i["dismiss_reasons"] for i in body["items"])
+    assert "بی‌طرف" in body["note_fa"]
+
+
 def test_existing_endpoints_are_untouched():
     """مسیرهای قدیمی باید دقیقاً همان‌طور که بودند پاسخ دهند."""
     r = client.get("/api/health")

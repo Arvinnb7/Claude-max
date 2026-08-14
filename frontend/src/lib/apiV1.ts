@@ -100,8 +100,22 @@ export type CustomerFeatures = {
   overdue_days: number | null;
   p_alive: number | null;
   segment: string | null;
+  lifecycle_state: string | null;
+  lifecycle_label: string | null;
   cycle_status: string | null;
   top_product: string | null;
+};
+
+export type LifecycleTransition = {
+  as_of: string;
+  from: string | null;
+  from_label: string | null;
+  to: string;
+  to_label: string;
+  reason: string | null;
+  basis: string | null;
+  basis_label: string | null;
+  overdue_ratio: number | null;
 };
 
 export type CustomerRow = {
@@ -125,8 +139,10 @@ export type CustomerProfile = {
     monetary: Money;
     recency_days: number | null;
     segment: string | null;
+    lifecycle_state: string | null;
     cycle_status: string | null;
   }[];
+  lifecycle_timeline: LifecycleTransition[];
   lines: {
     date: string;
     product: string | null;
@@ -274,10 +290,134 @@ export async function getOpportunity(id: number): Promise<Opportunity> {
 
 export type OpportunityActionName = "accept" | "dismiss" | "snooze" | "done" | "reopen";
 
+// ------------------------------------------------------------------ کمپین
+export type CampaignSummary = {
+  id: number;
+  name: string;
+  kind: string | null;
+  status: string;
+  holdout_pct: number;
+  analysis_window_days: number;
+  created_at: number;
+  exported_at: number | null;
+  closed_at: number | null;
+  treatment_size: number;
+  control_size: number;
+  exposed_count: number;
+  treatment_pipeline: Money;
+  strata: Record<string, number>;
+  exposure_note_fa?: string;
+};
+
+export type ArmSummary = {
+  size: number;
+  converters: number;
+  orders: number;
+  revenue_rial: number;
+  conversion_rate: number;
+  revenue_per_customer_rial: number;
+};
+
+export type CampaignReport = {
+  verdict: "proven" | "inconclusive" | "attribution_only" | "not_ready";
+  verdict_label: string;
+  verdict_reason_fa: string;
+  is_causal: boolean;
+  arms: { treatment: ArmSummary; control: ArmSummary };
+  absolute_lift: number | null;
+  relative_lift: number | null;
+  lift_ci: [number, number] | null;
+  incremental_orders: number | null;
+  incremental_revenue: Money;
+  incremental_revenue_ci: [number, number] | null;
+  blocked_metrics: Record<string, string>;
+};
+
+export type CampaignMemberRow = {
+  customer_id: number;
+  customer_name: string | null;
+  arm: string;
+  stratum: string | null;
+  exposure_date: string | null;
+  expected_value: Money;
+  outcome: {
+    orders: number;
+    revenue: Money;
+    matched_product: boolean;
+    window: [string, string];
+  } | null;
+};
+
+export type CampaignDetail = CampaignSummary & {
+  report: CampaignReport;
+  members: CampaignMemberRow[];
+};
+
+export async function listCampaigns(): Promise<{
+  available: boolean;
+  note_fa?: string;
+  items: CampaignSummary[];
+  exposure_note_fa?: string;
+}> {
+  return handle(await fetch(`${BASE}/api/v1/campaigns`, { cache: "no-store" }));
+}
+
+export async function getCampaign(id: number): Promise<CampaignDetail> {
+  return handle(await fetch(`${BASE}/api/v1/campaigns/${id}`, { cache: "no-store" }));
+}
+
+export async function createCampaign(body: {
+  name: string;
+  status?: string;
+  kind?: string;
+  holdout_pct?: number;
+  analysis_window_days?: number;
+  limit?: number;
+}): Promise<CampaignSummary> {
+  return handle(
+    await fetch(`${BASE}/api/v1/campaigns`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
+}
+
+export async function refreshCampaign(id: number): Promise<CampaignDetail> {
+  return handle(
+    await fetch(`${BASE}/api/v1/campaigns/${id}/refresh`, { method: "POST" }),
+  );
+}
+
+export async function closeCampaign(id: number): Promise<CampaignDetail> {
+  return handle(
+    await fetch(`${BASE}/api/v1/campaigns/${id}/close`, { method: "POST" }),
+  );
+}
+
+export function campaignExportUrl(id: number): string {
+  return `${BASE}/api/v1/campaigns/${id}/export`;
+}
+
+export type DismissReason = { code: string; label: string };
+
+export async function listDismissReasons(): Promise<{
+  items: DismissReason[];
+  note_fa: string;
+}> {
+  return handle(await fetch(`${BASE}/api/v1/dismiss-reasons`, { cache: "no-store" }));
+}
+
 export async function actOnOpportunity(
   id: number,
   action: OpportunityActionName,
-  body: { actor?: string; note?: string; assigned_to?: string; snooze_until?: string } = {},
+  body: {
+    actor?: string;
+    note?: string;
+    assigned_to?: string;
+    snooze_until?: string;
+    reason_code?: string;
+  } = {},
 ): Promise<Opportunity> {
   return handle(
     await fetch(`${BASE}/api/v1/opportunities/${id}/${action}`, {

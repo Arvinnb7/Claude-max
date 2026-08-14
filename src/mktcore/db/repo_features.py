@@ -12,18 +12,21 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import pandas as pd
-from sqlalchemy import select
+from sqlalchemy import insert, select
 
+from mktcore.lifecycle import LifecycleInput, LifecycleVerdict, classify_lifecycle
+from mktcore.lifecycle.states import population_gap, vip_threshold
 from mktcore.money import to_basis_points, to_rial_int
 
 from .base import now_ts
 from .engine import session_scope, write_lock
 from .lookup import customer_ids_by_raw_key
 from .migrations import ensure_schema
-from .models import Business, CustomerFeature
+from .models import Business, CustomerFeature, CustomerLifecycleEvent
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -149,19 +152,39 @@ def write_customer_features(
         existing = _existing_snapshots(session, business.id, as_of, set(key_to_id.values()))
         grouped = _group_by_resolved_customer(per_customer, key_to_id)
 
+        # آستانه‌های جامعه یک بار برای همه محاسبه می‌شوند: میانه‌ی آهنگ خرید
+        # (تکیه‌گاه مشتریانِ تک‌خرید) و آستانه‌ی «ویژه» از توزیع همین کسب‌وکار.
+        pop_gap = population_gap([
+            float(getattr(p, "avg_interval_days", None) or 0) for p in predictions.values()
+        ])
+        vip_floor = vip_threshold([
+            to_rial_int(getattr(p, "clv_12m", None), display_currency) or 0
+            for p in predictions.values()
+        ])
+        previous_states = _previous_states(session, business.id, as_of, set(grouped))
+
         to_insert: list[dict] = []
         to_update: list[dict] = []
+        verdicts: dict[int, LifecycleVerdict] = {}
         for customer_id, (row, dominant_key) in grouped.items():
+            prediction = predictions.get(dominant_key)
+            verdict = _classify(
+                row=row, reference=reference, prediction=prediction,
+                display_currency=display_currency, population_gap_days=pop_gap,
+                vip_floor=vip_floor, previous=previous_states.get(customer_id),
+            )
+            verdicts[customer_id] = verdict
             payload = _feature_payload(
                 business_id=business.id,
                 customer_id=customer_id,
                 as_of=as_of,
                 row=row,
                 reference=reference,
-                prediction=predictions.get(dominant_key),
+                prediction=prediction,
                 segment=segments.get(dominant_key),
                 cycle_status=cycles.get(dominant_key),
                 display_currency=display_currency,
+                lifecycle=verdict,
             )
             if customer_id in existing:
                 to_update.append({**payload, "id": existing[customer_id]})
@@ -169,6 +192,7 @@ def write_customer_features(
                 to_insert.append(payload)
 
         _bulk_write(session, to_insert, to_update)
+        _record_transitions(session, business.id, as_of, verdicts, previous_states)
 
     written = len(to_insert) + len(to_update)
     logger.info("عکس ویژگی مشتری (%s): %s ردیف", as_of, written)
@@ -243,6 +267,7 @@ def _feature_payload(
     segment: str | None,
     cycle_status: str | None,
     display_currency: str,
+    lifecycle: LifecycleVerdict | None = None,
 ) -> dict:
     n_orders = int(row["n_orders"])
     monetary = float(row["monetary"])
@@ -275,7 +300,7 @@ def _feature_payload(
         "p_alive_bp": to_basis_points(p_alive),
         "clv_rial": to_rial_int(clv, display_currency),
         "segment": segment,
-        "lifecycle_state": None,  # در گام بعد از ماشین حالت چرخه‌ی عمر پر می‌شود
+        "lifecycle_state": lifecycle.state if lifecycle else None,
         "cycle_status": cycle_status,
         "top_product": (
             str(row["top_product"]) if "top_product" in row and pd.notna(row.get("top_product"))
@@ -284,6 +309,127 @@ def _feature_payload(
         "value_at_risk_rial": to_rial_int(at_risk, display_currency),
         "created_at": now_ts(),
     }
+
+
+@dataclass(frozen=True)
+class _PreviousState:
+    """آخرین حالتِ ثبت‌شده‌ی مشتری، پیش از عکس جاری."""
+
+    state: str
+    as_of: str
+    last_order_date: str | None
+
+
+def _previous_states(
+    session: Session, business_id: int, as_of: str, customer_ids: set[int],
+) -> dict[int, _PreviousState]:
+    """آخرین عکسِ **قبل از** تاریخ جاری — مبنای تشخیص گذار و احیا.
+
+    عکس‌های با همان `as_of` کنار گذاشته می‌شوند: اجرای دوباره‌ی تحلیل روی همان
+    داده نباید گذارِ ساختگی بسازد.
+    """
+    ids = sorted(customer_ids)
+    out: dict[int, _PreviousState] = {}
+    for start in range(0, len(ids), CHUNK):
+        rows = session.execute(
+            select(
+                CustomerFeature.customer_id,
+                CustomerFeature.lifecycle_state,
+                CustomerFeature.as_of_date,
+            ).where(
+                CustomerFeature.business_id == business_id,
+                CustomerFeature.as_of_date < as_of,
+                CustomerFeature.lifecycle_state.isnot(None),
+                CustomerFeature.customer_id.in_(ids[start:start + CHUNK]),
+            ).order_by(CustomerFeature.customer_id, CustomerFeature.as_of_date)
+        ).all()
+        for customer_id, state, snapshot_date in rows:
+            out[customer_id] = _PreviousState(str(state), str(snapshot_date), None)
+    return out
+
+
+def _classify(
+    *,
+    row: pd.Series,
+    reference: pd.Timestamp,
+    prediction: Any | None,
+    display_currency: str,
+    population_gap_days: float | None,
+    vip_floor: int | None,
+    previous: _PreviousState | None,
+) -> LifecycleVerdict:
+    """ترجمه‌ی ویژگی‌ها به ورودی ماشین حالت و گرفتن حکم.
+
+    هیچ ریاضی تازه‌ای اینجا نیست؛ همه‌ی اعداد از قبل محاسبه شده‌اند.
+    """
+    recency = int((reference - pd.Timestamp(row["last_date"])).days)
+    tenure = int((reference - pd.Timestamp(row["first_date"])).days)
+    # «از عکس قبلی تا حالا خرید کرده؟» — آخرین خریدش بعد از تاریخ آن عکس باشد
+    purchased_since = bool(
+        previous and pd.Timestamp(row["last_date"]) > pd.Timestamp(previous.as_of)
+    )
+    return classify_lifecycle(LifecycleInput(
+        n_orders=int(row["n_orders"]),
+        recency_days=recency,
+        tenure_days=tenure,
+        avg_gap_days=getattr(prediction, "avg_interval_days", None) if prediction else None,
+        p_alive=getattr(prediction, "alive_probability", None) if prediction else None,
+        clv_rial=to_rial_int(
+            getattr(prediction, "clv_12m", None) if prediction else None, display_currency,
+        ),
+        population_gap_days=population_gap_days,
+        vip_clv_threshold_rial=vip_floor,
+        previous_state=previous.state if previous else None,
+        purchased_since_previous=purchased_since,
+    ))
+
+
+def _record_transitions(
+    session: Session,
+    business_id: int,
+    as_of: str,
+    verdicts: dict[int, LifecycleVerdict],
+    previous: dict[int, _PreviousState],
+) -> None:
+    """ثبت گذارها — فقط وقتی حالت **واقعاً** عوض شده باشد.
+
+    نوشتن ردیف برای حالتِ بدون تغییر، تایم‌لاین را از نویز پر می‌کند و گذارِ
+    واقعی را دفن می‌کند.
+    """
+    events = []
+    for customer_id, verdict in verdicts.items():
+        before = previous.get(customer_id)
+        if before is not None and before.state == verdict.state:
+            continue
+        events.append({
+            "business_id": business_id,
+            "customer_id": customer_id,
+            "as_of_date": as_of,
+            "from_state": before.state if before else None,
+            "to_state": verdict.state,
+            "reason_fa": verdict.reason_fa,
+            "basis": verdict.basis,
+            "overdue_ratio": verdict.overdue_ratio,
+            "created_at": now_ts(),
+        })
+    if not events:
+        return
+    # اجرای دوباره روی همان تاریخ نباید ردیف تکراری بسازد
+    existing = {
+        (cid, state)
+        for cid, state in session.execute(
+            select(
+                CustomerLifecycleEvent.customer_id, CustomerLifecycleEvent.to_state,
+            ).where(
+                CustomerLifecycleEvent.business_id == business_id,
+                CustomerLifecycleEvent.as_of_date == as_of,
+            )
+        ).all()
+    }
+    fresh = [e for e in events if (e["customer_id"], e["to_state"]) not in existing]
+    for start in range(0, len(fresh), CHUNK):
+        session.execute(insert(CustomerLifecycleEvent), fresh[start:start + CHUNK])
+        session.flush()
 
 
 def _bulk_write(session: Session, to_insert: list[dict], to_update: list[dict]) -> None:

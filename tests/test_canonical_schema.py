@@ -27,6 +27,8 @@ _CANONICAL_TABLES = {
     "customers", "customer_keys", "products", "product_aliases",
     "orders", "order_lines", "customer_features",
     "opportunities", "opportunity_factors", "opportunity_events", "opportunity_runs",
+    "customer_lifecycle_events",
+    "campaigns", "campaign_members", "campaign_opportunities", "campaign_outcomes",
 }
 
 
@@ -98,6 +100,25 @@ def test_canonical_migration_does_not_bump_user_version(tmp_path: Path):
     reset_ensure_cache()
 
 
+def test_no_two_indexes_share_a_name():
+    """دو ایندکس هم‌نام، مهاجرت را روی نصب‌های موجود می‌شکند.
+
+    این حالت وقتی پیش می‌آید که ستونی `index=True` داشته باشد و ایندکس مرکبی
+    هم دستی با همان نام تعریف شود — خطایش فقط موقع اجرای واقعی مهاجرت دیده
+    می‌شود، نه موقع تعریف مدل.
+    """
+    from mktcore.db import models  # noqa: F401
+
+    seen: dict[str, str] = {}
+    duplicates = []
+    for table in Base.metadata.tables.values():
+        for index in table.indexes:
+            if index.name in seen:
+                duplicates.append(f"{index.name} ({seen[index.name]} و {table.name})")
+            seen[index.name] = table.name
+    assert duplicates == []
+
+
 def test_money_columns_are_integers_not_floats():
     """قاعده‌ی §۳.۴: هیچ ستون پولی float نیست."""
     from mktcore.db import models  # noqa: F401 - ثبت مدل‌ها
@@ -119,9 +140,12 @@ def test_every_canonical_table_carries_business_id():
     # جداول فرزند از راه والدشان به business وصل‌اند
     exempt = {
         "businesses",
-        "import_reconciliation",   # از راه import_batches
-        "opportunity_factors",     # از راه opportunities
-        "opportunity_events",      # از راه opportunities
+        "import_reconciliation",     # از راه import_batches
+        "opportunity_factors",       # از راه opportunities
+        "opportunity_events",        # از راه opportunities
+        "campaign_members",          # از راه campaigns
+        "campaign_opportunities",    # از راه campaigns
+        "campaign_outcomes",         # از راه campaigns
     }
     missing = [
         name for name, table in Base.metadata.tables.items()

@@ -6,6 +6,7 @@ import {
   ChevronDown,
   ChevronUp,
   Clock,
+  FlaskConical,
   RotateCcw,
   ShieldQuestion,
   X,
@@ -13,8 +14,11 @@ import {
 
 import {
   actOnOpportunity,
+  createCampaign,
   getOpportunity,
+  listDismissReasons,
   listOpportunities,
+  type DismissReason,
   type Opportunity,
   type OpportunityActionName,
   type OpportunityFactor,
@@ -84,6 +88,10 @@ export default function OpportunityInbox() {
   const [busyId, setBusyId] = useState<number | null>(null);
   const [openId, setOpenId] = useState<number | null>(null);
   const [detail, setDetail] = useState<Opportunity | null>(null);
+  const [showCampaign, setShowCampaign] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [dismissId, setDismissId] = useState<number | null>(null);
+  const [reasons, setReasons] = useState<DismissReason[]>([]);
 
   const load = useCallback(async () => {
     try {
@@ -105,14 +113,32 @@ export default function OpportunityInbox() {
     };
   }, [load]);
 
-  async function act(id: number, action: OpportunityActionName) {
+  // دلایل رد یک بار خوانده می‌شوند؛ فهرست ثابتی است
+  useEffect(() => {
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      void listDismissReasons()
+        .then((res) => {
+          if (!cancelled) setReasons(res.items);
+        })
+        .catch(() => {
+          /* بدون فهرست دلیل، رد همچنان ممکن است */
+        });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function act(id: number, action: OpportunityActionName, reasonCode?: string) {
     setBusyId(id);
     try {
-      await actOnOpportunity(
-        id,
-        action,
-        action === "snooze" ? { snooze_until: todayPlus(14) } : {},
-      );
+      const body: { snooze_until?: string; reason_code?: string } = {};
+      if (action === "snooze") body.snooze_until = todayPlus(14);
+      if (reasonCode) body.reason_code = reasonCode;
+      await actOnOpportunity(id, action, body);
+      setDismissId(null);
       await load();
       if (openId === id) setDetail(await getOpportunity(id));
     } catch (e) {
@@ -189,11 +215,37 @@ export default function OpportunityInbox() {
 
         {data?.open_pipeline && (
           <div className="mb-4 rounded-xl border border-ink-200 p-3 text-sm dark:border-ink-700">
-            <b>ارزش فرصت‌های باز:</b>{" "}
-            <span className="tnum">{toFa(data.open_pipeline.display_text)}</span>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <b>ارزش فرصت‌های باز:</b>{" "}
+                <span className="tnum">{toFa(data.open_pipeline.display_text)}</span>
+              </div>
+              {status === "open" && !!data.items.length && (
+                <Button variant="primary" onClick={() => setShowCampaign((v) => !v)}>
+                  <FlaskConical size={14} /> ساخت کمپین از این فهرست
+                </Button>
+              )}
+            </div>
             <p className="mt-1 text-xs" style={{ color: "var(--muted)" }}>
               {data.economics_note_fa}
             </p>
+          </div>
+        )}
+
+        {showCampaign && (
+          <CampaignForm
+            onCancel={() => setShowCampaign(false)}
+            onCreated={(message) => {
+              setShowCampaign(false);
+              setNotice(message);
+              void load();
+            }}
+          />
+        )}
+
+        {notice && (
+          <div className="mb-3">
+            <Alert tone="info">{notice}</Alert>
           </div>
         )}
 
@@ -274,7 +326,7 @@ export default function OpportunityInbox() {
                         <Button
                           variant="ghost"
                           disabled={busyId === o.id}
-                          onClick={() => void act(o.id, "dismiss")}
+                          onClick={() => setDismissId(dismissId === o.id ? null : o.id)}
                         >
                           <X size={14} /> رد
                         </Button>
@@ -295,6 +347,22 @@ export default function OpportunityInbox() {
                   </div>
                 </div>
 
+                {dismissId === o.id && (
+                  <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-ink-200 pt-3 text-xs dark:border-ink-700">
+                    <span style={{ color: "var(--muted)" }}>چرا رد می‌کنید؟</span>
+                    {reasons.map((reason) => (
+                      <button
+                        key={reason.code}
+                        disabled={busyId === o.id}
+                        onClick={() => void act(o.id, "dismiss", reason.code)}
+                        className="rounded-full bg-ink-100 px-3 py-1 font-medium transition hover:bg-ink-200 disabled:opacity-50 dark:bg-ink-800 dark:hover:bg-ink-700"
+                      >
+                        {reason.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
                 {openId === o.id && (
                   <div className="mt-3 border-t border-ink-200 pt-3 dark:border-ink-700">
                     {detail === null ? (
@@ -309,6 +377,111 @@ export default function OpportunityInbox() {
           </ul>
         )}
       </Card>
+    </div>
+  );
+}
+
+/** فرم ساخت کمپین — گروه کنترل پیش‌فرض دارد، چون بدون آن اثر قابل اثبات نیست. */
+function CampaignForm({
+  onCancel,
+  onCreated,
+}: {
+  onCancel: () => void;
+  onCreated: (message: string) => void;
+}) {
+  const [name, setName] = useState("");
+  const [holdout, setHoldout] = useState(10);
+  const [windowDays, setWindowDays] = useState(30);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit() {
+    if (!name.trim()) {
+      setError("نام کمپین لازم است.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const created = await createCampaign({
+        name: name.trim(),
+        holdout_pct: holdout,
+        analysis_window_days: windowDays,
+      });
+      onCreated(
+        `کمپین «${created.name}» ساخته شد: ${toFa(String(created.treatment_size))} نفر ` +
+          `گروه آزمایش و ${toFa(String(created.control_size))} نفر گروه کنترل. ` +
+          "فهرست تماس را از تب «اثر کمپین‌ها» دانلود کنید.",
+      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "ساخت کمپین ناموفق بود");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="mb-4 rounded-xl border border-brand-200 p-3 dark:border-brand-500/40">
+      <div className="mb-2 font-semibold">ساخت کمپین</div>
+      {error && (
+        <div className="mb-2">
+          <Alert tone="warn">{error}</Alert>
+        </div>
+      )}
+      <div className="flex flex-wrap items-end gap-3 text-sm">
+        <label className="flex min-w-48 flex-1 flex-col gap-1">
+          <span className="text-xs" style={{ color: "var(--muted)" }}>
+            نام کمپین
+          </span>
+          <input
+            className="rounded-lg border border-ink-200 bg-transparent px-3 py-2 dark:border-ink-700"
+            placeholder="مثلاً یادآوری چرخه — مهر"
+            value={name}
+            maxLength={80}
+            onChange={(e) => setName(e.target.value)}
+          />
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-xs" style={{ color: "var(--muted)" }}>
+            گروه کنترل
+          </span>
+          <select
+            className="rounded-lg border border-ink-200 bg-transparent px-3 py-2 dark:border-ink-700"
+            value={holdout}
+            onChange={(e) => setHoldout(Number(e.target.value))}
+          >
+            <option value={10}>۱۰٪ (پیشنهاد)</option>
+            <option value={20}>۲۰٪</option>
+            <option value={0}>بدون گروه کنترل</option>
+          </select>
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-xs" style={{ color: "var(--muted)" }}>
+            پنجره‌ی سنجش
+          </span>
+          <select
+            className="rounded-lg border border-ink-200 bg-transparent px-3 py-2 dark:border-ink-700"
+            value={windowDays}
+            onChange={(e) => setWindowDays(Number(e.target.value))}
+          >
+            <option value={14}>۱۴ روز</option>
+            <option value={30}>۳۰ روز</option>
+            <option value={60}>۶۰ روز</option>
+          </select>
+        </label>
+        <div className="flex gap-2">
+          <Button variant="primary" disabled={busy} onClick={() => void submit()}>
+            ساخت
+          </Button>
+          <Button variant="ghost" onClick={onCancel}>
+            انصراف
+          </Button>
+        </div>
+      </div>
+      <p className="mt-2 text-xs" style={{ color: "var(--muted)" }}>
+        {holdout === 0
+          ? "بدون گروه کنترل، فقط می‌شود گفت چه اتفاقی افتاد — نه اینکه به‌خاطر تماس شما بوده است."
+          : `${toFa(String(holdout))}٪ از مخاطبان عمداً تماس نمی‌گیرند تا اثر واقعی تماس قابل اندازه‌گیری باشد.`}
+      </p>
     </div>
   );
 }

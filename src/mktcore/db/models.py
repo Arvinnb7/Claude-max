@@ -364,6 +364,35 @@ class CustomerFeature(Base):
     created_at: Mapped[float] = mapped_column(Float, default=now_ts)
 
 
+class CustomerLifecycleEvent(Base):
+    """گذارهای حالت چرخه‌ی عمر — فقط افزودنی.
+
+    حالت جاری روی `customer_features` است؛ این جدول «کِی و چرا عوض شد» را نگه
+    می‌دارد. بدون آن، «این مشتری از وفادار به در خطر ریزش رفت» قابل دیدن نیست
+    و همین گذار، مهم‌ترین لحظه‌ی اقدام است.
+    """
+
+    __tablename__ = "customer_lifecycle_events"
+    __table_args__ = (
+        Index("ix_lifecycle_events_customer_date", "customer_id", "as_of_date"),
+        UniqueConstraint("business_id", "customer_id", "as_of_date", "to_state"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    business_id: Mapped[int] = mapped_column(ForeignKey("businesses.id"), index=True)
+    customer_id: Mapped[int] = mapped_column(
+        ForeignKey("customers.id", ondelete="CASCADE"), index=True
+    )
+    as_of_date: Mapped[str] = mapped_column(String(10), index=True)
+    from_state: Mapped[str | None] = mapped_column(String(32))
+    to_state: Mapped[str] = mapped_column(String(32), index=True)
+    reason_fa: Mapped[str | None] = mapped_column(Text)
+    # personal / population / count_only — پایه‌ی قضاوت، برای شفافیت در UI
+    basis: Mapped[str | None] = mapped_column(String(16))
+    overdue_ratio: Mapped[float | None] = mapped_column(Float)
+    created_at: Mapped[float] = mapped_column(Float, default=now_ts, index=True)
+
+
 # -------------------------------------------------------------------- فرصت
 
 
@@ -512,11 +541,141 @@ class OpportunityEvent(Base):
     created_at: Mapped[float] = mapped_column(Float, default=now_ts, index=True)
 
 
+# ------------------------------------------------------------------ کمپین
+
+
+class Campaign(Base):
+    """یک کمپین = یک آزمایش.
+
+    تفاوت بنیادی با «فهرست تماس»: کمپین از روز اول گروه کنترل دارد. بدون آن،
+    هر عددی که بعداً گزارش شود فقط می‌گوید «این مشتریان خرید کردند» — نه
+    «به‌خاطر تماس ما خرید کردند». آن دو یکی نیستند و خلط‌کردنشان بودجه را
+    به سمت کارهای بی‌اثر می‌برد.
+    """
+
+    __tablename__ = "campaigns"
+    __table_args__ = (
+        Index("ix_campaigns_business_created", "business_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    business_id: Mapped[int] = mapped_column(ForeignKey("businesses.id"), index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    kind: Mapped[str | None] = mapped_column(String(64))
+    # draft / running / closed
+    status: Mapped[str] = mapped_column(String(32), default="running", index=True)
+    # درصد گروه کنترل. صفر یعنی «فقط انتساب، بدون ادعای اثر».
+    holdout_pct: Mapped[int] = mapped_column(Integer, default=10)
+    primary_metric: Mapped[str] = mapped_column(String(64), default="revenue")
+    analysis_window_days: Mapped[int] = mapped_column(Integer, default=30)
+    created_at: Mapped[float] = mapped_column(Float, default=now_ts, index=True)
+    exported_at: Mapped[float | None] = mapped_column(Float)
+    closed_at: Mapped[float | None] = mapped_column(Float)
+    notes_json: Mapped[str | None] = mapped_column(Text)
+
+
+class CampaignMember(Base):
+    """عضویت یک مشتری در یک کمپین، با بازوی تصادفی‌شده‌اش.
+
+    واحد تصادفی‌سازی **مشتری** است نه پیام (§۲۲.۱): اگر یک مشتری هم‌زمان در
+    گروه آزمایش یک فرصت و گروه کنترل فرصت دیگری باشد، اندازه‌گیری آلوده
+    می‌شود و هیچ‌کدام از دو عدد معنا ندارند.
+    """
+
+    __tablename__ = "campaign_members"
+    __table_args__ = (
+        UniqueConstraint("campaign_id", "customer_id"),
+        # نام باید با ایندکسِ خودکارِ ستون `arm` فرق کند، وگرنه دو ایندکس
+        # هم‌نام ساخته می‌شود و مهاجرت روی نصب‌های موجود می‌شکند.
+        Index("ix_campaign_members_campaign_arm", "campaign_id", "arm"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    campaign_id: Mapped[int] = mapped_column(
+        ForeignKey("campaigns.id", ondelete="CASCADE"), index=True
+    )
+    customer_id: Mapped[int] = mapped_column(
+        ForeignKey("customers.id", ondelete="CASCADE"), index=True
+    )
+    # treatment | control — ایندکسِ مرکبِ بالا این ستون را پوشش می‌دهد
+    arm: Mapped[str] = mapped_column(String(16))
+    # طبقه‌ای که تصادفی‌سازی درونش انجام شده (سگمنت/حالت) — برای ممیزی توازن
+    stratum: Mapped[str | None] = mapped_column(String(64))
+    assigned_at: Mapped[float] = mapped_column(Float, default=now_ts)
+    assigned_date: Mapped[str] = mapped_column(String(10), index=True)
+    # لحظه‌ی تماس. تا وقتی NULL باشد، این عضو هنوز در معرض قرار نگرفته است.
+    exposure_at: Mapped[float | None] = mapped_column(Float)
+    exposure_date: Mapped[str | None] = mapped_column(String(10), index=True)
+    exposure_channel: Mapped[str | None] = mapped_column(String(32))
+    # جمعِ ارزش فرصت‌های این مشتری در این کمپین (برای گزارش، نه برای سنجش اثر)
+    expected_value_rial: Mapped[int | None] = mapped_column(BigInteger)
+
+
+class CampaignOpportunity(Base):
+    """پیوند عضو کمپین با فرصت‌هایی که باعث انتخابش شدند."""
+
+    __tablename__ = "campaign_opportunities"
+    __table_args__ = (
+        UniqueConstraint("campaign_id", "opportunity_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    campaign_id: Mapped[int] = mapped_column(
+        ForeignKey("campaigns.id", ondelete="CASCADE"), index=True
+    )
+    opportunity_id: Mapped[int] = mapped_column(
+        ForeignKey("opportunities.id", ondelete="CASCADE"), index=True
+    )
+    customer_id: Mapped[int] = mapped_column(
+        ForeignKey("customers.id", ondelete="CASCADE"), index=True
+    )
+    created_at: Mapped[float] = mapped_column(Float, default=now_ts)
+
+
+class CampaignOutcome(Base):
+    """آنچه در پنجره‌ی سنجش واقعاً اتفاق افتاد — عکسِ ماندگار.
+
+    محاسبه‌ی درجا هم ممکن بود، ولی عکس‌گرفتن یعنی گزارشِ امروز و شش ماه بعد
+    یکی است، حتی اگر داده‌ی تازه‌ای اضافه شود.
+    """
+
+    __tablename__ = "campaign_outcomes"
+    __table_args__ = (
+        UniqueConstraint("campaign_id", "customer_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    campaign_id: Mapped[int] = mapped_column(
+        ForeignKey("campaigns.id", ondelete="CASCADE"), index=True
+    )
+    customer_id: Mapped[int] = mapped_column(
+        ForeignKey("customers.id", ondelete="CASCADE"), index=True
+    )
+    arm: Mapped[str] = mapped_column(String(16), index=True)
+    window_start: Mapped[str] = mapped_column(String(10))
+    window_end: Mapped[str] = mapped_column(String(10))
+    orders_count: Mapped[int] = mapped_column(Integer, default=0)
+    lines_count: Mapped[int] = mapped_column(Integer, default=0)
+    revenue_rial: Mapped[int] = mapped_column(BigInteger, default=0)
+    # آیا دقیقاً همان کالایی که پیشنهاد شده بود خریداری شد؟
+    matched_product: Mapped[bool] = mapped_column(Boolean, default=False)
+    # آخرین بارگذاری‌ای که این عکس از آن ساخته شد
+    source_batch_id: Mapped[int | None] = mapped_column(
+        ForeignKey("import_batches.id", ondelete="SET NULL")
+    )
+    computed_at: Mapped[float] = mapped_column(Float, default=now_ts)
+
+
 __all__ = [
     "Business",
+    "Campaign",
+    "CampaignMember",
+    "CampaignOpportunity",
+    "CampaignOutcome",
     "Customer",
     "CustomerFeature",
     "CustomerKey",
+    "CustomerLifecycleEvent",
     "ImportBatch",
     "ImportReconciliation",
     "Opportunity",

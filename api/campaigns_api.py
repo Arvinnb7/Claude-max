@@ -1,0 +1,448 @@
+"""مسیرهای کمپین — ساخت آزمایش، خروجی تماس، و گزارش اثر.
+
+جدا از `api/v1.py` نگه داشته شده چون منطقش سنگین‌تر است و مرزش روشن: اینجا
+همه‌چیز درباره‌ی **آزمایش** است، نه گزارش وضعیت.
+
+نکته‌ی مهم درباره‌ی «ثبت تماس»: چون کانال اجرا خروجی اکسل است، لحظه‌ی دانلود
+فایل همان لحظه‌ی در معرض قرارگرفتن ثبت می‌شود. این یک تقریب است و صریحاً در
+پاسخ گفته می‌شود؛ اگر فهرست را دانلود کنید و تماس نگیرید، اثر کمی
+دست‌کم‌برآورد می‌شود (چون آن افراد در مخرج می‌مانند).
+"""
+
+from __future__ import annotations
+
+import io
+import json
+import logging
+from urllib.parse import quote
+
+import pandas as pd
+from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import Response
+from pydantic import BaseModel, Field
+from sqlalchemy import func, select
+
+from mktcore.campaigns.analysis import ArmStats, analyze_campaign
+from mktcore.campaigns.assign import ARM_CONTROL, ARM_TREATMENT, assign_arms
+from mktcore.campaigns.outcomes import arm_stats, compute_campaign_outcomes
+from mktcore.db.base import now_ts
+from mktcore.db.engine import session_scope, write_lock
+from mktcore.db.migrations import ensure_schema
+from mktcore.db.models import (
+    Business,
+    Campaign,
+    CampaignMember,
+    CampaignOpportunity,
+    CampaignOutcome,
+    Customer,
+    CustomerFeature,
+    Opportunity,
+)
+from mktcore.identity import normalize_phone
+from mktcore.lifecycle import STATE_LABELS_FA
+from mktcore.money import money_payload
+
+logger = logging.getLogger("mktcore.api.campaigns")
+
+router = APIRouter(prefix="/api/v1/campaigns", tags=["campaigns"])
+
+EXPOSURE_CHANNEL_EXCEL = "excel_export"
+EXPOSURE_NOTE_FA = (
+    "لحظه‌ی دانلود فهرست به‌عنوان «تماس گرفته شد» ثبت می‌شود. اگر فهرستی را "
+    "دانلود کنید ولی تماس نگیرید، آن افراد در گروه آزمایش می‌مانند و اثر "
+    "اندکی کمتر از واقع گزارش می‌شود."
+)
+
+
+class CreateCampaignRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    status: str = "open"                 # وضعیت فرصت‌هایی که وارد کمپین می‌شوند
+    kind: str | None = None              # فیلتر نوع فرصت
+    holdout_pct: int = Field(default=10, ge=0, le=50)
+    analysis_window_days: int = Field(default=30, ge=1, le=365)
+    limit: int = Field(default=500, ge=1, le=5000)
+
+
+def _business_id(session) -> int | None:
+    return session.scalar(select(Business.id).where(Business.slug == "default"))
+
+
+def _no_ledger() -> dict:
+    return {
+        "available": False,
+        "note_fa": "هنوز تحلیلی ثبت نشده است؛ ابتدا یک فایل را تحلیل کنید.",
+    }
+
+
+@router.post("")
+def create_campaign(req: CreateCampaignRequest) -> dict:
+    """ساخت کمپین از فرصت‌های باز، با تخصیص تصادفیِ گروه کنترل."""
+    ensure_schema()
+    with write_lock, session_scope() as session:
+        business_id = _business_id(session)
+        if business_id is None:
+            raise HTTPException(status_code=409, detail="هنوز داده‌ای تحلیل نشده است.")
+
+        stmt = select(Opportunity).where(
+            Opportunity.business_id == business_id,
+            Opportunity.customer_id.isnot(None),
+        )
+        if req.status != "all":
+            stmt = stmt.where(Opportunity.status == req.status)
+        if req.kind:
+            stmt = stmt.where(Opportunity.kind == req.kind)
+        opportunities = session.scalars(
+            stmt.order_by(Opportunity.score_rial.desc()).limit(req.limit)
+        ).all()
+        if not opportunities:
+            raise HTTPException(
+                status_code=409,
+                detail="فرصتی با این فیلتر برای ساخت کمپین وجود ندارد.",
+            )
+
+        # طبقه‌بندی برای تصادفی‌سازی متوازن: حالت چرخه‌ی عمر، وگرنه سگمنت
+        customer_ids = {o.customer_id for o in opportunities if o.customer_id}
+        strata = _strata(session, business_id, customer_ids)
+
+        campaign = Campaign(
+            business_id=business_id,
+            name=req.name,
+            kind=req.kind,
+            status="running",
+            holdout_pct=req.holdout_pct,
+            analysis_window_days=req.analysis_window_days,
+            notes_json=json.dumps(
+                {"source_status": req.status, "limit": req.limit}, ensure_ascii=False,
+            ),
+        )
+        session.add(campaign)
+        session.flush()
+
+        assignments = assign_arms(
+            {str(cid): strata.get(cid, "—") for cid in customer_ids},
+            campaign_key=f"campaign-{campaign.id}",
+            holdout_pct=req.holdout_pct,
+        )
+        today = pd.Timestamp.now().date().isoformat()
+        value_by_customer: dict[int, int] = {}
+        for opportunity in opportunities:
+            if opportunity.customer_id:
+                value_by_customer[opportunity.customer_id] = (
+                    value_by_customer.get(opportunity.customer_id, 0)
+                    + int(opportunity.expected_value_rial or 0)
+                )
+
+        for assignment in assignments:
+            customer_id = int(assignment.customer_key)
+            session.add(CampaignMember(
+                campaign_id=campaign.id,
+                customer_id=customer_id,
+                arm=assignment.arm,
+                stratum=assignment.stratum,
+                assigned_date=today,
+                expected_value_rial=value_by_customer.get(customer_id),
+            ))
+        for opportunity in opportunities:
+            if opportunity.customer_id:
+                session.add(CampaignOpportunity(
+                    campaign_id=campaign.id,
+                    opportunity_id=opportunity.id,
+                    customer_id=opportunity.customer_id,
+                ))
+        session.flush()
+        payload = _campaign_detail(session, campaign)
+    return payload
+
+
+def _strata(session, business_id: int, customer_ids: set[int]) -> dict[int, str]:
+    """طبقه‌ی هر مشتری: حالت چرخه‌ی عمر، وگرنه سگمنت، وگرنه «—»."""
+    if not customer_ids:
+        return {}
+    latest = session.scalar(
+        select(func.max(CustomerFeature.as_of_date))
+        .where(CustomerFeature.business_id == business_id)
+    )
+    rows = session.execute(
+        select(
+            CustomerFeature.customer_id,
+            CustomerFeature.lifecycle_state,
+            CustomerFeature.segment,
+        ).where(
+            CustomerFeature.business_id == business_id,
+            CustomerFeature.as_of_date == latest,
+            CustomerFeature.customer_id.in_(sorted(customer_ids)),
+        )
+    ).all()
+    return {
+        int(cid): str(state or segment or "—")
+        for cid, state, segment in rows
+    }
+
+
+@router.get("")
+def list_campaigns(limit: int = Query(50, ge=1, le=200)) -> dict:
+    ensure_schema()
+    with session_scope() as session:
+        business_id = _business_id(session)
+        if business_id is None:
+            return {**_no_ledger(), "items": []}
+        campaigns = session.scalars(
+            select(Campaign)
+            .where(Campaign.business_id == business_id)
+            .order_by(Campaign.created_at.desc())
+            .limit(limit)
+        ).all()
+        items = [_campaign_summary(session, c) for c in campaigns]
+    return {"available": True, "items": items, "exposure_note_fa": EXPOSURE_NOTE_FA}
+
+
+@router.get("/{campaign_id}")
+def get_campaign(campaign_id: int, members_limit: int = Query(200, ge=1, le=2000)) -> dict:
+    """جزئیات کمپین + گزارش اثر."""
+    ensure_schema()
+    with session_scope() as session:
+        campaign = session.get(Campaign, campaign_id)
+        if campaign is None:
+            raise HTTPException(status_code=404, detail="این کمپین یافت نشد.")
+
+        payload = _campaign_detail(session, campaign, members_limit)
+    return payload
+
+
+def _campaign_detail(session, campaign: Campaign, members_limit: int = 200) -> dict:
+    """شکل کاملِ کمپین — همان چیزی که همه‌ی مسیرهای جزئیات برمی‌گردانند.
+
+    مشترک نگه داشته شده تا `refresh` و `close` هم دقیقاً همان شکل را بدهند؛
+    وگرنه کلاینت بعد از هر اقدام مجبور بود یک درخواست اضافه بزند.
+    """
+    payload = _campaign_summary(session, campaign)
+    payload["report"] = _report(session, campaign.id)
+
+    members = session.scalars(
+        select(CampaignMember)
+        .where(CampaignMember.campaign_id == campaign.id)
+        .order_by(CampaignMember.expected_value_rial.desc())
+        .limit(members_limit)
+    ).all()
+    names = _customer_names(session, {m.customer_id for m in members})
+    outcomes = {
+        o.customer_id: o
+        for o in session.scalars(
+            select(CampaignOutcome).where(CampaignOutcome.campaign_id == campaign.id)
+        ).all()
+    }
+    payload["members"] = [
+        {
+            "customer_id": m.customer_id,
+            "customer_name": names.get(m.customer_id),
+            "arm": m.arm,
+            "stratum": m.stratum,
+            "exposure_date": m.exposure_date,
+            "expected_value": money_payload(m.expected_value_rial or 0),
+            "outcome": (
+                {
+                    "orders": outcomes[m.customer_id].orders_count,
+                    "revenue": money_payload(outcomes[m.customer_id].revenue_rial),
+                    "matched_product": outcomes[m.customer_id].matched_product,
+                    "window": [
+                        outcomes[m.customer_id].window_start,
+                        outcomes[m.customer_id].window_end,
+                    ],
+                }
+                if m.customer_id in outcomes else None
+            ),
+        }
+        for m in members
+    ]
+    payload["exposure_note_fa"] = EXPOSURE_NOTE_FA
+    return payload
+
+
+@router.get("/{campaign_id}/export")
+def export_campaign(campaign_id: int):
+    """خروجی اکسل بازوی آزمایش — و ثبت لحظه‌ی تماس.
+
+    گروه کنترل **عمداً** در فایل نیست؛ اگر بود، کاربر ناخواسته با آن‌ها تماس
+    می‌گرفت و آزمایش از بین می‌رفت.
+    """
+    ensure_schema()
+    with write_lock, session_scope() as session:
+        campaign = session.get(Campaign, campaign_id)
+        if campaign is None:
+            raise HTTPException(status_code=404, detail="این کمپین یافت نشد.")
+
+        members = session.scalars(
+            select(CampaignMember).where(
+                CampaignMember.campaign_id == campaign_id,
+                CampaignMember.arm == ARM_TREATMENT,
+            )
+        ).all()
+        if not members:
+            raise HTTPException(
+                status_code=409, detail="این کمپین عضوی در گروه آزمایش ندارد.",
+            )
+
+        rows = _export_rows(session, campaign_id, members)
+        today = pd.Timestamp.now().date().isoformat()
+        stamp = now_ts()
+        for member in members:
+            # اولین تماس ملاک است؛ دانلود دوباره پنجره‌ی سنجش را جابه‌جا نمی‌کند
+            if member.exposure_at is None:
+                member.exposure_at = stamp
+                member.exposure_date = today
+                member.exposure_channel = EXPOSURE_CHANNEL_EXCEL
+        if campaign.exported_at is None:
+            campaign.exported_at = stamp
+        name = campaign.name
+
+    content = _workbook(rows)
+    filename = quote(f"کمپین-{name}.xlsx")
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"},
+    )
+
+
+def _export_rows(session, campaign_id: int, members: list[CampaignMember]) -> list[dict]:
+    ids = {m.customer_id for m in members}
+    customers = {
+        c.id: c for c in session.scalars(
+            select(Customer).where(Customer.id.in_(sorted(ids)))
+        ).all()
+    }
+    opportunities = session.execute(
+        select(
+            CampaignOpportunity.customer_id,
+            Opportunity.kind, Opportunity.action_fa, Opportunity.reason_fa,
+            Opportunity.message_fa, Opportunity.due_date, Opportunity.expected_value_rial,
+        ).join(Opportunity, Opportunity.id == CampaignOpportunity.opportunity_id)
+        .where(CampaignOpportunity.campaign_id == campaign_id)
+    ).all()
+
+    by_customer: dict[int, list] = {}
+    for row in opportunities:
+        by_customer.setdefault(int(row[0]), []).append(row)
+
+    rows: list[dict] = []
+    for member in sorted(members, key=lambda m: -(m.expected_value_rial or 0)):
+        customer = customers.get(member.customer_id)
+        for _, kind, action, reason, message, due, value in by_customer.get(
+            member.customer_id, [],
+        ):
+            rows.append({
+                "مشتری": (customer.display_name if customer else None) or "—",
+                "شماره تماس": normalize_phone(customer.phone_e164) if customer else None,
+                "نوع اقدام": kind,
+                "اقدام پیشنهادی": action,
+                "دلیل": reason,
+                "متن پیشنهادی": message or "",
+                "سررسید": due or "",
+                "ارزش مورد انتظار (ریال)": int(value or 0),
+            })
+    return rows
+
+
+def _workbook(rows: list[dict]) -> bytes:
+    frame = pd.DataFrame(rows) if rows else pd.DataFrame(columns=["مشتری"])
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        frame.to_excel(writer, sheet_name="فهرست تماس", index=False)
+        writer.book["فهرست تماس"].sheet_view.rightToLeft = True
+    return buf.getvalue()
+
+
+@router.post("/{campaign_id}/refresh")
+def refresh_outcomes(campaign_id: int) -> dict:
+    """محاسبه‌ی دوباره‌ی نتیجه‌ها از دفتر کل (بدون انتظار برای بارگذاری بعدی)."""
+    ensure_schema()
+    with session_scope() as session:
+        if session.get(Campaign, campaign_id) is None:
+            raise HTTPException(status_code=404, detail="این کمپین یافت نشد.")
+    compute_campaign_outcomes()
+    with session_scope() as session:
+        campaign = session.get(Campaign, campaign_id)
+        payload = _campaign_detail(session, campaign)
+    return payload
+
+
+@router.post("/{campaign_id}/close")
+def close_campaign(campaign_id: int) -> dict:
+    """بستن کمپین — پنجره‌ی سنجش دیگر به‌روز نمی‌شود."""
+    ensure_schema()
+    with write_lock, session_scope() as session:
+        campaign = session.get(Campaign, campaign_id)
+        if campaign is None:
+            raise HTTPException(status_code=404, detail="این کمپین یافت نشد.")
+        campaign.status = "closed"
+        campaign.closed_at = now_ts()
+        payload = _campaign_detail(session, campaign)
+    return payload
+
+
+# ------------------------------------------------------------------ کمکی‌ها
+def _customer_names(session, customer_ids: set[int]) -> dict[int, str]:
+    if not customer_ids:
+        return {}
+    rows = session.execute(
+        select(Customer.id, Customer.display_name).where(
+            Customer.id.in_(sorted(customer_ids))
+        )
+    ).all()
+    return {cid: name for cid, name in rows if name}
+
+
+def _report(session, campaign_id: int) -> dict:
+    stats = arm_stats(session, campaign_id)
+    treatment = ArmStats(arm=ARM_TREATMENT, **stats.get(ARM_TREATMENT, {}))
+    control = ArmStats(arm=ARM_CONTROL, **stats.get(ARM_CONTROL, {}))
+    report = analyze_campaign(treatment, control).to_dict()
+    report["incremental_revenue"] = money_payload(report["incremental_revenue_rial"])
+    return report
+
+
+def _campaign_summary(session, campaign: Campaign) -> dict:
+    counts = dict(session.execute(
+        select(CampaignMember.arm, func.count())
+        .where(CampaignMember.campaign_id == campaign.id)
+        .group_by(CampaignMember.arm)
+    ).all())
+    exposed = session.scalar(
+        select(func.count()).select_from(CampaignMember).where(
+            CampaignMember.campaign_id == campaign.id,
+            CampaignMember.exposure_at.isnot(None),
+        )
+    ) or 0
+    pipeline = session.scalar(
+        select(func.sum(CampaignMember.expected_value_rial)).where(
+            CampaignMember.campaign_id == campaign.id,
+            CampaignMember.arm == ARM_TREATMENT,
+        )
+    ) or 0
+    strata = dict(session.execute(
+        select(CampaignMember.stratum, func.count())
+        .where(CampaignMember.campaign_id == campaign.id)
+        .group_by(CampaignMember.stratum)
+    ).all())
+
+    return {
+        "id": campaign.id,
+        "name": campaign.name,
+        "kind": campaign.kind,
+        "status": campaign.status,
+        "holdout_pct": campaign.holdout_pct,
+        "analysis_window_days": campaign.analysis_window_days,
+        "created_at": campaign.created_at,
+        "exported_at": campaign.exported_at,
+        "closed_at": campaign.closed_at,
+        "treatment_size": int(counts.get(ARM_TREATMENT, 0)),
+        "control_size": int(counts.get(ARM_CONTROL, 0)),
+        "exposed_count": int(exposed),
+        "treatment_pipeline": money_payload(int(pipeline)),
+        "strata": {
+            STATE_LABELS_FA.get(str(k), str(k)): int(v) for k, v in strata.items()
+        },
+    }
+
+
+__all__ = ["EXPOSURE_NOTE_FA", "router"]

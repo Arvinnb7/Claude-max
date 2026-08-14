@@ -71,6 +71,9 @@ def record_analysis(
         payload["opportunities"] = _run_opportunities(
             clean, bundle, session_id=session_id, display_currency=display_currency,
         )
+        # حلقه بسته می‌شود: خرید‌های تازه‌ای که همین حالا وارد دفتر شدند، ممکن
+        # است نتیجه‌ی کمپین‌های قبلی باشند.
+        payload["campaign_outcomes"] = _refresh_campaign_outcomes(result.batch_id)
         return payload
     except Exception:  # noqa: BLE001 - جداسازی عمدی: تحلیل نباید قربانی دفتر کل شود
         logger.exception("ثبت در دفتر کل canonical ناموفق بود (نشست %s)", session_id)
@@ -107,6 +110,17 @@ def _run_opportunities(
         return result.to_dict() if result else None
     except Exception:  # noqa: BLE001 - همان جداسازی
         logger.exception("اجرای موتور فرصت‌ها ناموفق بود")
+        return None
+
+
+def _refresh_campaign_outcomes(batch_id: int | None) -> dict | None:
+    """به‌روزرسانی نتیجه‌ی کمپین‌های در جریان. مثل بقیه‌ی این پل، بی‌صدا شکست می‌خورد."""
+    try:
+        from mktcore.campaigns import compute_campaign_outcomes
+
+        return compute_campaign_outcomes(batch_id=batch_id)
+    except Exception:  # noqa: BLE001 - همان جداسازی
+        logger.exception("به‌روزرسانی نتیجه‌ی کمپین‌ها ناموفق بود")
         return None
 
 

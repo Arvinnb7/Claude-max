@@ -408,6 +408,45 @@ def test_scenario_opportunities_attach_to_merged_identity(tmp_path):
     assert orphans == 0
 
 
+def test_scenario_lifecycle_state_follows_personal_cadence(tmp_path):
+    """دو مشتری با بی‌خریدیِ یکسان ولی آهنگ متفاوت → دو حالت متفاوت.
+
+    این همان چیزی است که سند §۱۱ می‌خواهد و قاعده‌ی تقویمی نمی‌تواند بدهد.
+    """
+    from mktcore.db.models import CustomerFeature
+    from mktcore.db.repo_features import write_customer_features
+
+    rows = []
+    # مشتری هفتگی: ۱۰ خرید با فاصله‌ی ۷ روز
+    for w in range(10):
+        day = 1 + w * 7
+        rows.append((f"1402/{(day - 1) // 30 + 1:02d}/{(day - 1) % 30 + 1:02d}",
+                     150_000, 1, "هفتگی", f"W{w}", "کالا", ""))
+    # مشتری فصلی: ۴ خرید با فاصله‌ی ~۹۰ روز، آخری هم‌زمان با آخرین خرید هفتگی
+    for q in range(4):
+        rows.append((f"1402/{1 + q * 3:02d}/01", 600_000, 1, "فصلی", f"Q{q}", "کالا", ""))
+    for i in range(12):
+        rows.append((f"1402/0{(i % 9) + 1}/20", 100_000, 1, f"C{i}", f"G{i}", "کالا", ""))
+
+    clean = _clean(rows)
+    db = tmp_path / "app.db"
+    _ingest(clean, db)
+    bundle = run_analysis(clean, horizon=2, with_forecast=False)
+    write_customer_features(clean, bundle, db_path=db)
+
+    with session_scope(db) as session:
+        states = {}
+        for key in ("هفتگی", "فصلی"):
+            customer = session.scalar(select(Customer).where(Customer.canonical_key == key))
+            feature = session.scalar(
+                select(CustomerFeature).where(CustomerFeature.customer_id == customer.id)
+            )
+            states[key] = feature.lifecycle_state
+
+    assert states["هفتگی"] and states["فصلی"]
+    assert states["هفتگی"] != states["فصلی"]
+
+
 def test_scenario_identity_merge_is_not_reported_as_a_mismatch(tmp_path):
     """ادغام هویت نتیجه‌ی مطلوب است؛ نباید مثل خطای آشتی گزارش شود."""
     rows = [

@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -31,6 +32,7 @@ from mktcore.db.models import (
     Business,
     Customer,
     CustomerFeature,
+    CustomerLifecycleEvent,
     ImportBatch,
     ImportReconciliation,
     Opportunity,
@@ -41,6 +43,7 @@ from mktcore.db.models import (
     Product,
 )
 from mktcore.identity import mask_phone
+from mktcore.lifecycle import STATE_LABELS_FA
 from mktcore.money import money_payload
 
 logger = logging.getLogger("mktcore.api.v1")
@@ -61,6 +64,13 @@ _ECONOMICS_NOTE_FULL_FA = (
 )
 
 _DEFAULT_SLUG = "default"
+
+# پایه‌ی قضاوتِ حالت — تا کاربر بداند این برچسب چقدر شخصی است
+_BASIS_LABELS_FA = {
+    "personal": "بر پایه‌ی آهنگ خرید خودِ مشتری",
+    "population": "بر پایه‌ی میانه‌ی آهنگ خرید سایر مشتریان",
+    "count_only": "بر پایه‌ی تعداد خرید (هنوز آهنگی شکل نگرفته)",
+}
 
 
 def _cost_coverage(session, business_id: int | None) -> float:
@@ -393,6 +403,13 @@ def get_customer(customer_id: int, history_limit: int = Query(200, ge=1, le=2000
 
         product_names = _product_names(session, {ln.product_id for ln in lines if ln.product_id})
 
+        transitions = session.scalars(
+            select(CustomerLifecycleEvent)
+            .where(CustomerLifecycleEvent.customer_id == customer_id)
+            .order_by(CustomerLifecycleEvent.as_of_date.desc())
+            .limit(50)
+        ).all()
+
         payload = {
             "available": True,
             "customer": _customer_row(customer, snapshots[0] if snapshots else None),
@@ -403,9 +420,25 @@ def get_customer(customer_id: int, history_limit: int = Query(200, ge=1, le=2000
                     "monetary": _money(s.monetary_rial),
                     "recency_days": s.recency_days,
                     "segment": s.segment,
+                    "lifecycle_state": s.lifecycle_state,
                     "cycle_status": s.cycle_status,
                 }
                 for s in snapshots
+            ],
+            # تایم‌لاین گذارها (§۱۱) — مهم‌ترین لحظه‌ی اقدام، همان لحظه‌ی گذار است
+            "lifecycle_timeline": [
+                {
+                    "as_of": t.as_of_date,
+                    "from": t.from_state,
+                    "from_label": STATE_LABELS_FA.get(t.from_state or "", None),
+                    "to": t.to_state,
+                    "to_label": STATE_LABELS_FA.get(t.to_state, t.to_state),
+                    "reason": t.reason_fa,
+                    "basis": t.basis,
+                    "basis_label": _BASIS_LABELS_FA.get(t.basis or "", t.basis),
+                    "overdue_ratio": t.overdue_ratio,
+                }
+                for t in transitions
             ],
             "lines": [
                 {
@@ -466,6 +499,10 @@ def _customer_row(customer: Customer, feature: Any | None) -> dict:
             None if feature.p_alive_bp is None else round(feature.p_alive_bp / 10_000, 4)
         ),
         "segment": feature.segment,
+        "lifecycle_state": feature.lifecycle_state,
+        "lifecycle_label": STATE_LABELS_FA.get(
+            feature.lifecycle_state or "", feature.lifecycle_state,
+        ),
         "cycle_status": feature.cycle_status,
         "top_product": feature.top_product,
     }
@@ -473,6 +510,20 @@ def _customer_row(customer: Customer, feature: Any | None) -> dict:
 
 
 # ------------------------------------------------------------------- فرصت‌ها
+# دلایل رد، از فهرست بسته‌ی §۳۰. متن آزاد قابل تجمیع نیست و سیگنال کیفیتِ
+# مولدها را از دست می‌دهد؛ فهرست بسته را می‌شود شمرد و روند گرفت.
+DISMISS_REASONS: dict[str, str] = {
+    "not_relevant": "مشتری مرتبط نیست",
+    "product_incompatible": "کالا برای این مشتری مناسب نیست",
+    "bought_elsewhere": "از جای دیگری خریده است",
+    "bad_contact": "اطلاعات تماس خراب است",
+    "out_of_stock": "کالا موجود نیست",
+    "value_too_low": "ارزشش کم است",
+    "duplicate": "تکراری است",
+    "other": "دلیل دیگر",
+}
+
+
 class OpportunityAction(BaseModel):
     """درخواست تغییر وضعیت یک فرصت."""
 
@@ -480,6 +531,20 @@ class OpportunityAction(BaseModel):
     note: str | None = None
     assigned_to: str | None = None
     snooze_until: str | None = None  # ISO میلادی
+    # فقط برای «رد» — کلیدی از `DISMISS_REASONS`
+    reason_code: str | None = None
+
+
+@router.get("/dismiss-reasons")
+def dismiss_reasons() -> dict:
+    """فهرست دلایل رد — تا UI و گزارش روی یک واژگان بایستند."""
+    return {
+        "items": [{"code": k, "label": v} for k, v in DISMISS_REASONS.items()],
+        "note_fa": (
+            "بازخورد اپراتور سیگنال کیفیت است، نه حقیقت بی‌طرف: ممکن است خودِ "
+            "بازخورد سوگیری داشته باشد و در تفسیر باید همین‌طور دیده شود."
+        ),
+    }
 
 
 @router.get("/opportunities")
@@ -587,6 +652,78 @@ def get_opportunity(opportunity_id: int) -> dict:
     return payload
 
 
+@router.get("/opportunity-quality")
+def opportunity_quality() -> dict:
+    """کیفیت مولدها از دید اپراتور — کدام مولد بیشتر رد می‌شود و چرا.
+
+    این سیگنالِ بهبود است، نه داوریِ نهایی: ممکن است اپراتور یک نوع پیشنهاد را
+    به‌دلیل ناآشنایی رد کند، نه به‌دلیل غلط بودنش.
+    """
+    ensure_schema()
+    with session_scope() as session:
+        business_id = _business_id(session)
+        if business_id is None:
+            return _no_ledger_yet()
+
+        rows = session.execute(
+            select(Opportunity.generator, Opportunity.status, func.count())
+            .where(Opportunity.business_id == business_id)
+            .group_by(Opportunity.generator, Opportunity.status)
+        ).all()
+        by_generator: dict[str, dict[str, int]] = {}
+        for generator, status, count in rows:
+            by_generator.setdefault(str(generator), {})[str(status)] = int(count)
+
+        events = session.execute(
+            select(Opportunity.generator, OpportunityEvent.payload_json, func.count())
+            .join(OpportunityEvent, OpportunityEvent.opportunity_id == Opportunity.id)
+            .where(
+                Opportunity.business_id == business_id,
+                OpportunityEvent.event_type == "dismiss",
+                OpportunityEvent.payload_json.isnot(None),
+            )
+            .group_by(Opportunity.generator, OpportunityEvent.payload_json)
+        ).all()
+
+    reasons: dict[str, dict[str, int]] = {}
+    for generator, payload_json, count in events:
+        try:
+            code = (json.loads(payload_json) or {}).get("reason_code")
+        except (TypeError, ValueError):
+            continue
+        if code:
+            label = DISMISS_REASONS.get(code, code)
+            reasons.setdefault(str(generator), {})[label] = (
+                reasons.setdefault(str(generator), {}).get(label, 0) + int(count)
+            )
+
+    items = []
+    for generator, statuses in sorted(by_generator.items()):
+        total = sum(statuses.values())
+        acted = statuses.get("accepted", 0) + statuses.get("done", 0)
+        dismissed = statuses.get("dismissed", 0)
+        decided = acted + dismissed
+        items.append({
+            "generator": generator,
+            "total": total,
+            "accepted": acted,
+            "dismissed": dismissed,
+            # نرخ فقط روی فرصت‌هایی که کاربر واقعاً درباره‌شان تصمیم گرفته
+            "acceptance_rate": round(acted / decided, 3) if decided else None,
+            "undecided": total - decided,
+            "dismiss_reasons": reasons.get(generator, {}),
+        })
+
+    return {
+        "available": True,
+        "items": items,
+        "note_fa": (
+            "بازخورد اپراتور سیگنال کیفیت است، نه حقیقت بی‌طرف. نرخ پذیرش فقط روی "
+            "فرصت‌هایی محاسبه می‌شود که درباره‌شان تصمیمی گرفته شده است."
+        ),
+    }
+
+
 _TRANSITIONS = {
     "accept": ("accepted", "پذیرفته شد و در دستور کار قرار گرفت."),
     "dismiss": ("dismissed", "رد شد."),
@@ -612,6 +749,12 @@ def act_on_opportunity(
         raise HTTPException(
             status_code=400, detail="برای تعویق، تاریخ «snooze_until» لازم است.",
         )
+    if payload.reason_code and payload.reason_code not in DISMISS_REASONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"دلیل نامعتبر است؛ مجاز: {'، '.join(DISMISS_REASONS)}",
+        )
+    reason_label = DISMISS_REASONS.get(payload.reason_code or "")
 
     ensure_schema()
     with session_scope() as session:
@@ -621,7 +764,7 @@ def act_on_opportunity(
 
         previous = opportunity.status
         opportunity.status = new_status
-        opportunity.status_reason_fa = payload.note or default_note
+        opportunity.status_reason_fa = reason_label or payload.note or default_note
         opportunity.updated_at = _now()
         if payload.assigned_to is not None:
             opportunity.assigned_to = payload.assigned_to
@@ -636,7 +779,12 @@ def act_on_opportunity(
             from_status=previous,
             to_status=new_status,
             actor=payload.actor or "user",
-            note_fa=payload.note or default_note,
+            note_fa=reason_label or payload.note or default_note,
+            # کد دلیل جدا از متن ذخیره می‌شود تا قابل شمارش و تجمیع بماند
+            payload_json=(
+                json.dumps({"reason_code": payload.reason_code}, ensure_ascii=False)
+                if payload.reason_code else None
+            ),
         ))
         names = _customer_names(
             session, {opportunity.customer_id} if opportunity.customer_id else set()

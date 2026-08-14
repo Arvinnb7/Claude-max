@@ -469,6 +469,70 @@ def test_duplicate_dedupe_keys_in_one_run_do_not_crash(tmp_path, analyzed):
     assert stored[0].expected_value_rial == 500_000  # ۵۰٬۰۰۰ تومان → ریال
 
 
+def test_expansion_gap_generator_produces_evidence_backed_candidates():
+    """مولد شکاف باید نامزد بسازد و هر نامزد شواهد همتایان داشته باشد."""
+    from mktcore.opportunities.generators import (
+        KIND_EXPANSION,
+        generate_from_expansion_gap,
+    )
+
+    rows = [
+        (f"C{i}", cat, 100_000)
+        for i in range(20)
+        for cat in ("لبنیات", "نوشیدنی")
+    ]
+    rows.append(("CX", "لبنیات", 100_000))  # نوشیدنی نمی‌خرد
+    frame = pd.DataFrame(rows, columns=["customer_id", "category", "revenue"])
+
+    class _Bundle:
+        segments = None
+
+    candidates = generate_from_expansion_gap(_Bundle(), frame)
+    assert candidates
+    target = [c for c in candidates if c.customer_key == "CX"]
+    assert target
+    candidate = target[0]
+    assert candidate.kind == KIND_EXPANSION
+    assert candidate.product_name == "نوشیدنی"
+    codes = {f.code for f in candidate.factors}
+    assert {"peer_comparison", "peer_adoption", "value_basis"} <= codes
+
+
+def test_expansion_gap_value_is_discounted_below_peer_median():
+    """ارزش شکاف پتانسیل است؛ نباید هم‌وزن فرصت‌های رفتاری رتبه بگیرد."""
+    from mktcore.opportunities.generators import generate_from_expansion_gap
+
+    rows = [
+        (f"C{i}", cat, 100_000)
+        for i in range(40)
+        for cat in ("الف", "ب")
+    ]
+    rows.append(("CX", "الف", 100_000))
+    frame = pd.DataFrame(rows, columns=["customer_id", "category", "revenue"])
+
+    class _Bundle:
+        segments = None
+
+    candidate = next(
+        c for c in generate_from_expansion_gap(_Bundle(), frame) if c.customer_key == "CX"
+    )
+    assert 0 < candidate.expected_value_display < 100_000
+
+
+def test_expansion_generator_returns_empty_when_peers_are_too_few():
+    from mktcore.opportunities.generators import generate_from_expansion_gap
+
+    frame = pd.DataFrame(
+        [("C1", "الف", 100), ("C2", "ب", 100)],
+        columns=["customer_id", "category", "revenue"],
+    )
+
+    class _Bundle:
+        segments = None
+
+    assert generate_from_expansion_gap(_Bundle(), frame) == []
+
+
 def test_empty_frame_is_handled(tmp_path):
     """فریم بدون داده نباید استثنا بدهد."""
     empty = pd.DataFrame({"date": pd.to_datetime([]), "revenue": [], "customer_id": []})

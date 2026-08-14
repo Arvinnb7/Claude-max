@@ -113,9 +113,86 @@ def _title(action: Any) -> str:
     return str(action.kind)
 
 
+# ------------------------------------------------- مولد شکاف توسعه‌ی درآمد
+KIND_EXPANSION = "توسعه‌ی سبد خرید"
+EXPANSION_GENERATOR = "expansion_gap"
+EXPANSION_GENERATOR_VERSION = 1
+
+# ارزش شکاف، **درآمد بالقوه** است نه درآمد قطعی. برای رتبه‌بندی در کنار
+# فرصت‌هایی که ارزششان از قبل در احتمال ضرب شده، باید تخفیف بخورد وگرنه
+# فرصت‌های حدسی، فرصت‌های مبتنی بر رفتار واقعی را کنار می‌زنند.
+_CONFIDENCE_WEIGHT = {"بالا": 0.5, "متوسط": 0.3, "کم": 0.15}
+
+
+def generate_from_expansion_gap(
+    bundle: Any, clean: pd.DataFrame, *, top_per_customer: int = 2,
+) -> list[OpportunityCandidate]:
+    """نامزدهای «این دسته را از ما نمی‌خرد» بر پایه‌ی مقایسه‌ی همتایان."""
+    try:
+        from mktcore.analysis.expansion_gap import compute_expansion_gap
+
+        segments = getattr(getattr(bundle, "segments", None), "rfm_table", None)
+        result = compute_expansion_gap(
+            clean, segments, top_per_customer=top_per_customer,
+        )
+    except Exception:  # noqa: BLE001 - یک مولد خراب نباید کل موتور را بخواباند
+        logger.exception("محاسبه‌ی شکاف توسعه‌ی درآمد ناموفق بود")
+        return []
+
+    if not result.available:
+        logger.info("شکاف توسعه‌ی درآمد گزارش نشد: %s", result.skipped_reason_fa)
+        return []
+
+    candidates: list[OpportunityCandidate] = []
+    for gap in result.gaps:
+        weight = _CONFIDENCE_WEIGHT.get(gap.confidence, 0.15)
+        candidate = OpportunityCandidate(
+            kind=KIND_EXPANSION,
+            generator=EXPANSION_GENERATOR,
+            generator_version=EXPANSION_GENERATOR_VERSION,
+            customer_key=gap.customer_id,
+            product_name=gap.category,
+            title_fa=f"{KIND_EXPANSION} — {gap.category}",
+            action_fa=(
+                f"به این مشتری «{gap.category}» را معرفی کنید؛ مشتریان مشابهش "
+                "این دسته را می‌خرند ولی او نه."
+            ),
+            reason_fa=gap.evidence_fa,
+            expected_value_display=gap.gap_value * weight,
+            value_kind="ارزش فرصت",
+            confidence=gap.confidence,
+        )
+        candidate.add_factor(OpportunityFactorNote(
+            code="peer_comparison",
+            label_fa="مقایسه با همتایان",
+            outcome=OUTCOME_EVIDENCE,
+            value_text=f"{gap.peer_count} همتا",
+            detail_fa=gap.evidence_fa,
+        ))
+        candidate.add_factor(OpportunityFactorNote(
+            code="peer_adoption",
+            label_fa="نفوذ دسته در گروه همتا",
+            outcome=OUTCOME_EVIDENCE,
+            value_text=f"{round(gap.peer_adoption * 100)}٪",
+        ))
+        candidate.add_factor(OpportunityFactorNote(
+            code="value_basis",
+            label_fa="پایه‌ی ارزش",
+            outcome=OUTCOME_EVIDENCE,
+            value_text=f"{round(weight * 100)}٪ از میانه‌ی همتایان",
+            detail_fa=(
+                "این عدد **پتانسیل** است نه درآمد قطعی: میانه‌ی خرید همتایان با "
+                "ضریب اطمینان تخفیف خورده تا در کنار فرصت‌های رفتاری منصفانه "
+                "رتبه‌بندی شود."
+            ),
+        ))
+        candidates.append(candidate)
+    return candidates
+
+
 # فهرست مولدهای فعال. افزودن مولد تازه یعنی افزودن یک تابع به این تاپل؛
 # موتور به نامِ مولد وابسته نیست.
-GENERATORS = (generate_from_action_list,)
+GENERATORS = (generate_from_action_list, generate_from_expansion_gap)
 
 
 def generate_candidates(bundle: Any, clean: pd.DataFrame) -> list[OpportunityCandidate]:
@@ -128,7 +205,11 @@ def generate_candidates(bundle: Any, clean: pd.DataFrame) -> list[OpportunityCan
 __all__ = [
     "ACTION_GENERATOR",
     "ACTION_GENERATOR_VERSION",
+    "EXPANSION_GENERATOR",
+    "EXPANSION_GENERATOR_VERSION",
     "GENERATORS",
+    "KIND_EXPANSION",
     "generate_candidates",
     "generate_from_action_list",
+    "generate_from_expansion_gap",
 ]
