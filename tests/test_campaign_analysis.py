@@ -117,6 +117,47 @@ def test_report_dict_always_carries_a_verdict_label():
     assert payload["blocked_metrics"]
 
 
+# ------------------------------------------------- قدرت تفکیک (MDE)
+def test_report_states_what_it_could_not_have_seen():
+    """«شواهد کافی نیست» بدون گفتنِ حدِ تفکیک، مبهم است."""
+    report = analyze_campaign(_arm("treatment", 320, 96), _arm("control", 80, 24))
+    assert report.detectable_effect is not None
+    assert 0.10 < report.detectable_effect < 0.13  # با کنترل ۸۰ نفره ≈ ۱۱ واحد درصد
+    assert "قابل تشخیص" in report.power_note_fa
+    assert "گروه کنترل باید" in report.power_note_fa  # راهنمای عملی
+
+
+def test_bigger_groups_detect_smaller_effects():
+    small = analyze_campaign(_arm("treatment", 320, 96), _arm("control", 80, 24))
+    large = analyze_campaign(_arm("treatment", 3200, 960), _arm("control", 800, 240))
+    assert large.detectable_effect < small.detectable_effect / 2
+
+
+def test_required_control_size_grows_quadratically_as_effect_shrinks():
+    """نصف‌کردن اثرِ هدف، اندازه‌ی لازم را چهار برابر می‌کند."""
+    from mktcore.campaigns.analysis import required_control_size
+
+    at_10 = required_control_size(0.10)
+    at_5 = required_control_size(0.05)
+    assert 3.5 < at_5 / at_10 < 4.5
+
+
+def test_larger_holdout_needs_a_smaller_total_campaign():
+    """یافته‌ی غیرشهودی ولی درست: گروه کنترل بزرگ‌تر، آماری کاراتر است.
+
+    با کنترل ۲۰٪ کل کمپین حدود نصفِ حالتِ کنترل ۱۰٪ است، برای همان قدرت تفکیک.
+    """
+    from mktcore.campaigns.analysis import required_control_size
+
+    total_at_10 = required_control_size(0.05, holdout_pct=10) * 100 / 10
+    total_at_20 = required_control_size(0.05, holdout_pct=20) * 100 / 20
+    assert total_at_20 < total_at_10 * 0.65
+
+
+def test_detectable_effect_is_none_without_both_arms():
+    assert analyze_campaign(_arm("treatment", 50, 5), _arm("control", 0, 0)).detectable_effect is None
+
+
 def test_zero_conversion_control_does_not_crash_relative_lift():
     report = analyze_campaign(_arm("treatment", 500, 100), _arm("control", 500, 0))
     assert report.relative_lift is None  # تقسیم بر صفر معنا ندارد

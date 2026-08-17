@@ -399,6 +399,38 @@ export function campaignExportUrl(id: number): string {
   return `${BASE}/api/v1/campaigns/${id}/export`;
 }
 
+// ------------------------------------------------------- اثر آموخته‌شده
+export type UpliftCell = {
+  kind: string;
+  lifecycle_state: string;
+  n_treatment: number;
+  n_control: number;
+  rate_treatment: number;
+  rate_control: number;
+  raw_uplift: number;
+  uplift: number;
+  basis: string;
+  basis_label: string;
+  ci: [number, number] | null;
+  has_enough_data: boolean;
+  useless: boolean;
+};
+
+export type UpliftTable = {
+  available: boolean;
+  note_fa?: string;
+  n_observations?: number;
+  global_uplift?: number | null;
+  by_kind?: Record<string, number>;
+  cells?: UpliftCell[];
+  reference_note_fa?: string;
+  method_note_fa?: string;
+};
+
+export async function getLearnedUplift(): Promise<UpliftTable> {
+  return handle(await fetch(`${BASE}/api/v1/uplift`, { cache: "no-store" }));
+}
+
 export type DismissReason = { code: string; label: string };
 
 export async function listDismissReasons(): Promise<{

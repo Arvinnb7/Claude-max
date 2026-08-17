@@ -303,6 +303,32 @@ def test_generator_quality_aggregates_operator_feedback():
     assert "بی‌طرف" in body["note_fa"]
 
 
+def test_uplift_endpoint_is_honest_before_any_experiment():
+    """پیش از انباشت داده‌ی آزمایشی، باید بگوید «نمی‌دانم» و راه را نشان دهد."""
+    _run_sample_analysis()
+    body = client.get("/api/v1/uplift").json()
+
+    if body["available"]:
+        # اگر داده‌ای هست، ساختار کامل باشد
+        assert "cells" in body
+        assert "method_note_fa" in body
+        assert "reference_note_fa" in body
+        for cell in body["cells"]:
+            assert {"kind", "uplift", "basis", "basis_label", "useless"} <= set(cell)
+    else:
+        assert "داده‌ی آزمایشی" in body["note_fa"]
+        assert "گروه کنترل" in body["note_fa"]  # راهنمای عملی
+
+
+def test_analysis_reports_uplift_learning_summary():
+    payload = _run_sample_analysis()
+    assert "uplift" in payload["canonical"]
+    summary = payload["canonical"]["uplift"]
+    if summary is not None:
+        for key in ("observations", "cells", "snapshot_rows", "useless_cells"):
+            assert key in summary
+
+
 def test_existing_endpoints_are_untouched():
     """مسیرهای قدیمی باید دقیقاً همان‌طور که بودند پاسخ دهند."""
     r = client.get("/api/health")

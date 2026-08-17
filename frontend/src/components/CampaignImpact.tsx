@@ -8,6 +8,7 @@ import {
   Lock,
   RefreshCw,
   ShieldAlert,
+  Sparkles,
   TrendingDown,
   TrendingUp,
 } from "lucide-react";
@@ -16,11 +17,13 @@ import {
   campaignExportUrl,
   closeCampaign,
   getCampaign,
+  getLearnedUplift,
   listCampaigns,
   refreshCampaign,
   type CampaignDetail,
   type CampaignReport,
   type CampaignSummary,
+  type UpliftTable,
 } from "@/lib/apiV1";
 import { toFa } from "@/lib/format";
 
@@ -149,6 +152,8 @@ export default function CampaignImpact() {
         </div>
       )}
 
+      <LearnedUplift />
+
       {!items?.length ? (
         <Alert tone="info">
           هنوز کمپینی ساخته نشده است. از تب «صندوق فرصت‌ها» با دکمه‌ی «ساخت
@@ -200,6 +205,138 @@ export default function CampaignImpact() {
         </ul>
       )}
     </Card>
+  );
+}
+
+/**
+ * «آنچه یاد گرفته‌ایم» — جدول اثرِ اندازه‌گیری‌شده به‌ازای هر گروه.
+ *
+ * این جدول مستقیماً ترتیب صندوق فرصت‌ها را تعیین می‌کند، پس دیدنی‌بودنش لازم
+ * است: کاربر باید بتواند بفهمد چرا فهرستش عوض شده.
+ */
+function LearnedUplift() {
+  const [data, setData] = useState<UpliftTable | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      void getLearnedUplift()
+        .then((res) => {
+          if (!cancelled) setData(res);
+        })
+        .catch(() => {
+          /* نبودِ یادگیری نباید بقیه‌ی صفحه را بشکند */
+        });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (!data) return null;
+
+  if (!data.available) {
+    return (
+      <div className="mb-4">
+        <Alert tone="info">
+          <span className="inline-flex items-center gap-1">
+            <Sparkles size={14} /> <b>آنچه یاد گرفته‌ایم</b>
+          </span>
+          <p className="mt-1">{data.note_fa}</p>
+        </Alert>
+      </div>
+    );
+  }
+
+  const cells = (data.cells ?? []).filter((c) => c.has_enough_data);
+  const useless = cells.filter((c) => c.useless);
+
+  return (
+    <div className="mb-5 rounded-xl border border-brand-200 p-3 dark:border-brand-500/40">
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <Sparkles size={16} />
+        <b>آنچه یاد گرفته‌ایم</b>
+        <span className="text-xs tnum" style={{ color: "var(--muted)" }}>
+          از {toFa(String(data.n_observations ?? 0))} مشاهده‌ی آزمایشی
+        </span>
+        {data.global_uplift != null && (
+          <Badge tone={data.global_uplift > 0 ? "green" : "rose"}>
+            اثر کل: {pct(data.global_uplift)}
+          </Badge>
+        )}
+      </div>
+
+      {useless.length > 0 && (
+        <div className="mb-2">
+          <Alert tone="warn">
+            <b>{toFa(String(useless.length))} گروه</b> پیدا شد که تماس با آن‌ها
+            نتیجه را بهتر نمی‌کند. این گروه‌ها از فهرست تماس حذف می‌شوند تا
+            حوصله‌ی مشتری بی‌دلیل خرج نشود.
+          </Alert>
+        </div>
+      )}
+
+      {!cells.length ? (
+        <p className="text-xs" style={{ color: "var(--muted)" }}>
+          هنوز هیچ گروهی نمونه‌ی کافی برای نتیجه‌گیری ندارد؛ رتبه‌بندی مثل قبل
+          کار می‌کند.
+        </p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr style={{ color: "var(--muted)" }}>
+                <th className="p-1.5 text-start font-medium">نوع اقدام</th>
+                <th className="p-1.5 text-start font-medium">حالت مشتری</th>
+                <th className="p-1.5 text-start font-medium">اثر</th>
+                <th className="p-1.5 text-start font-medium">بازه ۹۵٪</th>
+                <th className="p-1.5 text-start font-medium">نمونه</th>
+                <th className="p-1.5 text-start font-medium">نتیجه</th>
+              </tr>
+            </thead>
+            <tbody>
+              {cells.map((c) => (
+                <tr
+                  key={`${c.kind}|${c.lifecycle_state}`}
+                  className="border-t border-ink-100 dark:border-ink-800"
+                >
+                  <td className="p-1.5">{c.kind}</td>
+                  <td className="p-1.5">{c.lifecycle_state}</td>
+                  <td className="p-1.5 tnum">{pct(c.uplift)}</td>
+                  <td className="p-1.5 tnum">
+                    {c.ci ? `${pct(c.ci[0])} تا ${pct(c.ci[1])}` : "—"}
+                  </td>
+                  <td className="p-1.5 tnum">
+                    {toFa(String(c.n_treatment))} / {toFa(String(c.n_control))}
+                  </td>
+                  <td className="p-1.5">
+                    {c.useless ? (
+                      <Badge tone="rose">تماس بی‌فایده</Badge>
+                    ) : c.uplift > 0 ? (
+                      <Badge tone="green">پاسخ می‌دهد</Badge>
+                    ) : (
+                      <Badge tone="gray">نامعلوم</Badge>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {data.method_note_fa && (
+        <p className="mt-2 text-xs" style={{ color: "var(--muted)" }}>
+          {data.method_note_fa}
+        </p>
+      )}
+      {data.reference_note_fa && (
+        <p className="mt-1 text-xs" style={{ color: "var(--muted)" }}>
+          {data.reference_note_fa}
+        </p>
+      )}
+    </div>
   );
 }
 

@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import pandas as pd
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from mktcore.db.base import now_ts
 from mktcore.db.engine import session_scope, write_lock
@@ -28,14 +28,16 @@ from mktcore.db.lookup import customer_ids_by_raw_key, product_ids_by_raw_name
 from mktcore.db.migrations import ensure_schema
 from mktcore.db.models import (
     Business,
+    CustomerFeature,
     Opportunity,
     OpportunityEvent,
     OpportunityFactor,
     OpportunityRun,
 )
 from mktcore.money import to_basis_points, to_rial_int
+from mktcore.uplift.empirical import BASIS_LABELS_FA, BASIS_NONE
 
-from .contract import OpportunityCandidate
+from .contract import OUTCOME_EVIDENCE, OpportunityCandidate, OpportunityFactorNote
 from .filters import apply_filters
 from .generators import generate_candidates
 
@@ -126,6 +128,26 @@ def _recently_contacted(window_days: int) -> tuple[set[str], int | None]:
         return set(), None
 
 
+# ضریب رتبه‌بندی هرگز صفر یا منفی نمی‌شود؛ فرصت با اثرِ ضعیف باید **پایین**
+# فهرست برود، نه اینکه از رتبه‌بندی حذف شود (حذف کارِ فیلتر است، نه امتیاز).
+MIN_UPLIFT_MULTIPLIER = 0.05
+# اثری که ضریب ۱٫۰ می‌دهد. اثرهای بالاتر تقویت و پایین‌تر تضعیف می‌شوند.
+# مبنا: نرخ پایه‌ی معمولِ پاسخ به یادآوری در این دامنه.
+UPLIFT_REFERENCE = 0.10
+
+
+def uplift_multiplier(uplift: float | None) -> float:
+    """اثرِ اندازه‌گیری‌شده → ضریب رتبه‌بندی.
+
+    نسبت به یک اثرِ مرجع نرمال می‌شود تا مقیاسِ ارزش‌ها به‌هم نریزد: گروهی با
+    اثرِ دوبرابرِ مرجع، ضریب ۲ می‌گیرد. ضریب هرگز به صفر نمی‌رسد چون امتیازِ
+    صفر یعنی «هرگز نشان نده»، و آن تصمیمِ فیلتر است نه رتبه‌بندی.
+    """
+    if uplift is None:
+        return 1.0
+    return max(MIN_UPLIFT_MULTIPLIER, uplift / UPLIFT_REFERENCE)
+
+
 def build_context(
     clean: pd.DataFrame,
     *,
@@ -168,7 +190,14 @@ def run_opportunity_engine(
     ensure_schema(db_path)
     as_of = _as_of(clean)
     candidates = generate_candidates(bundle, clean)
+    uplift_table = _load_uplift_table(db_path)
     ctx = build_context(clean)
+    ctx["uplift_table"] = uplift_table
+    # حالت چرخه‌ی عمر پیش از فیلتر لازم است، چون فیلترِ اثر بر پایه‌ی سلولِ
+    # (نوع اقدام × حالت) تصمیم می‌گیرد.
+    ctx["lifecycle_of"] = _lifecycle_by_customer_key(
+        candidates, business_slug=business_slug, db_path=db_path,
+    ) if uplift_table is not None else {}
     accepted, rejected = apply_filters(candidates, ctx)
 
     # `apply_filters` خروجی را بر پایه‌ی ارزش نزولی پردازش می‌کند، پس بریدنِ
@@ -214,11 +243,15 @@ def run_opportunity_engine(
 
         customer_ids = _customer_ids(session, business.id, accepted)
         product_ids = _product_ids(session, business.id, accepted)
+        multipliers = _uplift_multipliers(
+            session, business.id, accepted, customer_ids, uplift_table,
+        )
 
         created, refreshed, seen_keys = _persist(
             session, business.id, run.id, accepted,
             customer_ids=customer_ids, product_ids=product_ids,
             display_currency=display_currency, as_of=as_of,
+            uplift_multipliers=multipliers,
         )
         superseded = _supersede_missing(
             session, business.id, run.id, seen_keys | still_valid,
@@ -244,6 +277,113 @@ def run_opportunity_engine(
     )
     logger.info("موتور فرصت‌ها: %s", result.to_dict())
     return result
+
+
+# ------------------------------------------------------------- اثر افزوده
+def _load_uplift_table(db_path: Path | None):
+    """جدول اثرِ آموخته‌شده. خطا یا خاموشی → None (رتبه‌بندی مثل قبل)."""
+    from mktcore.config import get_settings
+
+    if not get_settings().mkt_uplift_ranking:
+        logger.info("رتبه‌بندی مبتنی بر اثر خاموش است؛ ترتیب مثل قبل می‌ماند.")
+        return None
+    try:
+        from mktcore.uplift import build_uplift_table
+
+        table = build_uplift_table(db_path=db_path)
+        return table if table.available else None
+    except Exception:  # noqa: BLE001 - یادگیری نباید تولید فرصت را بخواباند
+        logger.exception("ساخت جدول اثر ناموفق بود؛ رتبه‌بندی مثل قبل ادامه می‌دهد")
+        return None
+
+
+def _lifecycle_by_customer_key(
+    candidates: list[OpportunityCandidate],
+    *,
+    business_slug: str,
+    db_path: Path | None,
+) -> dict[str, str | None]:
+    """کلید خامِ مشتری → حالت چرخه‌ی عمر. برای فیلترها که کلید خام دارند."""
+    keys = {c.customer_key for c in candidates if c.customer_key}
+    if not keys:
+        return {}
+    try:
+        with session_scope(db_path) as session:
+            business_id = session.scalar(
+                select(Business.id).where(Business.slug == business_slug)
+            )
+            if business_id is None:
+                return {}
+            id_of = customer_ids_by_raw_key(session, business_id, keys)
+            states = _lifecycle_states(session, business_id, set(id_of.values()))
+        return {key: states.get(cid) for key, cid in id_of.items()}
+    except Exception:  # noqa: BLE001 - نبودِ حالت نباید موتور را بخواباند
+        logger.exception("خواندن حالت چرخه‌ی عمر برای فیلتر اثر ناموفق بود")
+        return {}
+
+
+def _lifecycle_states(
+    session: Session, business_id: int, customer_ids: set[int],
+) -> dict[int, str | None]:
+    """آخرین حالت چرخه‌ی عمر هر مشتری — کلیدِ سلولِ اثر."""
+    if not customer_ids:
+        return {}
+    latest = session.scalar(
+        select(func.max(CustomerFeature.as_of_date))
+        .where(CustomerFeature.business_id == business_id)
+    )
+    if latest is None:
+        return {}
+    rows = session.execute(
+        select(CustomerFeature.customer_id, CustomerFeature.lifecycle_state).where(
+            CustomerFeature.business_id == business_id,
+            CustomerFeature.as_of_date == latest,
+            CustomerFeature.customer_id.in_(sorted(customer_ids)),
+        )
+    ).all()
+    return {int(cid): (str(state) if state else None) for cid, state in rows}
+
+
+def _uplift_multipliers(
+    session: Session,
+    business_id: int,
+    candidates: list[OpportunityCandidate],
+    customer_ids: dict[str, int],
+    table,
+) -> dict[str, float]:
+    """ضریب رتبه‌بندی هر نامزد + ثبت شواهدش روی خودِ نامزد.
+
+    شواهد اجباری است: اگر فرصتی به‌خاطر یادگیری جابه‌جا شد، کاربر باید بتواند
+    ببیند چرا. جابه‌جاییِ بی‌توضیح، اعتماد را از بین می‌برد.
+    """
+    if table is None:
+        return {}
+
+    resolved = {customer_ids[c.customer_key] for c in candidates
+                if c.customer_key in customer_ids}
+    states = _lifecycle_states(session, business_id, resolved)
+
+    out: dict[str, float] = {}
+    for candidate in candidates:
+        customer_id = customer_ids.get(candidate.customer_key)
+        state = states.get(customer_id) if customer_id else None
+        uplift, basis = table.lookup(candidate.kind, state)
+        if basis == BASIS_NONE:
+            continue  # بدون داده → ضریب ۱٫۰ (رفتار امروز)
+
+        multiplier = uplift_multiplier(uplift)
+        out[candidate.dedupe_key()] = multiplier
+        candidate.add_factor(OpportunityFactorNote(
+            code="uplift_estimate",
+            label_fa="اثر افزوده‌ی اندازه‌گیری‌شده",
+            outcome=OUTCOME_EVIDENCE,
+            value_text=f"{round(uplift * 100, 1)} واحد درصد",
+            detail_fa=(
+                f"{BASIS_LABELS_FA.get(basis, basis)} — امتیاز رتبه‌بندی با ضریب "
+                f"{multiplier:.2f} تعدیل شد. ارزشِ گزارش‌شده تغییر نکرده است."
+            ),
+        ))
+    return out
 
 
 # ------------------------------------------------------------------ کمکی‌ها
@@ -277,7 +417,9 @@ def _persist(
     product_ids: dict[str, int],
     display_currency: str,
     as_of: str,
+    uplift_multipliers: dict[str, float] | None = None,
 ) -> tuple[int, int, set[str]]:
+    uplift_multipliers = uplift_multipliers or {}
     keys = [c.dedupe_key() for c in candidates]
     existing: dict[str, Opportunity] = {}
     for start in range(0, len(keys), 2000):
@@ -300,6 +442,10 @@ def _persist(
             continue
         seen.add(key)
         value_rial = to_rial_int(candidate.expected_value_display, display_currency) or 0
+        # ارزشِ گزارش‌شده دست‌نخورده می‌ماند؛ فقط **امتیازِ رتبه‌بندی** با اثرِ
+        # اندازه‌گیری‌شده تعدیل می‌شود. بدون داده‌ی آزمایشی ضریب ۱٫۰ است، پس
+        # ترتیب دقیقاً مثل قبل درمی‌آید.
+        score_rial = round(value_rial * uplift_multipliers.get(key, 1.0))
         fields = {
             "customer_id": customer_ids.get(candidate.customer_key),
             "product_id": product_ids.get(candidate.product_name) if candidate.product_name else None,
@@ -311,7 +457,7 @@ def _persist(
             "reason_fa": candidate.reason_fa,
             "message_fa": candidate.message_fa,
             "expected_value_rial": value_rial,
-            "score_rial": value_rial,
+            "score_rial": score_rial,
             "value_kind": candidate.value_kind,
             "probability_bp": to_basis_points(candidate.probability),
             "confidence": candidate.confidence,

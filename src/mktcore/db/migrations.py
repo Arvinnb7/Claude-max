@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("mktcore.db.migrations")
 
 # نسخه‌ی جاری طرح‌واره‌ی canonical. با افزودن هر مهاجرت، یک عدد بالا می‌رود.
-CANONICAL_SCHEMA_VERSION = 4
+CANONICAL_SCHEMA_VERSION = 5
 
 _MIGRATION_TABLE = "schema_migrations"
 
@@ -111,11 +111,19 @@ def _migration_0004_create_campaign_tables(conn: Connection) -> None:
     Base.metadata.create_all(bind=conn, checkfirst=True)
 
 
+def _migration_0005_create_uplift_snapshots(conn: Connection) -> None:
+    """جدول عکسِ اثر آموخته‌شده (فاز ۴ — رتبه‌بندی مبتنی بر اثر)."""
+    from mktcore.db import models  # noqa: F401 - ثبت مدل‌ها در metadata
+
+    Base.metadata.create_all(bind=conn, checkfirst=True)
+
+
 _MIGRATIONS: tuple[tuple[int, str, Callable[[Connection], None]], ...] = (
     (1, "create_canonical_tables", _migration_0001_create_canonical_tables),
     (2, "create_opportunity_tables", _migration_0002_create_opportunity_tables),
     (3, "create_lifecycle_events", _migration_0003_create_lifecycle_events),
     (4, "create_campaign_tables", _migration_0004_create_campaign_tables),
+    (5, "create_uplift_snapshots", _migration_0005_create_uplift_snapshots),
 )
 
 

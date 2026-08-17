@@ -652,6 +652,47 @@ def get_opportunity(opportunity_id: int) -> dict:
     return payload
 
 
+@router.get("/uplift")
+def learned_uplift() -> dict:
+    """آنچه سیستم از کمپین‌های خودش یاد گرفته است.
+
+    برای هر ترکیبِ «نوع اقدام × حالت مشتری»: تماس چقدر اثر داشت، با چه اندازه‌ی
+    نمونه، و با چه عدم‌قطعیتی. گروه‌هایی که اندازه‌گیری نشان داده تماس با آن‌ها
+    بی‌فایده است، صریح علامت می‌خورند.
+    """
+    ensure_schema()
+    try:
+        from mktcore.uplift import build_uplift_table
+        from mktcore.uplift.empirical import UPLIFT_REFERENCE_NOTE_FA
+
+        table = build_uplift_table()
+    except Exception:  # noqa: BLE001 - نبودِ یادگیری نباید API را بشکند
+        logger.exception("ساخت جدول اثر ناموفق بود")
+        return {
+            "available": False,
+            "note_fa": "خواندن جدول اثر ناموفق بود؛ رتبه‌بندی مثل قبل کار می‌کند.",
+        }
+
+    if not table.available:
+        return {
+            "available": False,
+            "note_fa": (
+                "هنوز داده‌ی آزمایشی وجود ندارد. برای یادگیری، کمپینی با گروه "
+                "کنترل بسازید، فهرست تماس را بگیرید، و فایل دوره‌ی بعد را تحلیل "
+                "کنید. تا آن زمان رتبه‌بندی دقیقاً مثل قبل کار می‌کند."
+            ),
+        }
+
+    payload = table.to_dict()
+    payload["reference_note_fa"] = UPLIFT_REFERENCE_NOTE_FA
+    payload["method_note_fa"] = (
+        "اثر هر گروه از تفاضل نرخ خرید گروه تماس‌گرفته و گروه کنترل می‌آید. "
+        "گروه‌های کم‌نمونه به‌سمت میانگینِ والد منقبض می‌شوند تا نوفه رتبه‌بندی "
+        "را تکان ندهد."
+    )
+    return payload
+
+
 @router.get("/opportunity-quality")
 def opportunity_quality() -> dict:
     """کیفیت مولدها از دید اپراتور — کدام مولد بیشتر رد می‌شود و چرا.

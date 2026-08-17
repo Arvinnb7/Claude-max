@@ -74,6 +74,9 @@ def record_analysis(
         # حلقه بسته می‌شود: خرید‌های تازه‌ای که همین حالا وارد دفتر شدند، ممکن
         # است نتیجه‌ی کمپین‌های قبلی باشند.
         payload["campaign_outcomes"] = _refresh_campaign_outcomes(result.batch_id)
+        # حلقه کامل می‌شود: نتیجه‌های تازه، جدولِ اثر را به‌روز می‌کنند و
+        # رتبه‌بندیِ اجرای بعدی از آن تغذیه می‌کند.
+        payload["uplift"] = _refresh_uplift()
         return payload
     except Exception:  # noqa: BLE001 - جداسازی عمدی: تحلیل نباید قربانی دفتر کل شود
         logger.exception("ثبت در دفتر کل canonical ناموفق بود (نشست %s)", session_id)
@@ -121,6 +124,17 @@ def _refresh_campaign_outcomes(batch_id: int | None) -> dict | None:
         return compute_campaign_outcomes(batch_id=batch_id)
     except Exception:  # noqa: BLE001 - همان جداسازی
         logger.exception("به‌روزرسانی نتیجه‌ی کمپین‌ها ناموفق بود")
+        return None
+
+
+def _refresh_uplift() -> dict | None:
+    """به‌روزرسانی جدولِ اثر آموخته‌شده + ذخیره‌ی عکسش."""
+    try:
+        from mktcore.uplift import refresh_uplift
+
+        return refresh_uplift()
+    except Exception:  # noqa: BLE001 - همان جداسازی
+        logger.exception("به‌روزرسانی جدول اثر ناموفق بود")
         return None
 
 

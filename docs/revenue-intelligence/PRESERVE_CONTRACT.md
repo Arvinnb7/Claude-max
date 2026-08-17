@@ -113,3 +113,15 @@
 | `payload["campaign_outcomes"]` در پاسخ تحلیل | کلید شرطی و افزودنی، مثل `canonical` |
 
 `analysis/actions.py` همچنان **صفر تغییر** دارد.
+
+## افزوده‌های فاز ۴ — یادگیری بدون رگرسیون
+
+| افزوده | اثر روی رفتار موجود |
+|---|---|
+| ضریب اثر روی `score_rial` | بدون داده‌ی آزمایشی ضریب **۱٫۰** است → ترتیب صندوق بیت‌به‌بیت مثل قبل (`test_no_uplift_data_means_multiplier_one`) |
+| `filter_uplift` | بدون داده `filter_skip` می‌دهد، نه بلوکه؛ هیچ فرصتی از دست نمی‌رود |
+| جدول `uplift_snapshots` | جدول تازه؛ مهاجرت ۵ فقط `create_all` با `checkfirst` |
+| `detectable_effect` و `power_note_fa` در گزارش | کلید افزودنی در پاسخ؛ کلید موجودی حذف یا تغییر نکرد |
+| `GET /api/v1/uplift` | مسیر تازه |
+| `payload["uplift"]` در پاسخ تحلیل | کلید شرطی و افزودنی، مثل `canonical` |
+| `MKT_UPLIFT_RANKING=0` | کل یادگیری را خاموش می‌کند و رتبه‌بندی به حالت قبل برمی‌گردد |

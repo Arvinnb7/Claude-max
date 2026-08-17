@@ -76,6 +76,9 @@ class CampaignReport:
     incremental_revenue_rial: int | None = None
     incremental_revenue_ci: tuple[int, int] | None = None
     blocked_metrics: dict[str, str] = field(default_factory=dict)
+    # قدرت تفکیکِ این کمپین: کوچک‌ترین اثری که با این اندازه دیدنی است
+    detectable_effect: float | None = None
+    power_note_fa: str | None = None
 
     @property
     def is_causal(self) -> bool:
@@ -100,6 +103,8 @@ class CampaignReport:
                 list(self.incremental_revenue_ci) if self.incremental_revenue_ci else None
             ),
             "blocked_metrics": self.blocked_metrics,
+            "detectable_effect": self.detectable_effect,
+            "power_note_fa": self.power_note_fa,
         }
 
 
@@ -123,6 +128,39 @@ _BLOCKED_METRICS = {
     ),
     "cost_per_incremental_order": "هزینه‌ی تماس در سیستم ثبت نمی‌شود.",
 }
+
+
+def minimum_detectable_effect(t: ArmStats, c: ArmStats) -> float | None:
+    """کوچک‌ترین اثری که با **این اندازه‌ی گروه‌ها** قابل تشخیص است.
+
+    چرا لازم است: یک کمپین با گروه کنترل ۸۰ نفره نمی‌تواند اثر ۵ واحد درصدی را
+    از نوفه جدا کند — حتی اگر آن اثر واقعاً وجود داشته باشد. بدون این عدد،
+    «شواهد کافی نیست» مبهم است؛ با آن، معنایش روشن می‌شود: «برای دیدن اثری
+    کوچک‌تر از این، گروه بزرگ‌تری لازم است».
+
+    مبنا: نرخ تبدیلِ مشاهده‌شده‌ی گروه کنترل (یا ۰٫۵ در بدترین حالت اگر صفر
+    باشد — بیشترین واریانس، پس محافظه‌کارانه‌ترین تخمین).
+    """
+    if not t.size or not c.size:
+        return None
+    p = c.conversion_rate or 0.5
+    variance = p * (1 - p)
+    if variance <= 0:  # نرخ صفر یا صد → واریانس صفر، تخمین بی‌معنا
+        variance = 0.25
+    return _Z * math.sqrt(variance / t.size + variance / c.size)
+
+
+def required_control_size(target_effect: float, baseline_rate: float = 0.3,
+                          *, holdout_pct: int = 10) -> int | None:
+    """اندازه‌ی گروه کنترلِ لازم برای تشخیص اثری به‌اندازه‌ی `target_effect`.
+
+    برای پاسخ به پرسش عملی «کمپین بعدی را چند نفره ببندم؟».
+    """
+    if target_effect <= 0 or not 0 < holdout_pct < 100:
+        return None
+    variance = baseline_rate * (1 - baseline_rate)
+    ratio = (100 - holdout_pct) / holdout_pct  # اندازه‌ی آزمایش به کنترل
+    return math.ceil(variance * (1 + 1 / ratio) * (_Z / target_effect) ** 2)
 
 
 def _diff_ci(t: ArmStats, c: ArmStats) -> tuple[float, float]:
@@ -152,9 +190,28 @@ def _revenue_diff_ci(t: ArmStats, c: ArmStats) -> tuple[float, float]:
     return (diff - margin, diff + margin)
 
 
+def _power_note(mde: float | None, holdout_pct: int = 10) -> str | None:
+    """جمله‌ی قدرت تفکیک: «چه چیزی را نمی‌توانستیم ببینیم، و چه اندازه‌ای لازم بود»."""
+    if mde is None:
+        return None
+    needed = required_control_size(0.05, holdout_pct=holdout_pct)
+    text = (
+        f"با این اندازه‌ی گروه‌ها، تنها اثرهای بزرگ‌تر از "
+        f"{round(mde * 100, 1)} واحد درصد قابل تشخیص‌اند."
+    )
+    if mde > 0.05 and needed:
+        text += (
+            f" برای دیدن اثری در حد ۵ واحد درصد، گروه کنترل باید حدود "
+            f"{needed} نفر باشد."
+        )
+    return text
+
+
 def analyze_campaign(treatment: ArmStats, control: ArmStats) -> CampaignReport:
     """ساخت گزارش اثر با حکم صریح درباره‌ی اعتبارش."""
     blocked = dict(_BLOCKED_METRICS)
+    mde = minimum_detectable_effect(treatment, control)
+    power = _power_note(mde)
 
     # ۱) بدون گروه کنترل → هیچ ادعای علّی ممکن نیست
     if control.size == 0:
@@ -163,6 +220,7 @@ def analyze_campaign(treatment: ArmStats, control: ArmStats) -> CampaignReport:
             "این کمپین گروه کنترل ندارد؛ عددها فقط می‌گویند چه اتفاقی افتاد، "
             "نه اینکه به‌خاطر تماس شما بوده است.",
             blocked_metrics=blocked,
+            detectable_effect=mde, power_note_fa=power,
         )
 
     # ۲) هنوز نتیجه‌ای ثبت نشده
@@ -171,6 +229,7 @@ def analyze_campaign(treatment: ArmStats, control: ArmStats) -> CampaignReport:
             treatment, control, VERDICT_NOT_READY,
             "هنوز هیچ عضوی در گروه آزمایش در معرض تماس قرار نگرفته است.",
             blocked_metrics=blocked,
+            detectable_effect=mde, power_note_fa=power,
         )
 
     absolute = treatment.conversion_rate - control.conversion_rate
@@ -193,7 +252,7 @@ def analyze_campaign(treatment: ArmStats, control: ArmStats) -> CampaignReport:
             "اختلاف مشاهده‌شده ممکن است صرفاً نوسان باشد.",
             absolute, relative, ci, incremental_orders, incremental_revenue,
             (round(revenue_ci[0] * treatment.size), round(revenue_ci[1] * treatment.size)),
-            blocked,
+            blocked, mde, power,
         )
 
     # ۴) بازه‌ای که صفر را در بر می‌گیرد → اثر اثبات‌نشده
@@ -204,7 +263,7 @@ def analyze_campaign(treatment: ArmStats, control: ArmStats) -> CampaignReport:
             "نمی‌شود گفت تماس اثر داشته است.",
             absolute, relative, ci, incremental_orders, incremental_revenue,
             (round(revenue_ci[0] * treatment.size), round(revenue_ci[1] * treatment.size)),
-            blocked,
+            blocked, mde, power,
         )
 
     direction = "مثبت" if absolute > 0 else "منفی"
@@ -213,7 +272,7 @@ def analyze_campaign(treatment: ArmStats, control: ArmStats) -> CampaignReport:
         f"اثر {direction} است و بازه‌ی اطمینان ۹۵٪ صفر را در بر نمی‌گیرد.",
         absolute, relative, ci, incremental_orders, incremental_revenue,
         (round(revenue_ci[0] * treatment.size), round(revenue_ci[1] * treatment.size)),
-        blocked,
+        blocked, mde, power,
     )
 
 

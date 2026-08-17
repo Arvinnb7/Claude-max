@@ -181,6 +181,46 @@ def filter_margin_floor(candidate: OpportunityCandidate, ctx: dict) -> Opportuni
     )
 
 
+def filter_uplift(candidate: OpportunityCandidate, ctx: dict) -> OpportunityFactorNote:
+    """حذفِ گروه‌هایی که **اندازه‌گیری نشان داده** تماس با آن‌ها بی‌فایده است.
+
+    با کانال انبوه، هزینه‌ی هر پیام نزدیک صفر است — ولی حوصله‌ی مشتری نه. هر
+    پیامِ بی‌اثر کمی از آن را خرج می‌کند و کانال را فرسوده. پس دانستن اینکه به
+    چه کسی **نباید** پیام داد، همان‌قدر ارزش دارد که دانستن اینکه به چه کسی باید.
+
+    شرط سخت‌گیرانه است: کل بازه‌ی اطمینان باید ≤ صفر باشد. «احتمالاً بی‌فایده»
+    کافی نیست، چون حذفِ یک گروه از تماس، فروشِ ازدست‌رفته‌ی بالقوه است.
+    """
+    table = ctx.get("uplift_table")
+    if table is None:
+        return OpportunityFactorNote(
+            "uplift", FILTER_CODES["uplift"], OUTCOME_SKIP,
+            "هنوز داده‌ی آزمایشی وجود ندارد؛ اثر تماس با این گروه اندازه‌گیری نشده است.",
+        )
+
+    state = ctx.get("lifecycle_of", {}).get(candidate.customer_key)
+    cell = table.is_useless(candidate.kind, state)
+    if cell is not None:
+        return OpportunityFactorNote(
+            "uplift", FILTER_CODES["uplift"], OUTCOME_BLOCK,
+            "اندازه‌گیری نشان داده تماس با این گروه نتیجه را بهتر نمی‌کند؛ "
+            "پیام فقط حوصله‌ی مشتری را خرج می‌کند.",
+            value_text=f"{round(cell.raw_uplift * 100, 1)} واحد درصد",
+        )
+
+    uplift, basis = table.lookup(candidate.kind, state)
+    if basis == "none":
+        return OpportunityFactorNote(
+            "uplift", FILTER_CODES["uplift"], OUTCOME_SKIP,
+            "برای این ترکیبِ اقدام و حالت مشتری، داده‌ی آزمایشی کافی وجود ندارد.",
+        )
+    return OpportunityFactorNote(
+        "uplift", FILTER_CODES["uplift"], OUTCOME_PASS,
+        "اندازه‌گیری نشان می‌دهد تماس با این گروه اثر مثبت دارد.",
+        value_text=f"{round(uplift * 100, 1)} واحد درصد",
+    )
+
+
 def filter_conflict(candidate: OpportunityCandidate, ctx: dict) -> OpportunityFactorNote:
     """تداخل: یک مشتری نباید هم‌زمان با چند پیام متضاد هدف گرفته شود."""
     cap = ctx.get("per_customer_open_cap", 3)
@@ -219,6 +259,7 @@ FILTER_CHAIN: tuple[Callable[[OpportunityCandidate, dict], OpportunityFactorNote
     filter_inventory,
     filter_margin_floor,
     filter_offer_policy,
+    filter_uplift,
     filter_conflict,
 )
 

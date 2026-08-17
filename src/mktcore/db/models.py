@@ -541,6 +541,48 @@ class OpportunityEvent(Base):
     created_at: Mapped[float] = mapped_column(Float, default=now_ts, index=True)
 
 
+class UpliftSnapshot(Base):
+    """عکسِ جدولِ اثرِ آموخته‌شده در یک لحظه — به‌جای رجیستری کاملِ مدل.
+
+    سند §۲۹ رجیستری با promotion/rollback/drift می‌خواهد. برای این دامنه، نسخه‌ی
+    متناسب همین است: هر بار که اثر محاسبه می‌شود یک عکس ثبت می‌شود. نتیجه:
+
+    * **بازتولیدپذیری**: «چرا این فرصت آن روز صدر فهرست بود؟» پاسخ دارد.
+    * **drift**: تغییر اثرِ یک گروه در طول زمان با مقایسه‌ی عکس‌ها دیده می‌شود.
+    * **rollback**: استفاده از عکس قبلی، بدون تغییر کد.
+
+    رجیستری کاملِ ML (ثبت وزن‌ها، محیط، وابستگی‌ها) برای یک تخمینِ نسبتِ ساده
+    سربار است و ساخته نشده.
+    """
+
+    __tablename__ = "uplift_snapshots"
+    __table_args__ = (
+        UniqueConstraint("business_id", "as_of_date", "cell_kind", "cell_state"),
+        Index("ix_uplift_snapshots_business_asof", "business_id", "as_of_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    business_id: Mapped[int] = mapped_column(ForeignKey("businesses.id"), index=True)
+    as_of_date: Mapped[str] = mapped_column(String(10), index=True)
+    # سلول: نوع اقدام × حالت چرخه‌ی عمر. ردیفِ جمعیِ هر نوع با state='*' و
+    # ردیفِ کل با kind='*' ذخیره می‌شود تا سلسله‌مراتب کامل بازتولید شود.
+    cell_kind: Mapped[str] = mapped_column(String(64))
+    cell_state: Mapped[str] = mapped_column(String(64))
+
+    n_treatment: Mapped[int] = mapped_column(Integer, default=0)
+    n_control: Mapped[int] = mapped_column(Integer, default=0)
+    conv_treatment: Mapped[int] = mapped_column(Integer, default=0)
+    conv_control: Mapped[int] = mapped_column(Integer, default=0)
+    # نسبت‌ها در basis point صحیح — قاعده‌ی «بدون float در دفتر کل»
+    raw_uplift_bp: Mapped[int | None] = mapped_column(Integer)
+    uplift_bp: Mapped[int | None] = mapped_column(Integer)
+    ci_low_bp: Mapped[int | None] = mapped_column(Integer)
+    ci_high_bp: Mapped[int | None] = mapped_column(Integer)
+    basis: Mapped[str] = mapped_column(String(16))
+    is_useless: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[float] = mapped_column(Float, default=now_ts, index=True)
+
+
 # ------------------------------------------------------------------ کمپین
 
 
@@ -686,4 +728,5 @@ __all__ = [
     "OrderLine",
     "Product",
     "ProductAlias",
+    "UpliftSnapshot",
 ]
