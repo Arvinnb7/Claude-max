@@ -2,10 +2,116 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-import { getCustomer, type CustomerProfile } from "@/lib/apiV1";
+import {
+  getCustomer,
+  optOutCustomer,
+  revokeCustomerOptOut,
+  type CustomerProfile,
+} from "@/lib/apiV1";
 import { toFa } from "@/lib/format";
 
 import { Alert, Badge, Card, SectionTitle, Spinner, StatCard } from "./ui";
+
+/**
+ * کلیدِ «تماس نگیر».
+ *
+ * این تنها راهِ ورودِ داده‌ی انصراف است: فایل فروش چنین ستونی ندارد. وقتی ثبت
+ * شود، **همه‌ی** مسیرهای تماس احترامش می‌گذارند — ساخت کمپین، خروجی اکسل و
+ * ارسال پیامک.
+ */
+function ContactPreference({
+  customerId,
+  optOut,
+  onChanged,
+}: {
+  customerId: number;
+  optOut: CustomerProfile["contact_opt_out"];
+  onChanged: () => void;
+}) {
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function run(action: () => Promise<unknown>) {
+    setBusy(true);
+    setError(null);
+    try {
+      await action();
+      setReason("");
+      onChanged();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "ثبت نشد");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (optOut) {
+    return (
+      <Card>
+        <SectionTitle title="مجوز تماس" subtitle="این مشتری تماس بازاریابی را رد کرده است" />
+        <Alert tone="warn">
+          <div className="space-y-1">
+            <div>دلیل ثبت‌شده: {optOut.reason_fa ?? "—"}</div>
+            <div className="text-xs opacity-80">
+              هیچ کمپین، خروجی یا پیامکی این مشتری را شامل نمی‌شود.
+            </div>
+          </div>
+        </Alert>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => void run(() => revokeCustomerOptOut(customerId))}
+          className="mt-3 rounded-lg border border-gray-300 px-3 py-1.5 text-sm
+            hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:hover:bg-gray-800"
+        >
+          پس گرفتن انصراف
+        </button>
+        {error && (
+          <div className="mt-2">
+            <Alert tone="warn">{error}</Alert>
+          </div>
+        )}
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <SectionTitle
+        title="مجوز تماس"
+        subtitle="اگر این مشتری گفته پیام نفرستید، اینجا ثبت کنید"
+      />
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          maxLength={200}
+          placeholder="دلیل (اجباری) — مثلاً: تلفنی درخواست کرد"
+          className="min-w-56 flex-1 rounded-lg border border-gray-300 px-3 py-1.5 text-sm
+            dark:border-gray-600 dark:bg-gray-900"
+        />
+        <button
+          type="button"
+          disabled={busy || !reason.trim()}
+          onClick={() => void run(() => optOutCustomer(customerId, reason.trim()))}
+          className="rounded-lg bg-rose-600 px-3 py-1.5 text-sm text-white
+            hover:bg-rose-700 disabled:opacity-50"
+        >
+          تماس نگیر
+        </button>
+      </div>
+      <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+        دلیل اجباری است تا بعداً معلوم باشد چرا با این مشتری تماس گرفته نمی‌شود.
+      </p>
+      {error && (
+        <div className="mt-2">
+          <Alert tone="warn">{error}</Alert>
+        </div>
+      )}
+    </Card>
+  );
+}
 
 /** رنگ حالت: سبز = رابطه‌ی سالم، نارنجی = هشدار، قرمز = در حال از دست رفتن. */
 function lifecycleTone(
@@ -87,6 +193,11 @@ export default function Customer360({
 
   return (
     <div className="space-y-4">
+      <ContactPreference
+        customerId={customerId}
+        optOut={data.contact_opt_out}
+        onChanged={() => void load()}
+      />
       <Card>
         <SectionTitle
           title={c.name ?? c.key}

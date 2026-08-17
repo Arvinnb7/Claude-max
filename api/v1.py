@@ -30,6 +30,7 @@ from mktcore.db.engine import session_scope
 from mktcore.db.migrations import ensure_schema
 from mktcore.db.models import (
     Business,
+    ContactSuppression,
     Customer,
     CustomerFeature,
     CustomerLifecycleEvent,
@@ -410,9 +411,23 @@ def get_customer(customer_id: int, history_limit: int = Query(200, ge=1, le=2000
             .limit(50)
         ).all()
 
+        # وضعیت انصراف از تماس — کلیدِ افزودنی. `None` یعنی انصرافی ثبت نشده.
+        suppression = session.scalar(
+            select(ContactSuppression).where(
+                ContactSuppression.customer_id == customer_id,
+                ContactSuppression.revoked_at.is_(None),
+            )
+        )
+
         payload = {
             "available": True,
             "customer": _customer_row(customer, snapshots[0] if snapshots else None),
+            "contact_opt_out": None if suppression is None else {
+                "reason_fa": suppression.reason_fa,
+                "scope": suppression.scope,
+                "source": suppression.source,
+                "opted_out_at": suppression.opted_out_at,
+            },
             "feature_history": [
                 {
                     "as_of": s.as_of_date,

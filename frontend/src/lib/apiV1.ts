@@ -133,6 +133,13 @@ export type CustomerRow = {
 export type CustomerProfile = {
   available: boolean;
   customer: CustomerRow;
+  /** `null` یعنی انصرافی ثبت نشده — که «رضایت» نیست، فقط «نه‌گفتنی ثبت نشده». */
+  contact_opt_out: {
+    reason_fa: string | null;
+    scope: string;
+    source: string;
+    opted_out_at: number | null;
+  } | null;
   feature_history: {
     as_of: string;
     n_orders: number | null;
@@ -438,6 +445,55 @@ export async function listDismissReasons(): Promise<{
   note_fa: string;
 }> {
   return handle(await fetch(`${BASE}/api/v1/dismiss-reasons`, { cache: "no-store" }));
+}
+
+/** یک ردیف از دفترِ «تماس نگیر». */
+export type ContactSuppression = {
+  id: number;
+  customer_id: number | null;
+  customer_name: string | null;
+  phone: string | null;
+  scope: string;
+  source: string;
+  reason_fa: string | null;
+  opted_out_at: number | null;
+  revoked_at: number | null;
+  active: boolean;
+};
+
+export async function listContactSuppressions(activeOnly = true): Promise<{
+  items: ContactSuppression[];
+  total: number;
+  note_fa: string;
+}> {
+  return handle(
+    await fetch(`${BASE}/api/v1/contact-suppressions?active_only=${activeOnly}`, {
+      cache: "no-store",
+    }),
+  );
+}
+
+/** ثبت انصراف. دلیل اجباری است — سرور رشته‌ی خالی را رد می‌کند. */
+export async function optOutCustomer(
+  customerId: number,
+  reasonFa: string,
+  actor?: string,
+): Promise<{ created: boolean; reactivated: boolean; note_fa: string }> {
+  return handle(
+    await fetch(`${BASE}/api/v1/customers/${customerId}/opt-out`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason_fa: reasonFa, actor }),
+    }),
+  );
+}
+
+export async function revokeCustomerOptOut(
+  customerId: number,
+): Promise<{ revoked: boolean; note_fa: string }> {
+  return handle(
+    await fetch(`${BASE}/api/v1/customers/${customerId}/opt-out`, { method: "DELETE" }),
+  );
 }
 
 export async function actOnOpportunity(
