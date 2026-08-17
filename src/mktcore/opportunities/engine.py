@@ -148,11 +148,27 @@ def uplift_multiplier(uplift: float | None) -> float:
     return max(MIN_UPLIFT_MULTIPLIER, uplift / UPLIFT_REFERENCE)
 
 
+def _opted_out_keys(business_slug: str, db_path: Path | None) -> set[str]:
+    """کلیدهای مشتریانی که تماس را رد کرده‌اند — از دفترِ انصراف.
+
+    مثل `_recently_contacted`، شکست اینجا نباید موتور را بخواباند: مجموعه‌ی خالی
+    برمی‌گردد و `filter_consent` همان `filter_skip` همیشگی را ثبت می‌کند.
+    """
+    try:
+        from mktcore.contact.register import load_gate
+
+        return set(load_gate(business_slug=business_slug, db_path=db_path).opted_out)
+    except Exception:  # noqa: BLE001 - نبودِ دفتر نباید موتور را بخواباند
+        logger.debug("دفترِ انصراف در دسترس نبود؛ فیلتر رضایت رد شد", exc_info=True)
+        return set()
+
+
 def build_context(
     clean: pd.DataFrame,
     *,
     fatigue_window_days: int = 14,
     per_customer_open_cap: int = 3,
+    consent_denied: set[str] | None = None,
 ) -> dict:
     """ساخت زمینه‌ی فیلترها از آنچه **واقعاً** در دست است.
 
@@ -169,7 +185,13 @@ def build_context(
         # تمام‌شده؟ با سربار؟) باید از کاربر پرسیده شود، نه حدس زده شود.
         "margin_floor_bp": None,
         "has_inventory_data": False,   # هیچ مسیر ورودِ موجودی وجود ندارد
-        "has_consent_data": False,     # داده‌ی رضایت در فایل فروش نیست
+        # ⚠️ عمداً `False` می‌ماند، حتی حالا که دفترِ انصراف وجود دارد.
+        # دفترِ انصراف می‌گوید **چه کسی «نه» گفته**، نه اینکه چه کسی «بله» گفته.
+        # نبودنِ نام کسی در فهرستِ لغو، «رضایت» نیست. پس `filter_consent` برای
+        # مشتریِ عادی همان `filter_skip` صادقانه را ثبت می‌کند، و فقط برای کسی که
+        # صریحاً رد کرده `filter_block` می‌دهد.
+        "has_consent_data": False,
+        "consent_denied": consent_denied or set(),
         "compatibility_rules": None,   # قاعده‌ی دامنه‌ای تعریف نشده است
         "recently_contacted": recent,
         "fatigue_window_days": window,
@@ -191,7 +213,9 @@ def run_opportunity_engine(
     as_of = _as_of(clean)
     candidates = generate_candidates(bundle, clean)
     uplift_table = _load_uplift_table(db_path)
-    ctx = build_context(clean)
+    ctx = build_context(
+        clean, consent_denied=_opted_out_keys(business_slug, db_path),
+    )
     ctx["uplift_table"] = uplift_table
     # حالت چرخه‌ی عمر پیش از فیلتر لازم است، چون فیلترِ اثر بر پایه‌ی سلولِ
     # (نوع اقدام × حالت) تصمیم می‌گیرد.

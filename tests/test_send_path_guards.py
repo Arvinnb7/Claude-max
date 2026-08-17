@@ -1,0 +1,309 @@
+"""گاردِ مسیرهای ارسال — خطِ سرخِ این فاز.
+
+پیش از این فاز، `POST /api/sms/send` **هیچ** بررسی‌ای نداشت: با یک کلید کاوه‌نگار
+واقعی می‌توانست به عضوِ گروه کنترلِ یک آزمایشِ فعال پیام بدهد. اگر آن اتفاق
+می‌افتاد، هیچ‌جا ثبت نمی‌شد، پس بعداً هم قابل تشخیص نبود و همه‌ی گزارش‌های اثرِ
+بعدی بی‌اعتبار می‌شدند بدون اینکه کسی بفهمد.
+
+اینجا با پنلِ mock ارسالِ «واقعی» انجام می‌شود تا مسیرِ واقعی آزموده شود، نه
+مسیرِ dry-run.
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import select
+
+_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(_ROOT))
+sys.path.insert(0, str(_ROOT / "src"))
+
+from api.main import app  # noqa: E402
+from api.persistence import store  # noqa: E402
+
+from mktcore.campaigns.assign import ARM_CONTROL, ARM_TREATMENT  # noqa: E402
+from mktcore.db import session_scope  # noqa: E402
+from mktcore.db.models import CampaignMember, Customer  # noqa: E402
+
+from .conftest import poll_job  # noqa: E402
+
+client = TestClient(app)
+
+
+def _upload_and_analyze() -> str:
+    """یک نشست تحلیل‌شده‌ی واقعی، از همان مسیرِ کاربر و همان کمک‌تابع‌های موجود."""
+    r = client.post("/api/sample")
+    assert r.status_code == 200, r.text
+    data = r.json()
+
+    mapping = {x["role"]: x["suggested"] for x in data["roles"] if x["suggested"]}
+    r = client.post("/api/analyze", json={
+        "session_id": data["session_id"], "mapping": mapping, "horizon": 3,
+    })
+    assert r.status_code == 200, r.text
+    poll_job(client, r.json()["job_id"])
+    return data["session_id"]
+
+
+@pytest.fixture(scope="module")
+def session_id() -> str:
+    return _upload_and_analyze()
+
+
+def _control_and_treatment(campaign_id: int) -> tuple[list[str], list[str]]:
+    """کلیدهای خامِ اعضای هر بازو — همان شکلی که مسیر ارسال می‌شناسد."""
+    with session_scope() as session:
+        rows = session.execute(
+            select(CampaignMember.arm, Customer.canonical_key)
+            .join(Customer, Customer.id == CampaignMember.customer_id)
+            .where(CampaignMember.campaign_id == campaign_id)
+        ).all()
+    control = [str(key) for arm, key in rows if arm == ARM_CONTROL]
+    treatment = [str(key) for arm, key in rows if arm == ARM_TREATMENT]
+    return control, treatment
+
+
+def test_control_arm_is_never_in_a_real_send(session_id, monkeypatch):
+    """خطِ سرخ: با ارسالِ واقعی، هیچ عضوِ گروه کنترل پیام نمی‌گیرد."""
+    created = client.post("/api/v1/campaigns", json={
+        "name": "گاردِ ارسال", "holdout_pct": 20,
+    })
+    assert created.status_code == 200, created.text
+    campaign_id = created.json()["id"]
+    control, treatment = _control_and_treatment(campaign_id)
+    assert control and treatment, "کمپین باید هر دو بازو را داشته باشد"
+
+    # پنلِ mock: به‌جای تماس با شبکه، گیرنده‌ها را ثبت می‌کند
+    sent_to: list[str] = []
+
+    def _fake_send(messages, **_kwargs):
+        from mktcore.execution.providers import SendResult
+
+        sent_to.extend(m.customer_id for m in messages)
+        return SendResult(
+            total=len(messages), sent=len(messages), failed=0,
+            dry_run=False, provider="mock", details=[],
+        )
+
+    monkeypatch.setattr("api.main.send_campaign", _fake_send)
+
+    settings = __import__("mktcore.config", fromlist=["get_settings"]).get_settings()
+    monkeypatch.setattr(settings, "mkt_sms_enable", True, raising=False)
+    monkeypatch.setattr(settings, "kavenegar_api_key", "test-key", raising=False)
+
+    # ⚠️ این تست باید **ناتهی** باشد: اگر مخاطبِ خامْ هیچ عضوِ کنترلی نداشته
+    # باشد، «نشتی نبود» چیزی را ثابت نمی‌کند. پس اول ثابت می‌شود که گارد واقعاً
+    # چیزی برای جلوگیری داشت.
+    from mktcore.execution.audience import build_audience
+
+    bundle = store.load_bundle(session_id)
+    clean = store.load_clean(session_id)
+    raw_audience = {
+        r.customer_id for r in build_audience(bundle, "سررسیدشده", df=clean, limit=500)
+    }
+    at_risk = raw_audience & set(control)
+    assert at_risk, (
+        "مخاطبِ خام هیچ عضوِ گروه کنترلی ندارد، پس این تست چیزی را اثبات نمی‌کند"
+    )
+
+    r = client.post("/api/sms/send", json={
+        "session_id": session_id, "kind": "سررسیدشده",
+        "template": "سلام {نام}", "limit": 500,
+        "dry_run": False, "confirm": True,
+    })
+    assert r.status_code == 200, r.text
+
+    leaked = set(sent_to) & set(control)
+    assert not leaked, f"گروه کنترل پیام گرفت: {sorted(leaked)[:5]}"
+    # و گزارش باید همان تعداد را صریح بگوید
+    assert r.json()["مسدودشده"] >= len(at_risk)
+
+
+def test_opted_out_customer_is_never_in_a_send(session_id, monkeypatch):
+    with session_scope() as session:
+        customer = session.scalar(select(Customer))
+        customer_id, raw_key = customer.id, customer.canonical_key
+
+    r = client.post(f"/api/v1/customers/{customer_id}/opt-out", json={
+        "reason_fa": "تلفنی گفت پیام نفرستید",
+    })
+    assert r.status_code == 200, r.text
+
+    sent_to: list[str] = []
+
+    def _fake_send(messages, **_kwargs):
+        from mktcore.execution.providers import SendResult
+
+        sent_to.extend(m.customer_id for m in messages)
+        return SendResult(total=len(messages), sent=len(messages), failed=0,
+                          dry_run=False, provider="mock", details=[])
+
+    monkeypatch.setattr("api.main.send_campaign", _fake_send)
+
+    r = client.post("/api/sms/send", json={
+        "session_id": session_id, "kind": "پیشنهاد_شخصی",
+        "template": "سلام {نام}", "limit": 500, "dry_run": True,
+    })
+    assert r.status_code == 200, r.text
+    assert str(raw_key) not in set(sent_to)
+
+    # و پس گرفتن انصراف باید برش گرداند
+    assert client.delete(f"/api/v1/customers/{customer_id}/opt-out").status_code == 200
+
+
+def test_send_response_reports_suppression_and_never_hides_it(session_id):
+    """حذفِ بی‌صدا ممنوع: پاسخ باید تعداد و دلیل را بگوید."""
+    r = client.post("/api/sms/send", json={
+        "session_id": session_id, "kind": "سررسیدشده",
+        "template": "سلام {نام}", "limit": 200, "dry_run": True,
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "مسدودشده" in body
+    assert isinstance(body["مسدودشده"], int)
+    assert "دلایل_مسدودی" in body
+    if body["مسدودشده"]:
+        assert body["یادداشت_مجوز_تماس"]
+        assert sum(d["تعداد"] for d in body["دلایل_مسدودی"]) == body["مسدودشده"]
+
+
+def test_existing_sms_contract_is_untouched(session_id):
+    """قرارداد صفر-رگرسیون: کلیدهای قبلی سر جایشان‌اند."""
+    r = client.post("/api/sms/send", json={
+        "session_id": session_id, "kind": "سررسیدشده",
+        "template": "سلام {نام}", "limit": 10, "dry_run": True,
+    })
+    assert r.status_code == 200
+    body = r.json()
+    for key in ("audience_size", "حالت_آزمایشی", "تعداد_کل", "ارسال‌شده", "ناموفق"):
+        assert key in body, f"کلید موجود {key} حذف شده است"
+
+
+# ═════════════════════════════════════ باگِ رفع‌شده: پیش‌نمایش ≠ تماس
+def test_dry_run_preview_does_not_make_a_customer_look_contacted():
+    """باگِ پیش از این فاز: پیش‌نمایشِ آزمایشی هم ردیف outbox می‌نوشت و مشتری را
+    ۱۴ روز «خسته از تماس» می‌کرد، پس فرصت‌هایش ساخته نمی‌شد — بدون اینکه پیامی
+    برایش رفته باشد.
+    """
+    store.add_outbox(
+        kind="campaign_sms", session_id="s-dry", audience="سررسیدشده",
+        customer_id="DRYRUN-ONLY", phone="+989120000000", message="متن",
+        status="آماده‌ی ارسال", provider="dry-run", dry_run=True,
+    )
+    store.add_outbox(
+        kind="campaign_sms", session_id="s-real", audience="سررسیدشده",
+        customer_id="REALLY-SENT", phone="+989120000001", message="متن",
+        status="ارسال شد", provider="kavenegar", dry_run=False,
+    )
+
+    recent = store.recent_contact_customer_ids(14.0)
+    assert "REALLY-SENT" in recent
+    assert "DRYRUN-ONLY" not in recent, "پیش‌نمایش نباید «تماس» شمرده شود"
+
+
+# ═══════════════════════════════════════ هم‌پوشانی کمپین‌ها در ساخت
+def test_new_campaign_excludes_the_control_arm_of_an_open_campaign(session_id):
+    """گروه کنترلِ کمپینِ فعال نباید در کمپین بعدی تماس بگیرد.
+
+    وگرنه گروه کنترلِ کمپین اول دیگر کنترل نیست و اثرِ **هر دو** کمپین بی‌اعتبار
+    می‌شود. حذف در لحظه‌ی ساخت انجام می‌شود، نه خروجی، تا اندازه‌ی بازوها بعد از
+    تخصیص تغییر نکند.
+    """
+    first = client.post("/api/v1/campaigns", json={
+        "name": "کمپین اول", "holdout_pct": 20,
+    })
+    assert first.status_code == 200, first.text
+    first_control, _ = _control_and_treatment(first.json()["id"])
+    assert first_control
+
+    second = client.post("/api/v1/campaigns", json={
+        "name": "کمپین دوم", "holdout_pct": 20,
+    })
+    assert second.status_code == 200, second.text
+    second_id = second.json()["id"]
+    second_control, second_treatment = _control_and_treatment(second_id)
+
+    overlap = set(second_treatment) & set(first_control)
+    assert not overlap, f"گروه کنترلِ کمپین اول در بازوی آزمایشِ دوم آمد: {overlap}"
+    assert not (set(second_control) & set(first_control))
+
+    body = second.json()
+    assert "contact_gate" in body
+    assert body["contact_gate"]["مسدودشده"] >= len(first_control) - len(second_control)
+
+
+def test_export_stamps_exposure_only_for_members_actually_in_the_file(session_id):
+    """مهرِ تماس نباید روی عضوی بخورد که دروازه کنارش گذاشته است.
+
+    اگر بخورد، سنجش تماسی را می‌شمارد که هرگز انجام نشده و اثر را کمتر از واقع
+    نشان می‌دهد.
+    """
+    created = client.post("/api/v1/campaigns", json={
+        "name": "کمپین مهر", "holdout_pct": 10,
+    })
+    assert created.status_code == 200, created.text
+    campaign_id = created.json()["id"]
+
+    # یکی از اعضای بازوی آزمایش را منصرف می‌کنیم
+    with session_scope() as session:
+        member = session.scalar(
+            select(CampaignMember).where(
+                CampaignMember.campaign_id == campaign_id,
+                CampaignMember.arm == ARM_TREATMENT,
+            )
+        )
+        opted_out_id = member.customer_id
+
+    r = client.post(f"/api/v1/customers/{opted_out_id}/opt-out", json={
+        "reason_fa": "درخواست خودش",
+    })
+    assert r.status_code == 200, r.text
+
+    export = client.get(f"/api/v1/campaigns/{campaign_id}/export")
+    assert export.status_code == 200, export.text
+    assert int(export.headers["X-Contact-Suppressed"]) >= 1
+
+    with session_scope() as session:
+        refreshed = session.scalar(
+            select(CampaignMember).where(
+                CampaignMember.campaign_id == campaign_id,
+                CampaignMember.customer_id == opted_out_id,
+            )
+        )
+        assert refreshed.exposure_at is None, "عضوِ کنارگذاشته‌شده نباید مهرِ تماس بخورد"
+
+    client.delete(f"/api/v1/customers/{opted_out_id}/opt-out")
+
+
+# ═════════════════════════════════════════════════════ دفترِ انصراف API
+def test_suppression_register_endpoint_lists_and_explains(session_id):
+    with session_scope() as session:
+        customer_id = session.scalar(select(Customer.id))
+
+    client.post(f"/api/v1/customers/{customer_id}/opt-out", json={
+        "reason_fa": "نمونه برای فهرست",
+    })
+    r = client.get("/api/v1/contact-suppressions")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["total"] >= 1
+    assert body["note_fa"]
+    assert any(item["customer_id"] == customer_id for item in body["items"])
+
+    client.delete(f"/api/v1/customers/{customer_id}/opt-out")
+
+
+def test_opt_out_requires_a_reason(session_id):
+    with session_scope() as session:
+        customer_id = session.scalar(select(Customer.id))
+    r = client.post(f"/api/v1/customers/{customer_id}/opt-out", json={"reason_fa": ""})
+    assert r.status_code == 422, "دلیل خالی باید رد شود"
+
+
+def test_revoking_a_missing_opt_out_is_404(session_id):
+    r = client.delete("/api/v1/customers/999999/opt-out")
+    assert r.status_code == 404

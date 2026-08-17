@@ -14,6 +14,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from mktcore.config import get_settings
+from mktcore.contact.register import load_gate
 from mktcore.execution import render_messages, send_campaign
 from mktcore.execution.audience import build_audience
 
@@ -46,10 +47,21 @@ def run_cycle_scan(*, limit: int = 200, dedupe_days: float = 7.0) -> dict:
         return {"status": "no_data", "پیام": "داده‌ی تحلیل نشست یافت نشد."}
 
     recipients = build_audience(bundle, AUDIENCE_KEY, df=clean, limit=limit)
-    # حذف مواردی که اخیراً برایشان یادآوری ثبت شده (جلوگیری از اسپم روزانه)
+    # حذف مواردی که اخیراً برایشان یادآوری ثبت شده (جلوگیری از اسپم روزانه).
+    # این dedupe عمداً `dry_run` را هم می‌شمارد: پرسشش «آیا قبلاً ثبت کرده‌ایم؟»
+    # است، نه «آیا مشتری چیزی گرفته؟».
     fresh = [r for r in recipients
              if not store.outbox_exists_recent(kind=CYCLE_KIND, customer_id=r.customer_id,
                                                within_days=dedupe_days)]
+
+    # دروازه‌ی مجوز تماس: انصراف و عضویت در گروه کنترل. خستگی تماس اینجا داده
+    # نمی‌شود چون همان dedupe بالا کارش را می‌کند و دو بار حساب کردنش یعنی
+    # پنجره‌ی مؤثر ۱۴ روز شود، نه ۷ روزِ مستند.
+    gate = load_gate()
+    screened = gate.partition(
+        fresh, key=lambda r: r.customer_id, phone=lambda r: r.phone,
+    )
+    fresh = screened.allowed
 
     real_send = settings.mkt_auto_sms and settings.sms_configured
     messages = render_messages(settings.mkt_cycle_sms_template, fresh)
@@ -88,6 +100,7 @@ def run_cycle_scan(*, limit: int = 200, dedupe_days: float = 7.0) -> dict:
         "status": "ok", "session_id": sid,
         "بررسی‌شده": len(recipients), "ثبت‌شده": len(fresh), "ارسال_واقعی": sent,
         "حالت": "ارسال واقعی" if real_send else "آزمایشی (بدون ارسال)",
+        **screened.to_dict(),
     }
     logger.info("cycle scan: %s", summary)
     return summary

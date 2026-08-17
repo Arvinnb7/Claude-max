@@ -749,17 +749,27 @@ class PersistentStore:
             )
 
     def recent_contact_customer_ids(self, within_days: float = 14.0) -> set[str]:
-        """مشتریانی که در بازه‌ی اخیر پیامی گرفته‌اند — یک پرس‌وجو برای همه.
+        """مشتریانی که در بازه‌ی اخیر **واقعاً** پیامی گرفته‌اند.
 
         `outbox_exists_recent` برای بررسی تک‌نفره است؛ فیلتر «خستگی تماس» در
         موتور فرصت‌ها باید هزاران مشتری را یک‌جا بررسی کند و صدا زدن آن در حلقه
         یعنی هزاران رفت‌وبرگشت.
+
+        **`dry_run = 0` شرطِ لازم است.** پیش‌تر این شرط نبود و باگ می‌ساخت: یک
+        پیش‌نمایشِ آزمایشی هم ردیف outbox می‌نویسد، پس گرفتنِ یک پیش‌نمایش کافی
+        بود تا مشتری ۱۴ روز «خسته از تماس» شمرده شود و فرصت‌هایش ساخته نشود —
+        در حالی که هیچ پیامی برایش نرفته بود.
+
+        این پرسش با پرسشِ `outbox_exists_recent` تفاوت دارد و عمداً پاسخش هم
+        متفاوت است: آن یکی می‌پرسد «آیا این یادآوری را قبلاً ثبت کرده‌ایم؟»
+        (ثبتِ آزمایشی هم ثبت است و باید مانع ثبت دوباره شود)، این یکی می‌پرسد
+        «آیا این مشتری چیزی دریافت کرده؟».
         """
         cutoff = time.time() - within_days * 86400
         with self._conn() as c:
             rows = c.execute(
                 "SELECT DISTINCT customer_id FROM outbox "
-                "WHERE customer_id IS NOT NULL AND created_at > ?",
+                "WHERE customer_id IS NOT NULL AND created_at > ? AND dry_run = 0",
                 (cutoff,),
             ).fetchall()
         return {str(r["customer_id"]) for r in rows}

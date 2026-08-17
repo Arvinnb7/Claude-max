@@ -25,6 +25,7 @@ from sqlalchemy import func, select
 from mktcore.campaigns.analysis import ArmStats, analyze_campaign
 from mktcore.campaigns.assign import ARM_CONTROL, ARM_TREATMENT, assign_arms
 from mktcore.campaigns.outcomes import arm_stats, compute_campaign_outcomes
+from mktcore.contact.register import build_gate
 from mktcore.db.base import now_ts
 from mktcore.db.engine import session_scope, write_lock
 from mktcore.db.migrations import ensure_schema
@@ -100,6 +101,27 @@ def create_campaign(req: CreateCampaignRequest) -> dict:
                 detail="فرصتی با این فیلتر برای ساخت کمپین وجود ندارد.",
             )
 
+        # دروازه‌ی مجوز تماس **پیش از تخصیص بازو**. اگر این حذف را به لحظه‌ی
+        # خروجی موکول کنیم، اندازه‌ی بازوها و نسبت گروه کنترل بعد از تخصیص تغییر
+        # می‌کند و کمپین با نسبتی غیر از آنچه کاربر خواسته اجرا می‌شود.
+        #
+        # مهم‌ترین موردش هم‌پوشانیِ کمپین‌هاست: مشتری‌ای که در کمپینِ فعالِ «الف»
+        # گروه کنترل است، نباید در کمپین «ب» تماس بگیرد — وگرنه گروه کنترلِ «الف»
+        # دیگر کنترل نیست و اثرِ اندازه‌گیری‌شده‌ی هر دو کمپین بی‌اعتبار می‌شود.
+        gate = build_gate(session, business_id)
+        eligible = gate.partition(
+            opportunities, key=lambda o: str(o.customer_id),
+        )
+        opportunities = eligible.allowed
+        if not opportunities:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "همه‌ی فرصت‌های این فیلتر با دروازه‌ی مجوز تماس کنار گذاشته شدند: "
+                    f"{eligible.note_fa()}"
+                ),
+            )
+
         # طبقه‌بندی برای تصادفی‌سازی متوازن: حالت چرخه‌ی عمر، وگرنه سگمنت
         customer_ids = {o.customer_id for o in opportunities if o.customer_id}
         strata = _strata(session, business_id, customer_ids)
@@ -151,6 +173,11 @@ def create_campaign(req: CreateCampaignRequest) -> dict:
                 ))
         session.flush()
         payload = _campaign_detail(session, campaign)
+        # حذفِ بی‌صدا ممنوع: اگر کسی پیش از تخصیص کنار گذاشته شد، گفته می‌شود.
+        payload["contact_gate"] = eligible.to_dict()
+        gate_note = eligible.note_fa()
+        if gate_note:
+            payload["contact_gate_note_fa"] = gate_note
     return payload
 
 
@@ -282,6 +309,21 @@ def export_campaign(campaign_id: int):
                 status_code=409, detail="این کمپین عضوی در گروه آزمایش ندارد.",
             )
 
+        # دروازه‌ی مجوز تماس روی بازوی آزمایش. مشتریِ منصرف نباید در فایل بیاید،
+        # **و مهرِ تماس هم نباید بخورد** — وگرنه سنجش، تماسی را می‌شمارد که هرگز
+        # انجام نشده و اثر را کمتر از واقع نشان می‌دهد.
+        gate = build_gate(session, campaign.business_id)
+        screened = gate.partition(members, key=lambda m: str(m.customer_id))
+        members = screened.allowed
+        if not members:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "همه‌ی اعضای گروه آزمایش با دروازه‌ی مجوز تماس کنار گذاشته شدند: "
+                    f"{screened.note_fa()}"
+                ),
+            )
+
         rows = _export_rows(session, campaign_id, members)
         today = pd.Timestamp.now().date().isoformat()
         stamp = now_ts()
@@ -294,13 +336,19 @@ def export_campaign(campaign_id: int):
         if campaign.exported_at is None:
             campaign.exported_at = stamp
         name = campaign.name
+        suppressed = screened.suppressed_count
 
     content = _workbook(rows)
     filename = quote(f"کمپین-{name}.xlsx")
     return Response(
         content=content,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"},
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{filename}",
+            # حذفِ بی‌صدا ممنوع: تعداد کنارگذاشته‌شده‌ها در هدر می‌آید تا فایلِ
+            # کوتاه‌ترشده بی‌توضیح نماند.
+            "X-Contact-Suppressed": str(suppressed),
+        },
     )
 
 

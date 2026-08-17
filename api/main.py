@@ -30,6 +30,8 @@ from pydantic import BaseModel  # noqa: E402
 from mktcore.ai.client import api_key_available  # noqa: E402
 from mktcore.config import get_settings  # noqa: E402
 from mktcore.connectors import ExcelCsvConnector  # noqa: E402
+from mktcore.contact.permission import DEFAULT_FATIGUE_WINDOW_DAYS  # noqa: E402
+from mktcore.contact.register import load_gate  # noqa: E402
 from mktcore.db.migrations import ensure_schema as ensure_canonical_schema  # noqa: E402
 from mktcore.execution import build_audience, render_messages, send_campaign  # noqa: E402
 from mktcore.execution.audience import AUDIENCE_KINDS  # noqa: E402
@@ -717,6 +719,18 @@ def sms_send(req: SMSRequest) -> dict:
         raise HTTPException(status_code=404, detail="داده‌ی تحلیل نشست یافت نشد.")
 
     recipients = build_audience(bundle, req.kind, df=clean, limit=req.limit)
+
+    # دروازه‌ی مجوز تماس. پیش از این، این مسیر **هیچ** بررسی‌ای نداشت: می‌توانست
+    # به عضوِ گروه کنترلِ یک آزمایشِ فعال پیام بدهد و نتیجه‌ی آن آزمایش را بی‌صدا
+    # نابود کند — بی‌صدا، چون هیچ‌جا ثبت نمی‌شد که با کنترل تماس گرفته شده.
+    gate = load_gate(
+        recently_contacted=store.recent_contact_customer_ids(DEFAULT_FATIGUE_WINDOW_DAYS),
+        fatigue_window_days=DEFAULT_FATIGUE_WINDOW_DAYS,
+    )
+    screened = gate.partition(
+        recipients, key=lambda r: r.customer_id, phone=lambda r: r.phone,
+    )
+    recipients = screened.allowed
     messages = render_messages(req.template, recipients)
 
     settings = get_settings()
@@ -747,9 +761,13 @@ def sms_send(req: SMSRequest) -> dict:
             provider=result.provider, dry_run=result.dry_run,
         )
 
-    out = {"audience_size": len(recipients), **result.to_dict()}
+    out = {"audience_size": len(recipients), **result.to_dict(), **screened.to_dict()}
     if note:
         out["توضیح"] = note
+    # حذفِ بی‌صدا ممنوع: اگر کسی از فهرست کنار گذاشته شد، گفته می‌شود چند نفر و چرا.
+    suppression_note = screened.note_fa()
+    if suppression_note:
+        out["یادداشت_مجوز_تماس"] = suppression_note
     return out
 
 

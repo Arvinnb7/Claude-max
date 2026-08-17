@@ -22,7 +22,7 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 
 from mktcore.config import get_settings
@@ -691,6 +691,79 @@ def learned_uplift() -> dict:
         "را تکان ندهد."
     )
     return payload
+
+
+class OptOutRequest(BaseModel):
+    """ثبت انصراف از تماس. دلیل اجباری است تا بعداً «چرا؟» پاسخ داشته باشد."""
+
+    reason_fa: str = Field(min_length=1, max_length=500)
+    scope: str = "all"
+    actor: str | None = None
+
+
+@router.get("/contact-suppressions")
+def contact_suppressions(active_only: bool = Query(True)) -> dict:
+    """دفترِ «با این‌ها تماس نگیر».
+
+    این دفتر می‌گوید چه کسی **صریحاً رد کرده** — نه اینکه چه کسی رضایت داده.
+    نبودنِ نام کسی در این فهرست «رضایت» نیست، و سیستم هم چنین ادعایی نمی‌کند.
+    """
+    ensure_schema()
+    try:
+        from mktcore.contact.register import list_suppressions
+
+        items = list_suppressions(active_only=active_only)
+    except Exception:  # noqa: BLE001 - نبودِ دفتر نباید API را بشکند
+        logger.exception("خواندن دفترِ انصراف ناموفق بود")
+        return {"items": [], "total": 0, "note_fa": "خواندن دفترِ انصراف ناموفق بود."}
+
+    return {
+        "items": items,
+        "total": len(items),
+        "note_fa": (
+            "این فهرست از هر مسیر تماس احترام می‌شود: ساخت کمپین، خروجی اکسل و "
+            "ارسال پیامک. حذف از فهرست تماس هرگز بی‌صدا نیست و تعدادش گزارش می‌شود."
+        ),
+    }
+
+
+@router.post("/customers/{customer_id}/opt-out")
+def opt_out_customer(customer_id: int, payload: OptOutRequest) -> dict:
+    """ثبت انصراف یک مشتری از تماس بازاریابی."""
+    ensure_schema()
+    from mktcore.contact.register import record_opt_out
+
+    try:
+        result = record_opt_out(
+            customer_id=customer_id, reason_fa=payload.reason_fa,
+            scope=payload.scope, created_by=payload.actor,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {
+        **result,
+        "customer_id": customer_id,
+        "note_fa": "از این پس هیچ مسیر تماسی این مشتری را پیشنهاد یا ارسال نمی‌کند.",
+    }
+
+
+@router.delete("/customers/{customer_id}/opt-out")
+def revoke_customer_opt_out(customer_id: int, scope: str = Query("all")) -> dict:
+    """پس گرفتن انصراف. ردیف پاک نمی‌شود تا تاریخش بماند."""
+    ensure_schema()
+    from mktcore.contact.register import revoke_opt_out
+
+    revoked = revoke_opt_out(customer_id=customer_id, scope=scope)
+    if not revoked:
+        raise HTTPException(
+            status_code=404, detail="انصراف فعالی برای این مشتری ثبت نشده است.",
+        )
+    return {
+        "customer_id": customer_id,
+        "revoked": True,
+        "note_fa": "انصراف پس گرفته شد؛ سابقه‌اش برای پیگیری باقی می‌ماند.",
+    }
 
 
 @router.get("/opportunity-quality")

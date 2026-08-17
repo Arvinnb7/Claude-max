@@ -708,12 +708,60 @@ class CampaignOutcome(Base):
     computed_at: Mapped[float] = mapped_column(Float, default=now_ts)
 
 
+class ContactSuppression(Base):
+    """دفترِ «با این مشتری تماس نگیر».
+
+    چرا جدول جدا و نه یک ستون بولی روی `customers`:
+
+    * انصراف به **چه کسی، چه زمانی، با چه دلیلی، از کجا** نیاز دارد. یک بولی
+      هیچ‌کدام را نمی‌دهد و بعداً «چرا به او پیام ندادیم؟» بی‌پاسخ می‌ماند.
+    * ردیف‌های `customers` را حل هویت می‌سازد و به‌روز می‌کند؛ انصراف باید از
+      بارگذاری دوباره و ادغام هویت جان سالم ببرد.
+    * بازگردانی (`revoked_at`) باید ثبت شود، نه اینکه ردیف پاک شود.
+
+    **هم `customer_id` و هم `phone_e164`**، دست‌کم یکی: لیست سیاهِ پنل پیامکی و
+    پاسخ «لغو ۱۱» فقط شماره می‌شناسند، ولی دروازه باید پیش از حل هویت هم کار کند.
+
+    `scope` یعنی انصراف از چه چیزی: `"all"` همه‌ی تماس‌ها، یا یک نوع اقدام خاص.
+    """
+
+    __tablename__ = "contact_suppressions"
+    __table_args__ = (
+        UniqueConstraint("business_id", "customer_id", "scope"),
+        UniqueConstraint("business_id", "phone_e164", "scope"),
+    )
+
+    SCOPE_ALL = "all"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    business_id: Mapped[int] = mapped_column(ForeignKey("businesses.id"), index=True)
+    customer_id: Mapped[int | None] = mapped_column(
+        ForeignKey("customers.id", ondelete="CASCADE"), index=True
+    )
+    phone_e164: Mapped[str | None] = mapped_column(String(20), index=True)
+    scope: Mapped[str] = mapped_column(String(64), default=SCOPE_ALL)
+    # از کجا آمد: دستیِ کاربر، همگام‌سازی با پنل، یا ستون فایل ورودی
+    source: Mapped[str] = mapped_column(String(32), default="manual")
+    reason_code: Mapped[str | None] = mapped_column(String(64))
+    reason_fa: Mapped[str | None] = mapped_column(Text)
+    opted_out_at: Mapped[float] = mapped_column(Float, default=now_ts)
+    # پرشده یعنی انصراف پس گرفته شده؛ ردیف پاک نمی‌شود تا تاریخ بماند
+    revoked_at: Mapped[float | None] = mapped_column(Float)
+    created_by: Mapped[str | None] = mapped_column(String(128))
+    updated_at: Mapped[float] = mapped_column(Float, default=now_ts)
+
+    @property
+    def is_active(self) -> bool:
+        return self.opted_out_at is not None and self.revoked_at is None
+
+
 __all__ = [
     "Business",
     "Campaign",
     "CampaignMember",
     "CampaignOpportunity",
     "CampaignOutcome",
+    "ContactSuppression",
     "Customer",
     "CustomerFeature",
     "CustomerKey",
