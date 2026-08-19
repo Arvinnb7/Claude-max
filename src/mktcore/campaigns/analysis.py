@@ -163,6 +163,30 @@ def required_control_size(target_effect: float, baseline_rate: float = 0.3,
     return math.ceil(variance * (1 + 1 / ratio) * (_Z / target_effect) ** 2)
 
 
+def achievable_effect(total_size: int, baseline_rate: float = 0.3,
+                      *, holdout_pct: int = 10) -> float | None:
+    """معکوسِ `required_control_size`: با **این** تعداد نفر، چه اثری دیدنی است؟
+
+    `required_control_size` به پرسشِ «برای دیدن اثر ۵ واحد درصد چند نفر لازم
+    است؟» پاسخ می‌دهد. ولی وقتی تعداد مشتریانِ در دسترس محدود است، پرسشِ عملی
+    برعکس می‌شود: «من فقط ۳۰۰ نفر در این گروه دارم؛ با آن‌ها چه چیزی را
+    می‌توانم اثبات کنم؟»
+
+    بدون این عدد، توصیه‌ی «کمپین ۹۰۰ نفره ببند» برای کسی که ۳۰۰ نفر دارد بی‌مصرف
+    است و هیچ راهنمایی‌ای نمی‌دهد.
+    """
+    if total_size <= 0 or not 0 < holdout_pct < 100:
+        return None
+    control = total_size * holdout_pct / 100
+    if control < 1:
+        return None
+    ratio = (100 - holdout_pct) / holdout_pct
+    variance = baseline_rate * (1 - baseline_rate)
+    if variance <= 0:
+        variance = 0.25
+    return _Z * math.sqrt(variance * (1 + 1 / ratio) / control)
+
+
 def _diff_ci(t: ArmStats, c: ArmStats) -> tuple[float, float]:
     """بازه‌ی اطمینان اختلاف دو نسبت (تقریب Wald با اصلاح پیوستگی)."""
     p1, n1 = t.conversion_rate, t.size
@@ -286,5 +310,8 @@ __all__ = [
     "VERDICT_PROVEN",
     "ArmStats",
     "CampaignReport",
+    "achievable_effect",
     "analyze_campaign",
+    "minimum_detectable_effect",
+    "required_control_size",
 ]

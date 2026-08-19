@@ -9,6 +9,7 @@ import {
   RefreshCw,
   ShieldAlert,
   Sparkles,
+  Target,
   TrendingDown,
   TrendingUp,
 } from "lucide-react";
@@ -17,12 +18,14 @@ import {
   campaignExportUrl,
   closeCampaign,
   getCampaign,
+  getExperimentPlan,
   getLearnedUplift,
   listCampaigns,
   refreshCampaign,
   type CampaignDetail,
   type CampaignReport,
   type CampaignSummary,
+  type ExperimentPlan,
   type UpliftTable,
 } from "@/lib/apiV1";
 import { toFa } from "@/lib/format";
@@ -152,6 +155,8 @@ export default function CampaignImpact() {
         </div>
       )}
 
+      <NextExperiment />
+
       <LearnedUplift />
 
       {!items?.length ? (
@@ -214,6 +219,123 @@ export default function CampaignImpact() {
  * این جدول مستقیماً ترتیب صندوق فرصت‌ها را تعیین می‌کند، پس دیدنی‌بودنش لازم
  * است: کاربر باید بتواند بفهمد چرا فهرستش عوض شده.
  */
+function NextExperiment() {
+  const [plan, setPlan] = useState<ExperimentPlan | null>(null);
+  const [expanded, setExpanded] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      void getExperimentPlan()
+        .then((res) => {
+          if (!cancelled) setPlan(res);
+        })
+        .catch(() => {
+          /* نبودِ برنامه نباید بقیه‌ی صفحه را بشکند */
+        });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (!plan || !plan.available || !plan.cells?.length) return null;
+
+  const next = plan.next_experiment ?? null;
+  const unsettled = plan.cells.filter((c) => !c.settled);
+
+  return (
+    <div className="mb-4 rounded-xl border p-3" style={{ borderColor: "var(--border)" }}>
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <span className="inline-flex items-center gap-1 font-medium">
+          <Target size={14} /> آزمایش بعدی
+        </span>
+        <span className="text-xs tnum" style={{ color: "var(--muted)" }}>
+          {toFa(String(plan.total_unmeasured_contacts ?? 0))} فرصتِ تماس بدون شاهد
+        </span>
+      </div>
+
+      {next ? (
+        <Alert tone="info">
+          <div className="space-y-1">
+            <div className="font-medium">
+              {next.kind} — {next.lifecycle_state}
+            </div>
+            <div className="tnum">{toFa(next.note_fa)}</div>
+            <div className="text-xs opacity-80">
+              پایه‌ی محاسبه: {next.baseline_source_fa}
+            </div>
+          </div>
+        </Alert>
+      ) : (
+        <Alert tone="warn">
+          هیچ گروهی با تعداد مشتریانِ فعلی، آزمایشِ معناداری نمی‌دهد. یا باید اثرِ
+          هدف را بزرگ‌تر گرفت، یا صبر کرد تا فرصت‌های بیشتری جمع شود.
+        </Alert>
+      )}
+
+      {plan.method_note_fa && (
+        <p className="mt-2 text-xs" style={{ color: "var(--muted)" }}>
+          {plan.method_note_fa}
+        </p>
+      )}
+
+      {unsettled.length > 1 && (
+        <>
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            className="mt-2 text-xs underline"
+            style={{ color: "var(--muted)" }}
+          >
+            {expanded ? "بستن فهرست گروه‌ها" : `همه‌ی ${toFa(String(unsettled.length))} گروهِ بی‌شاهد`}
+          </button>
+          {expanded && (
+            <div className="mt-2 overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr style={{ color: "var(--muted)" }}>
+                    <th className="p-1.5 text-right">گروه</th>
+                    <th className="p-1.5 text-right">وضعیت</th>
+                    <th className="p-1.5 text-right">در دسترس</th>
+                    <th className="p-1.5 text-right">نیاز</th>
+                    <th className="p-1.5 text-right">اثرِ دیدنی الان</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {unsettled.map((c) => (
+                    <tr key={`${c.kind}|${c.lifecycle_state}`} className="border-t"
+                        style={{ borderColor: "var(--border)" }}>
+                      <td className="p-1.5">
+                        {c.kind} — {c.lifecycle_state}
+                      </td>
+                      <td className="p-1.5">
+                        <Badge tone={c.feasible_now ? "green" : "gray"}>
+                          {c.feasible_now ? "آزمایش‌شدنی" : c.status_label_fa}
+                        </Badge>
+                      </td>
+                      <td className="p-1.5 tnum">{toFa(String(c.available))}</td>
+                      <td className="p-1.5 tnum">
+                        {c.required_total == null ? "—" : toFa(String(c.required_total))}
+                      </td>
+                      <td className="p-1.5 tnum">
+                        {c.detectable_now == null
+                          ? "—"
+                          : `${toFa((c.detectable_now * 100).toFixed(1))}٪`}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 function LearnedUplift() {
   const [data, setData] = useState<UpliftTable | null>(null);
 
@@ -418,6 +540,29 @@ function CampaignDetailView({
               ? " — چون صفر داخل بازه است، اثر اثبات‌نشده می‌ماند."
               : ""}
           </p>
+        )}
+
+        {/*
+          قدرت تفکیک. این عدد از قبل در پاسخ API بود ولی هیچ‌جا نمایش داده
+          نمی‌شد، و بدون آن «شواهد کافی نیست» مبهم است: معلوم نمی‌شود اثر وجود
+          ندارد یا گروه برای دیدنش کوچک بوده.
+        */}
+        {r.power_note_fa && (
+          <div className="mt-3">
+            <Alert tone="info">
+              <div className="space-y-1">
+                <div className="font-medium">قدرت تفکیک این کمپین</div>
+                <div className="tnum">{toFa(r.power_note_fa)}</div>
+                {r.detectable_effect != null && !r.is_causal && (
+                  <div className="text-xs opacity-80">
+                    یعنی «شواهد کافی نیست» به این معنا نیست که اثری نبوده — ممکن است
+                    اثر واقعی از {pct(r.detectable_effect)} کوچک‌تر باشد و این کمپین
+                    نمی‌توانسته آن را ببیند.
+                  </div>
+                )}
+              </div>
+            </Alert>
+          </div>
         )}
       </Card>
 

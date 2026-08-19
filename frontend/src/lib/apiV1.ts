@@ -338,7 +338,63 @@ export type CampaignReport = {
   incremental_revenue: Money;
   incremental_revenue_ci: [number, number] | null;
   blocked_metrics: Record<string, string>;
+  /**
+   * کوچک‌ترین اثری که با **این** اندازه‌ی گروه‌ها دیدنی بود. بدون این عدد،
+   * «شواهد کافی نیست» مبهم است.
+   */
+  detectable_effect: number | null;
+  power_note_fa: string | null;
 };
+
+/** یک سطر از برنامه‌ی آزمایش: یک گروه، و اینکه چه می‌دانیم و چه لازم داریم. */
+export type ExperimentCell = {
+  kind: string;
+  lifecycle_state: string;
+  status: "proven" | "useless" | "inconclusive" | "thin" | "no_data";
+  status_label_fa: string;
+  settled: boolean;
+  available: number;
+  n_treatment: number;
+  n_control: number;
+  measured_uplift: number | null;
+  ci: [number, number] | null;
+  baseline_rate: number;
+  baseline_source: "cell_control" | "global_control" | "assumed";
+  baseline_source_fa: string;
+  target_effect: number;
+  holdout_pct: number;
+  required_total: number | null;
+  detectable_now: number | null;
+  feasible_now: boolean;
+  unmeasured_contacts: number;
+  note_fa: string;
+};
+
+export type ExperimentPlan = {
+  available: boolean;
+  target_effect?: number;
+  holdout_pct?: number;
+  /** واحد «فرصتِ تماس» است نه «نفر» — یک مشتری می‌تواند در دو گروه باشد. */
+  total_unmeasured_contacts?: number;
+  next_experiment?: ExperimentCell | null;
+  cells?: ExperimentCell[];
+  method_note_fa?: string;
+  holdout_note_fa?: string;
+  note_fa?: string;
+};
+
+export async function getExperimentPlan(params: {
+  targetEffect?: number;
+  holdoutPct?: number;
+} = {}): Promise<ExperimentPlan> {
+  const query = new URLSearchParams();
+  if (params.targetEffect != null) query.set("target_effect", String(params.targetEffect));
+  if (params.holdoutPct != null) query.set("holdout_pct", String(params.holdoutPct));
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  return handle(
+    await fetch(`${BASE}/api/v1/experiment-plan${suffix}`, { cache: "no-store" }),
+  );
+}
 
 export type CampaignMemberRow = {
   customer_id: number;

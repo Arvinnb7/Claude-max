@@ -150,3 +150,17 @@
 پس dedupe هفت‌روزه‌ی `run_cycle_scan` و تستش دست‌نخورده‌اند.
 
 `analysis/actions.py` همچنان **صفر تغییر** دارد.
+
+## افزوده‌های فاز ۵ (گام دوم) — طراح آزمایش
+
+| افزوده | اثر روی رفتار موجود |
+|---|---|
+| `experiments/design.py` (تابع خالص) | ماژول تازه؛ هیچ مسیر موجودی صدایش نمی‌زند |
+| `experiments/plan.py` | فقط **می‌خواند**؛ هیچ جدولی نمی‌نویسد و هیچ مهاجرتی لازم نداشت |
+| `achievable_effect` در `campaigns/analysis.py` | تابع تازه‌ی افزودنی؛ `required_control_size` و `minimum_detectable_effect` دست‌نخورده |
+| `GET /api/v1/experiment-plan` | مسیر تازه |
+| `detectable_effect` و `power_note_fa` در UI | این دو کلید **از قبل** در پاسخ API بودند و فقط نمایش داده نشدند؛ هیچ کلیدی به API اضافه نشد |
+| بخش «آزمایش بعدی» در تب اثر کمپین‌ها | افزوده‌ی UI؛ اگر برنامه خالی باشد اصلاً رندر نمی‌شود |
+
+هیچ جدول تازه‌ای ساخته نشد و `CANONICAL_SCHEMA_VERSION` در **۶** ماند.
+`analysis/actions.py` همچنان **صفر تغییر** دارد.

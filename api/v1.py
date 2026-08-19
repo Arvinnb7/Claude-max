@@ -781,6 +781,51 @@ def revoke_customer_opt_out(customer_id: int, scope: str = Query("all")) -> dict
     }
 
 
+@router.get("/experiment-plan")
+def experiment_plan(
+    target_effect: float = Query(0.05, gt=0.0, lt=1.0),
+    holdout_pct: int = Query(20, ge=5, le=50),
+) -> dict:
+    """کمپین بعدی را روی چه گروهی، و با چه اندازه‌ای؟
+
+    جدولِ اثر (فاز ۴) منتظر است: تا کمپینی اجرا نشود چیزی یاد نمی‌گیرد. و
+    کمپین‌ها به‌ترتیبِ اتفاق ساخته می‌شوند، نه به‌ترتیبِ آنچه نمی‌دانیم. این
+    پاسخ ترتیب را برمی‌گرداند: گروه‌ها به‌ترتیبِ **تماسِ اندازه‌گیری‌نشده** —
+    یعنی جایی که بیشترین پیام فرستاده می‌شود و کم‌ترین شواهد پشتش است.
+    """
+    ensure_schema()
+    try:
+        from mktcore.experiments import build_experiment_plan
+
+        plan = build_experiment_plan(
+            target_effect=target_effect, holdout_pct=holdout_pct,
+        )
+    except Exception:  # noqa: BLE001 - نبودِ برنامه نباید API را بشکند
+        logger.exception("ساخت برنامه‌ی آزمایش ناموفق بود")
+        return {
+            "available": False,
+            "note_fa": "ساخت برنامه‌ی آزمایش ناموفق بود؛ بقیه‌ی سیستم مثل قبل کار می‌کند.",
+        }
+
+    payload = plan.to_dict()
+    payload["method_note_fa"] = (
+        "اولویت بر پایه‌ی «تماسِ اندازه‌گیری‌نشده» است: فرصت‌های تماس در گروهی "
+        "که شواهدش قطعی نیست. گروهی که اثرش (یا بی‌فایدگی‌اش) اثبات شده، دوباره "
+        "پیشنهاد نمی‌شود. واحدِ شمارش «فرصتِ تماس» است نه «نفر»: یک مشتری می‌تواند "
+        "در دو نوع اقدام حاضر باشد و آن دو تماسِ جداست."
+    )
+    payload["holdout_note_fa"] = (
+        "گروه کنترل ۲۰٪ پیشنهاد می‌شود چون آماری کاراتر از ۱۰٪ است: برای همان "
+        "قدرت تفکیک، کل کمپین حدود نصف می‌شود."
+    )
+    if not payload.get("cells"):
+        payload["note_fa"] = (
+            "هنوز فرصت بازی در صندوق نیست تا برنامه‌ی آزمایش ساخته شود. "
+            "اول یک فایل فروش را تحلیل کنید."
+        )
+    return payload
+
+
 @router.get("/opportunity-quality")
 def opportunity_quality() -> dict:
     """کیفیت مولدها از دید اپراتور — کدام مولد بیشتر رد می‌شود و چرا.
