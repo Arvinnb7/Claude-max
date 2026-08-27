@@ -390,7 +390,10 @@ function CampaignForm({
   onCreated: (message: string) => void;
 }) {
   const [name, setName] = useState("");
-  const [holdout, setHoldout] = useState(10);
+  // ۲۰٪ پیشنهاد می‌شود چون آماری کاراتر از ۱۰٪ است: برای همان قدرت تفکیک،
+  // کل کمپین حدود نصف می‌شود. تا پیش از این، این فرم ۱۰٪ را «پیشنهاد»
+  // برچسب می‌زد در حالی که طراح آزمایش ۲۰٪ را توصیه می‌کرد.
+  const [holdout, setHoldout] = useState(20);
   const [windowDays, setWindowDays] = useState(30);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -449,8 +452,8 @@ function CampaignForm({
             value={holdout}
             onChange={(e) => setHoldout(Number(e.target.value))}
           >
-            <option value={10}>۱۰٪ (پیشنهاد)</option>
-            <option value={20}>۲۰٪</option>
+            <option value={20}>۲۰٪ (پیشنهاد)</option>
+            <option value={10}>۱۰٪</option>
             <option value={0}>بدون گروه کنترل</option>
           </select>
         </label>
@@ -480,7 +483,11 @@ function CampaignForm({
       <p className="mt-2 text-xs" style={{ color: "var(--muted)" }}>
         {holdout === 0
           ? "بدون گروه کنترل، فقط می‌شود گفت چه اتفاقی افتاد — نه اینکه به‌خاطر تماس شما بوده است."
-          : `${toFa(String(holdout))}٪ از مخاطبان عمداً تماس نمی‌گیرند تا اثر واقعی تماس قابل اندازه‌گیری باشد.`}
+          : `${toFa(String(holdout))}٪ از مخاطبان عمداً تماس نمی‌گیرند تا اثر واقعی تماس قابل اندازه‌گیری باشد.${
+              holdout === 20
+                ? " گروه کنترل بزرگ‌تر آماری کاراتر است: برای دیدن همان اثر، کل کمپین کوچک‌تر می‌شود."
+                : ""
+            }`}
       </p>
     </div>
   );

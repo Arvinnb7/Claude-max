@@ -362,6 +362,13 @@ export type CampaignSendResult = {
   "هزینه": Money;
   "مسدودشده": number;
   "دلایل_مسدودی": { "دلیل": string; "تعداد": number }[];
+  "نمونه_پیام": {
+    "مشتری": number;
+    "گیرنده": string;
+    "متن": string;
+    "قطعه": number;
+  }[];
+  "بدون_متن": number;
   "یادداشت_هزینه": string;
   "توضیح"?: string;
   "یادداشت_مجوز_تماس"?: string;

@@ -31,6 +31,7 @@ import {
   type ExperimentPlan,
   type UpliftTable,
 } from "@/lib/apiV1";
+import { getHealth } from "@/lib/api";
 import { toFa } from "@/lib/format";
 
 import { Alert, Badge, Button, Card, SectionTitle, Spinner, StatCard } from "./ui";
@@ -227,6 +228,27 @@ function SendPanel({ campaignId }: { campaignId: number }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
+  const [template, setTemplate] = useState("");
+  const [smsEnabled, setSmsEnabled] = useState<boolean | null>(null);
+
+  // وضعیت پنل را **قبل** از کلیک بگو، نه بعدش. تا پیش از این، کاربر تازه بعد از
+  // «تأیید می‌کنم، بفرست» می‌فهمید که پنل اصلاً روشن نیست.
+  useEffect(() => {
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      void getHealth()
+        .then((h) => {
+          if (!cancelled) setSmsEnabled(Boolean(h.sms_enabled));
+        })
+        .catch(() => {
+          /* نبودِ وضعیت نباید پنل را بشکند */
+        });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function run(real: boolean) {
     setBusy(true);
@@ -235,6 +257,7 @@ function SendPanel({ campaignId }: { campaignId: number }) {
       const res = await sendCampaignSms(campaignId, {
         dry_run: !real,
         confirm: real,
+        ...(template.trim() ? { template: template.trim() } : {}),
       });
       setResult(res.send);
       if (real) setConfirming(false);
@@ -274,10 +297,37 @@ function SendPanel({ campaignId }: { campaignId: number }) {
         </div>
       </div>
 
+      {smsEnabled === false && (
+        <div className="mb-2">
+          <Alert tone="warn">
+            پنل پیامکی روشن نیست؛ فقط برآورد ممکن است. برای ارسال واقعی
+            <span className="tnum"> MKT_SMS_ENABLE=1 </span>
+            و کلید پنل را در تنظیمات سرور بگذارید و سرویس را دوباره راه‌اندازی کنید.
+          </Alert>
+        </div>
+      )}
+
+      <label className="mb-2 flex flex-col gap-1">
+        <span className="text-xs" style={{ color: "var(--muted)" }}>
+          متن پیام (اختیاری) — خالی یعنی متنِ پیشنهادیِ خودِ هر فرصت.
+          {" "}
+          <span className="tnum">{"{نام}"}</span> جای نام مشتری می‌نشیند.
+        </span>
+        <textarea
+          value={template}
+          onChange={(e) => setTemplate(e.target.value)}
+          rows={2}
+          maxLength={1000}
+          placeholder="مثلاً: سلام {نام}، پیشنهاد این هفته برای شما آماده است."
+          className="rounded-lg border border-gray-300 px-3 py-2 text-sm
+            dark:border-gray-600 dark:bg-gray-900"
+        />
+      </label>
+
       {!result && !error && (
         <p className="text-xs" style={{ color: "var(--muted)" }}>
-          اول برآورد بگیرید تا تعداد پیام و هزینه معلوم شود؛ ارسال واقعی بعد از آن
-          فعال می‌شود.
+          اول برآورد بگیرید تا متن، تعداد پیام و هزینه معلوم شود؛ ارسال واقعی بعد از
+          آن فعال می‌شود.
         </p>
       )}
 
@@ -298,6 +348,35 @@ function SendPanel({ campaignId }: { campaignId: number }) {
           <p className="text-xs tnum" style={{ color: "var(--muted)" }}>
             {toFa(result["یادداشت_هزینه"])}
           </p>
+
+          {result["نمونه_پیام"]?.length > 0 && (
+            <div className="rounded-lg border p-2" style={{ borderColor: "var(--border)" }}>
+              <div className="mb-1 text-xs font-medium">
+                نمونه‌ی آنچه فرستاده می‌شود
+              </div>
+              <ul className="space-y-1 text-xs">
+                {result["نمونه_پیام"].map((row) => (
+                  <li key={row["مشتری"]} className="flex flex-wrap gap-2">
+                    <span className="tnum" style={{ color: "var(--muted)" }}>
+                      {toFa(row["گیرنده"])}
+                    </span>
+                    <span className="flex-1">{row["متن"] || "— بدون متن —"}</span>
+                    <span className="tnum" style={{ color: "var(--muted)" }}>
+                      {toFa(String(row["قطعه"]))} قطعه
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {result["بدون_متن"] > 0 && (
+            <Alert tone="warn">
+              {toFa(String(result["بدون_متن"]))} فرصت متنِ آماده ندارد و ارسال نشد.
+              متنِ راهنمای تیم فروش برای مشتری فرستاده نمی‌شود؛ برای این گروه قالب
+              پیام بدهید.
+            </Alert>
+          )}
           {result["حالت_آزمایشی"] && (
             <Alert tone="info">
               این فقط برآورد بود؛ هیچ پیامی ارسال نشد و لحظه‌ی تماس هم ثبت نشده است.

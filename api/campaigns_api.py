@@ -44,7 +44,7 @@ from mktcore.db.models import (
 from mktcore.execution import send_campaign
 from mktcore.execution.audience import RenderedMessage, render_template
 from mktcore.execution.cost import cost_note_fa, message_cost_rial, segment_count
-from mktcore.identity import normalize_phone
+from mktcore.identity import mask_phone, normalize_phone
 from mktcore.lifecycle import STATE_LABELS_FA
 from mktcore.money import money_payload
 from mktcore.security import require_token
@@ -580,6 +580,18 @@ def send_campaign_sms(campaign_id: int, req: SendCampaignRequest) -> dict:
         "هزینه": money,
         **screened.to_dict(),
     }
+    # پیش‌نمایشِ متن: تا پیش از این، `SendResult.details` متن را داشت ولی هیچ‌وقت
+    # به فرانت نمی‌رسید، پس کاربر تا لحظه‌ی ارسالِ واقعی نمی‌دید چه می‌فرستد.
+    # شماره ماسک می‌شود؛ نمونه‌ی محدود چون هدف بازبینی است نه فهرست کامل.
+    payload["send"]["نمونه_پیام"] = [
+        {
+            "مشتری": d["customer_id"],
+            "گیرنده": mask_phone(d["phone"]) if d["phone"] else "—",
+            "متن": d["text"],
+            "قطعه": segment_count(d["text"]) if d["text"] else 0,
+        }
+        for d in drafts[:5]
+    ]
     payload["send"]["یادداشت_هزینه"] = cost_note_fa(
         sent, total_segments, total_cost, display_text=money["display_text"],
     )

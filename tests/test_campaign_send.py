@@ -618,3 +618,45 @@ def test_successful_send_records_the_provider_message_id(analyzed, monkeypatch):
         ).all()
     assert rows
     assert all(row.provider_message_id for row in rows)
+
+
+# ═════════════════════════════════ پیش‌نمایش متن پیش از ارسال
+def test_dry_run_returns_a_message_preview(analyzed):
+    """کاربر باید **پیش از** ارسال ببیند چه می‌فرستد.
+
+    داده‌اش از قبل در `SendResult.details` بود ولی هیچ‌وقت به فرانت نمی‌رسید.
+    """
+    campaign_id = _new_campaign("پیش‌نمایش")
+    r = client.post(f"/api/v1/campaigns/{campaign_id}/send", json={
+        "template": "سلام {نام}، پیشنهاد این هفته آماده است.", "dry_run": True,
+    })
+    assert r.status_code == 200, r.text
+    preview = r.json()["send"]["نمونه_پیام"]
+    assert preview, "پیش‌نمایش نباید خالی باشد"
+    assert all("متن" in row and "قطعه" in row for row in preview)
+    assert any("پیشنهاد این هفته" in row["متن"] for row in preview)
+
+
+def test_preview_masks_phone_numbers(analyzed):
+    """پیش‌نمایش نباید شماره‌ی کامل را روی صفحه بریزد."""
+    campaign_id = _new_campaign("ماسک شماره")
+    r = client.post(f"/api/v1/campaigns/{campaign_id}/send", json={
+        "template": "سلام {نام}", "dry_run": True,
+    })
+    for row in r.json()["send"]["نمونه_پیام"]:
+        receiver = row["گیرنده"]
+        assert receiver == "—" or "*" in receiver, f"شماره ماسک نشده: {receiver}"
+
+
+def test_preview_reports_segment_count_per_message(analyzed):
+    """هزینه‌ی کل بعد از ارسال دیر است؛ قطعه‌ی هر پیام باید قبلش معلوم باشد."""
+    long_text = "سلام {نام}، " + "پیشنهاد ویژه‌ی این هفته را از دست ندهید. " * 4
+    campaign_id = _new_campaign("چند قطعه")
+    r = client.post(f"/api/v1/campaigns/{campaign_id}/send", json={
+        "template": long_text, "dry_run": True,
+    })
+    preview = r.json()["send"]["نمونه_پیام"]
+    assert preview
+    assert any(row["قطعه"] > 1 for row in preview), (
+        "پیام بلند باید بیش از یک قطعه گزارش شود"
+    )
