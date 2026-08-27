@@ -24,7 +24,11 @@ from sqlalchemy import func, select
 
 from mktcore.db.base import now_ts
 from mktcore.db.engine import session_scope, write_lock
-from mktcore.db.lookup import customer_ids_by_raw_key, product_ids_by_raw_name
+from mktcore.db.lookup import (
+    customer_ids_by_raw_key,
+    product_ids_by_raw_name,
+    resolve_business_id,
+)
 from mktcore.db.migrations import ensure_schema
 from mktcore.db.models import (
     Business,
@@ -245,7 +249,8 @@ def run_opportunity_engine(
                 skipped[note.code] = skipped.get(note.code, 0) + 1
 
     with write_lock, session_scope(db_path) as session:
-        business = session.scalar(select(Business).where(Business.slug == business_slug))
+        business_id = resolve_business_id(session, business_slug)
+        business = session.get(Business, business_id) if business_id else None
         if business is None:
             logger.warning("کسب‌وکار «%s» وجود ندارد؛ موتور فرصت‌ها اجرا نشد.", business_slug)
             return None
@@ -333,9 +338,7 @@ def _lifecycle_by_customer_key(
         return {}
     try:
         with session_scope(db_path) as session:
-            business_id = session.scalar(
-                select(Business.id).where(Business.slug == business_slug)
-            )
+            business_id = resolve_business_id(session, business_slug)
             if business_id is None:
                 return {}
             id_of = customer_ids_by_raw_key(session, business_id, keys)

@@ -29,9 +29,9 @@ from mktcore.config import get_settings
 from mktcore.contact.register import build_gate
 from mktcore.db.base import now_ts
 from mktcore.db.engine import session_scope, write_lock
+from mktcore.db.lookup import active_business_id
 from mktcore.db.migrations import ensure_schema
 from mktcore.db.models import (
-    Business,
     Campaign,
     CampaignMember,
     CampaignOpportunity,
@@ -71,7 +71,8 @@ class CreateCampaignRequest(BaseModel):
 
 
 def _business_id(session) -> int | None:
-    return session.scalar(select(Business.id).where(Business.slug == "default"))
+    """همان کسب‌وکارِ فعالِ خواندن — کمپین باید روی داده‌ای بسته شود که کاربر می‌بیند."""
+    return active_business_id(session)
 
 
 def _no_ledger() -> dict:

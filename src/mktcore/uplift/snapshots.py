@@ -19,9 +19,9 @@ from sqlalchemy import func, insert, select
 
 from mktcore.db.base import now_ts
 from mktcore.db.engine import session_scope, write_lock
+from mktcore.db.lookup import resolve_business_id
 from mktcore.db.migrations import ensure_schema
 from mktcore.db.models import (
-    Business,
     Campaign,
     CampaignMember,
     CampaignOpportunity,
@@ -168,9 +168,7 @@ def build_uplift_table(
     """ساخت جدول اثر از داده‌ی موجود (بدون ذخیره)."""
     ensure_schema(db_path)
     with session_scope(db_path) as session:
-        business_id = session.scalar(
-            select(Business.id).where(Business.slug == business_slug)
-        )
+        business_id = resolve_business_id(session, business_slug)
         if business_id is None:
             return UpliftTable()
         observations = collect_observations(session, business_id)
@@ -196,9 +194,7 @@ def save_snapshot(
     stamp = as_of or pd.Timestamp.now().date().isoformat()
 
     with write_lock, session_scope(db_path) as session:
-        business_id = session.scalar(
-            select(Business.id).where(Business.slug == business_slug)
-        )
+        business_id = resolve_business_id(session, business_slug)
         if business_id is None:
             return 0
 

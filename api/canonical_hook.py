@@ -38,6 +38,7 @@ def record_analysis(
     sheet_name: str = "",
     display_currency: str = "تومان",
     file_currency: str | None = None,
+    business_slug: str | None = None,
 ) -> dict | None:
     """نوشتن نتیجه‌ی همین تحلیل در دفتر کل. خطا → `None` + لاگ.
 
@@ -47,10 +48,12 @@ def record_analysis(
     if not canonical_enabled():
         return None
     try:
-        from mktcore.db.repo_import import write_import
+        from mktcore.db.repo_import import DEFAULT_BUSINESS_SLUG, write_import
 
+        slug = business_slug or DEFAULT_BUSINESS_SLUG
         result = write_import(
             clean,
+            business_slug=slug,
             dataset_key=dataset_key,
             session_id=session_id,
             filename=filename,
@@ -65,18 +68,23 @@ def record_analysis(
         payload["note_fa"] = (
             "این تحلیل در دفتر کل ثبت شد؛ مشتریان و کالاها بین بارگذاری‌ها به هم وصل می‌شوند."
         )
+        # همه‌ی گام‌های بعدی باید روی **همان** کسب‌وکار بنشینند، وگرنه ویژگی و
+        # فرصتِ داده‌ی نمونه در کسب‌وکار واقعی نوشته می‌شود و جداسازی بی‌اثر است.
         payload["features_written"] = _record_features(
-            clean, bundle, display_currency=display_currency,
+            clean, bundle, display_currency=display_currency, business_slug=slug,
         )
         payload["opportunities"] = _run_opportunities(
-            clean, bundle, session_id=session_id, display_currency=display_currency,
+            clean, bundle, session_id=session_id,
+            display_currency=display_currency, business_slug=slug,
         )
         # حلقه بسته می‌شود: خرید‌های تازه‌ای که همین حالا وارد دفتر شدند، ممکن
         # است نتیجه‌ی کمپین‌های قبلی باشند.
-        payload["campaign_outcomes"] = _refresh_campaign_outcomes(result.batch_id)
+        payload["campaign_outcomes"] = _refresh_campaign_outcomes(
+            result.batch_id, business_slug=slug,
+        )
         # حلقه کامل می‌شود: نتیجه‌های تازه، جدولِ اثر را به‌روز می‌کنند و
         # رتبه‌بندیِ اجرای بعدی از آن تغذیه می‌کند.
-        payload["uplift"] = _refresh_uplift()
+        payload["uplift"] = _refresh_uplift(business_slug=slug)
         return payload
     except Exception:  # noqa: BLE001 - جداسازی عمدی: تحلیل نباید قربانی دفتر کل شود
         logger.exception("ثبت در دفتر کل canonical ناموفق بود (نشست %s)", session_id)
@@ -89,12 +97,16 @@ def record_analysis(
         }
 
 
-def _record_features(clean: pd.DataFrame, bundle: Any, *, display_currency: str) -> int:
+def _record_features(clean: pd.DataFrame, bundle: Any, *, display_currency: str,
+                     business_slug: str = "default") -> int:
     """عکس ویژگی مشتری. شکستش نباید ثبتِ موفقِ دفتر کل را باطل کند."""
     try:
         from mktcore.db.repo_features import write_customer_features
 
-        return write_customer_features(clean, bundle, display_currency=display_currency)
+        return write_customer_features(
+            clean, bundle, display_currency=display_currency,
+            business_slug=business_slug,
+        )
     except Exception:  # noqa: BLE001 - همان جداسازی، یک لایه پایین‌تر
         logger.exception("نوشتن عکس ویژگی مشتری ناموفق بود")
         return 0
@@ -102,6 +114,7 @@ def _record_features(clean: pd.DataFrame, bundle: Any, *, display_currency: str)
 
 def _run_opportunities(
     clean: pd.DataFrame, bundle: Any, *, session_id: str | None, display_currency: str,
+    business_slug: str = "default",
 ) -> dict | None:
     """اجرای موتور فرصت‌ها. مثل بقیه‌ی این پل، شکستش کسی را نمی‌کُشد."""
     try:
@@ -109,6 +122,7 @@ def _run_opportunities(
 
         result = run_opportunity_engine(
             bundle, clean, session_id=session_id, display_currency=display_currency,
+            business_slug=business_slug,
         )
         return result.to_dict() if result else None
     except Exception:  # noqa: BLE001 - همان جداسازی
@@ -116,23 +130,25 @@ def _run_opportunities(
         return None
 
 
-def _refresh_campaign_outcomes(batch_id: int | None) -> dict | None:
+def _refresh_campaign_outcomes(
+    batch_id: int | None, *, business_slug: str = "default",
+) -> dict | None:
     """به‌روزرسانی نتیجه‌ی کمپین‌های در جریان. مثل بقیه‌ی این پل، بی‌صدا شکست می‌خورد."""
     try:
         from mktcore.campaigns import compute_campaign_outcomes
 
-        return compute_campaign_outcomes(batch_id=batch_id)
+        return compute_campaign_outcomes(batch_id=batch_id, business_slug=business_slug)
     except Exception:  # noqa: BLE001 - همان جداسازی
         logger.exception("به‌روزرسانی نتیجه‌ی کمپین‌ها ناموفق بود")
         return None
 
 
-def _refresh_uplift() -> dict | None:
+def _refresh_uplift(*, business_slug: str = "default") -> dict | None:
     """به‌روزرسانی جدولِ اثر آموخته‌شده + ذخیره‌ی عکسش."""
     try:
         from mktcore.uplift import refresh_uplift
 
-        return refresh_uplift()
+        return refresh_uplift(business_slug=business_slug)
     except Exception:  # noqa: BLE001 - همان جداسازی
         logger.exception("به‌روزرسانی جدول اثر ناموفق بود")
         return None

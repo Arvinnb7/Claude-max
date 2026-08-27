@@ -24,7 +24,7 @@ from mktcore.money import to_basis_points, to_rial_int
 
 from .base import now_ts
 from .engine import session_scope, write_lock
-from .lookup import customer_ids_by_raw_key
+from .lookup import customer_ids_by_raw_key, resolve_business_id
 from .migrations import ensure_schema
 from .models import Business, CustomerFeature, CustomerLifecycleEvent
 
@@ -138,7 +138,8 @@ def write_customer_features(
     reference = pd.Timestamp(clean["date"].max())
 
     with write_lock, session_scope(db_path) as session:
-        business = session.scalar(select(Business).where(Business.slug == business_slug))
+        business_id = resolve_business_id(session, business_slug)
+        business = session.get(Business, business_id) if business_id else None
         if business is None:
             logger.warning("کسب‌وکار «%s» وجود ندارد؛ عکس ویژگی نوشته نشد.", business_slug)
             return 0

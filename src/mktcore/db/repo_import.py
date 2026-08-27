@@ -56,6 +56,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger("mktcore.db.repo_import")
 
 DEFAULT_BUSINESS_SLUG = "default"
+# داده‌ی نمونه در کسب‌وکارِ جدا می‌نشیند، وگرنه مشتریانِ مصنوعی برای همیشه با
+# مشتریانِ واقعی در یک صندوق فرصت، یک جدول اثر و یک استخر کمپین قاطی می‌شوند —
+# و هیچ راهِ درون‌برنامه‌ای برای جداکردنشان وجود ندارد.
+SAMPLE_BUSINESS_SLUG = "sample"
 # اندازه‌ی تکه‌ی درج. بزرگ‌تر یعنی تراکنش طولانی‌تر و قفل بیشتر؛ کوچک‌تر یعنی
 # round-trip بیشتر. ۵۰۰۰ روی فایل‌های ۴۰۰ هزار ردیفی آزموده شده است.
 CHUNK = 5000
@@ -866,6 +870,7 @@ def write_import(
 
 __all__ = [
     "DEFAULT_BUSINESS_SLUG",
+    "SAMPLE_BUSINESS_SLUG",
     "ImportWriteResult",
     "ReconcileCheck",
     "frame_dataset_key",

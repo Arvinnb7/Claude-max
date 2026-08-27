@@ -33,6 +33,10 @@ from mktcore.connectors import ExcelCsvConnector  # noqa: E402
 from mktcore.contact.permission import DEFAULT_FATIGUE_WINDOW_DAYS  # noqa: E402
 from mktcore.contact.register import load_gate  # noqa: E402
 from mktcore.db.migrations import ensure_schema as ensure_canonical_schema  # noqa: E402
+from mktcore.db.repo_import import (  # noqa: E402
+    DEFAULT_BUSINESS_SLUG,
+    SAMPLE_BUSINESS_SLUG,
+)
 from mktcore.execution import build_audience, render_messages, send_campaign  # noqa: E402
 from mktcore.execution.audience import AUDIENCE_KINDS  # noqa: E402
 from mktcore.ingest.cleaning import clean_frame, get_exclusions, get_returns  # noqa: E402
@@ -252,6 +256,10 @@ def sample() -> dict:
     payload = _columns_payload(df)
     payload["session_id"] = sid
     payload["sheets"] = ["نمونه"]
+    # نشانِ «این داده مصنوعی است» تا دفتر کل آن را در کسب‌وکارِ جدا بنویسد.
+    # بدون این، مشتریانِ نمونه برای همیشه با مشتریانِ واقعی قاطی می‌شدند و هیچ
+    # راهِ درون‌برنامه‌ای برای جداکردنشان نبود.
+    payload["is_sample"] = True
     store.set_columns_payload(sid, payload)
     return payload
 
@@ -377,6 +385,9 @@ def analyze(req: AnalyzeRequest) -> dict:
         progress(94, "ثبت در دفتر کل")
         canonical = record_analysis(
             clean, bundle,
+            business_slug=(
+                SAMPLE_BUSINESS_SLUG if cp.get("is_sample") else DEFAULT_BUSINESS_SLUG
+            ),
             session_id=sid,
             filename=store.get_session(sid).filename,
             dataset_key=cp.get("file_sha256"),

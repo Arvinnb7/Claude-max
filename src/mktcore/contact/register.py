@@ -25,9 +25,9 @@ from sqlalchemy import select
 
 from mktcore.db.base import now_ts
 from mktcore.db.engine import session_scope, write_lock
+from mktcore.db.lookup import resolve_business_id
 from mktcore.db.migrations import ensure_schema
 from mktcore.db.models import (
-    Business,
     Campaign,
     CampaignMember,
     ContactSuppression,
@@ -52,7 +52,7 @@ _OPEN_CAMPAIGN_STATES_EXCLUDED = ("closed",)
 
 
 def _business_id(session: Session, business_slug: str) -> int | None:
-    return session.scalar(select(Business.id).where(Business.slug == business_slug))
+    return resolve_business_id(session, business_slug)
 
 
 def _expand_identifiers(session: Session, customer_ids: set[int]) -> set[str]:

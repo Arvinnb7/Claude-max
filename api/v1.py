@@ -27,6 +27,7 @@ from sqlalchemy import func, or_, select
 
 from mktcore.config import get_settings
 from mktcore.db.engine import session_scope
+from mktcore.db.lookup import active_business_id
 from mktcore.db.migrations import ensure_schema
 from mktcore.db.models import (
     Business,
@@ -106,8 +107,11 @@ def _money(rial: int | None) -> dict:
     return money_payload(rial, _display_currency())
 
 
-def _business_id(session, slug: str = _DEFAULT_SLUG) -> int | None:
-    return session.scalar(select(Business.id).where(Business.slug == slug))
+def _business_id(session, slug: str | None = None) -> int | None:
+    """کسب‌وکارِ فعال. `slug` صریح فقط برای مواردی که واقعاً یک کسب‌وکار خاص لازم است."""
+    if slug is not None:
+        return session.scalar(select(Business.id).where(Business.slug == slug))
+    return active_business_id(session, fallback_slug=_DEFAULT_SLUG)
 
 
 def _no_ledger_yet() -> dict:

@@ -21,8 +21,9 @@ from sqlalchemy import func, select
 
 from mktcore.contact.register import build_gate
 from mktcore.db.engine import session_scope
+from mktcore.db.lookup import resolve_business_id
 from mktcore.db.migrations import ensure_schema
-from mktcore.db.models import Business, CustomerFeature, Opportunity
+from mktcore.db.models import CustomerFeature, Opportunity
 
 from .design import (
     DEFAULT_HOLDOUT_PCT,
@@ -103,9 +104,7 @@ def build_experiment_plan(
     """نقطه‌ی ورود. جدولِ اثر اگر خوانده نشود `None` می‌ماند، نه اینکه خطا بدهد."""
     ensure_schema(db_path)
     with session_scope(db_path) as session:
-        business_id = session.scalar(
-            select(Business.id).where(Business.slug == business_slug)
-        )
+        business_id = resolve_business_id(session, business_slug)
         if business_id is None:
             return build_plan([], None, target_effect=target_effect,
                               holdout_pct=holdout_pct)
