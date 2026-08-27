@@ -712,6 +712,61 @@ function CampaignDetailView({
           />
         </div>
 
+        {/*
+          سود ناخالص افزوده. دو شرط دارد و هر دو باید صریح بمانند: اثر اثبات
+          شده باشد (وگرنه عدد روی نوفه بنا شده)، و پوششِ بها در هر دو بازو کامل
+          باشد (وگرنه سود بیشتر از واقع دیده می‌شود). دلیلِ نبودنش هیچ‌وقت
+          پنهان نمی‌ماند.
+        */}
+        <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+          <StatCard
+            label="سود ناخالص افزوده"
+            value={
+              r.is_causal && r.incremental_gross_profit
+                ? toFa(r.incremental_gross_profit.display_text)
+                : "—"
+            }
+            tone={
+              r.is_causal && r.incremental_gross_profit_rial != null
+                ? r.incremental_gross_profit_rial > 0
+                  ? "green"
+                  : "rose"
+                : undefined
+            }
+            icon={
+              r.is_causal && r.incremental_gross_profit_rial != null ? (
+                r.incremental_gross_profit_rial < 0 ? (
+                  <TrendingDown size={16} />
+                ) : (
+                  <TrendingUp size={16} />
+                )
+              ) : undefined
+            }
+            hint={
+              r.incremental_gross_profit_rial == null
+                ? "بدون پوششِ کاملِ بها، عددِ ناقص گزارش نمی‌شود"
+                : r.is_causal
+                  ? "درآمد افزوده منهای بهای تمام‌شده‌ی همان خرید"
+                  : "تا اثبات اثر، عدد ارائه نمی‌شود"
+            }
+          />
+          {t.profit_per_customer && c.profit_per_customer && (
+            <StatCard
+              label="سودِ سرانه (آزمایش / کنترل)"
+              value={`${toFa(t.profit_per_customer.display_text)} / ${toFa(
+                c.profit_per_customer.display_text,
+              )}`}
+              hint="به‌ازای هر عضو — پایه‌ی محاسبه‌ی سود افزوده"
+            />
+          )}
+        </div>
+
+        {r.gross_profit_note_fa && (
+          <p className="mt-2 text-xs" style={{ color: "var(--muted)" }}>
+            {toFa(r.gross_profit_note_fa)}
+          </p>
+        )}
+
         {r.lift_ci && (
           <p className="mt-3 text-xs tnum" style={{ color: "var(--muted)" }}>
             بازه‌ی اطمینان ۹۵٪ اثر: از {pct(r.lift_ci[0])} تا {pct(r.lift_ci[1])}

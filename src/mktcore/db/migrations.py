@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("mktcore.db.migrations")
 
 # نسخه‌ی جاری طرح‌واره‌ی canonical. با افزودن هر مهاجرت، یک عدد بالا می‌رود.
-CANONICAL_SCHEMA_VERSION = 7
+CANONICAL_SCHEMA_VERSION = 9
 
 _MIGRATION_TABLE = "schema_migrations"
 
@@ -136,6 +136,41 @@ def _migration_0007_create_campaign_sends(conn: Connection) -> None:
     Base.metadata.create_all(bind=conn, checkfirst=True)
 
 
+def _migration_0008_create_product_cost_history(conn: Connection) -> None:
+    """تاریخچه‌ی بهای کالا + ستون سود روی خط (سود ناخالص).
+
+    ستونِ تازه روی جدولِ موجود است، پس برخلاف مهاجرت‌های قبلی `create_all` تنها
+    کافی نیست و یک `ALTER TABLE` هم لازم است. با `checkfirst` روی ستون انجام
+    می‌شود تا اجرای دوباره بی‌خطر بماند.
+    """
+    from mktcore.db import models  # noqa: F401 - ثبت مدل‌ها در metadata
+
+    Base.metadata.create_all(bind=conn, checkfirst=True)
+
+    # `create_all` ستونِ تازه روی جدولِ **موجود** اضافه نمی‌کند، پس ستون‌های تازه
+    # صریحاً افزوده می‌شوند. روی نصبِ تازه این حلقه چیزی پیدا نمی‌کند و رد می‌شود.
+    added_columns = (
+        ("order_lines", "gross_profit_rial", "BIGINT"),
+        ("campaign_outcomes", "cost_rial", "BIGINT"),
+        ("campaign_outcomes", "lines_with_cost", "INTEGER DEFAULT 0"),
+    )
+    for table, column, ddl_type in added_columns:
+        existing = {
+            row[1] for row in conn.exec_driver_sql(f"PRAGMA table_info({table})")
+        }
+        if column not in existing:
+            conn.exec_driver_sql(
+                f"ALTER TABLE {table} ADD COLUMN {column} {ddl_type}"
+            )
+
+
+def _migration_0009_create_app_settings(conn: Connection) -> None:
+    """جدولِ تنظیمِ سیاست (کف حاشیه) — جدولِ تازه، پس `create_all` کافی است."""
+    from mktcore.db import models  # noqa: F401 - ثبت مدل‌ها در metadata
+
+    Base.metadata.create_all(bind=conn, checkfirst=True)
+
+
 _MIGRATIONS: tuple[tuple[int, str, Callable[[Connection], None]], ...] = (
     (1, "create_canonical_tables", _migration_0001_create_canonical_tables),
     (2, "create_opportunity_tables", _migration_0002_create_opportunity_tables),
@@ -144,6 +179,8 @@ _MIGRATIONS: tuple[tuple[int, str, Callable[[Connection], None]], ...] = (
     (5, "create_uplift_snapshots", _migration_0005_create_uplift_snapshots),
     (6, "create_contact_suppressions", _migration_0006_create_contact_suppressions),
     (7, "create_campaign_sends", _migration_0007_create_campaign_sends),
+    (8, "create_product_cost_history", _migration_0008_create_product_cost_history),
+    (9, "create_app_settings", _migration_0009_create_app_settings),
 )
 
 

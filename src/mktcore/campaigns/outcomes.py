@@ -147,6 +147,7 @@ def _outcome_rows(
         select(
             OrderLine.customer_id, OrderLine.line_date, OrderLine.order_id,
             OrderLine.product_id, OrderLine.revenue_rial, OrderLine.is_return,
+            OrderLine.cost_rial,
         ).where(
             OrderLine.customer_id.in_(sorted(by_customer)),
             OrderLine.line_date >= min(w[0] for w in windows.values()),
@@ -157,16 +158,24 @@ def _outcome_rows(
     buckets: dict[int, dict] = {
         customer_id: {
             "orders": set(), "loose_lines": 0, "lines": 0,
-            "revenue": 0, "matched": False,
+            "revenue": 0, "cost": 0, "lines_seen": 0, "lines_with_cost": 0,
+            "matched": False,
         }
         for customer_id in by_customer
     }
-    for customer_id, line_date, order_id, product_id, revenue, is_return in lines:
+    for (customer_id, line_date, order_id, product_id, revenue,
+         is_return, cost) in lines:
         window_start, window_end = windows[customer_id]
         if not (window_start <= line_date < window_end):
             continue
         bucket = buckets[customer_id]
         bucket["revenue"] += int(revenue or 0)
+        # بها با **همان** منطق خنثی‌سازیِ برگشتی جمع می‌شود که درآمد دارد:
+        # خط برگشتی هر دو را منفی دارد، پس اثرش خودبه‌خود خنثی می‌شود.
+        bucket["lines_seen"] += 1
+        if cost is not None:
+            bucket["cost"] += int(cost)
+            bucket["lines_with_cost"] += 1
         if is_return:
             continue  # برگشت درآمد را کم می‌کند ولی «خرید» شمرده نمی‌شود
         bucket["lines"] += 1
@@ -194,6 +203,17 @@ def _outcome_rows(
             "orders_count": orders,
             "lines_count": bucket["lines"],
             "revenue_rial": bucket["revenue"],
+            # پوشش ناقص ⇒ بها `None`. جمعِ ناقص، سود را بیشتر از واقع نشان
+            # می‌دهد (چون بهای بعضی خطوط حساب نشده) و هیچ نشانه‌ای هم ندارد.
+            # عضوی که در پنجره هیچ خریدی نکرده، بهایش **صفرِ قطعی** است نه
+            # «نامعلوم» — چیزی نخریده که بهایی داشته باشد. فقط خریدی که بهایش
+            # ثبت نشده، پوشش را ناقص می‌کند.
+            "cost_rial": (
+                bucket["cost"]
+                if bucket["lines_with_cost"] == bucket["lines_seen"]
+                else None
+            ),
+            "lines_with_cost": bucket["lines_with_cost"],
             "matched_product": bucket["matched"],
             "source_batch_id": batch_id,
             "computed_at": now_ts(),
@@ -237,6 +257,8 @@ def arm_stats(session: Session, campaign_id: int) -> dict[str, dict]:
             func.sum(func.iif(CampaignOutcome.orders_count > 0, 1, 0)),
             func.sum(CampaignOutcome.orders_count),
             func.sum(CampaignOutcome.revenue_rial),
+            func.sum(CampaignOutcome.cost_rial),
+            func.count(CampaignOutcome.cost_rial),
         ).where(CampaignOutcome.campaign_id == campaign_id)
         .group_by(CampaignOutcome.arm)
     ).all()
@@ -246,8 +268,15 @@ def arm_stats(session: Session, campaign_id: int) -> dict[str, dict]:
             "converters": int(converters or 0),
             "orders": int(orders or 0),
             "revenue_rial": int(revenue or 0),
+            # بها فقط وقتی جمع می‌شود که **همه‌ی** اعضای بازو بها داشته باشند.
+            # یک عضوِ بی‌بها یعنی جمعِ بها ناقص است و سود را بیشتر از واقع نشان
+            # می‌دهد — پس کلاً `None` می‌شود، نه یک عددِ نصفه.
+            "cost_rial": (
+                int(cost or 0) if int(with_cost or 0) == int(size or 0) and size
+                else None
+            ),
         }
-        for arm, size, converters, orders, revenue in rows
+        for arm, size, converters, orders, revenue, cost, with_cost in rows
     }
 
 

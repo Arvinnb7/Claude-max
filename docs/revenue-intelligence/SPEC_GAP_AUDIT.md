@@ -30,9 +30,9 @@
 | فاز | عنوان سند | ادعای قبلی من | واقعیت |
 |---|---|---|---|
 | ۰ | Audit and safety foundation | ✅ کامل | ✅ **کامل** — هر ۶ قلم |
-| ۱ | Canonical data and trustworthy Customer 360 | ✅ کامل | 🔶 **~۵۰٪** |
-| ۲ | Actionable deterministic opportunity engine | ✅ کامل | 🔶 **~۷۵٪** |
-| ۳ | Closed-loop campaigns and experiments | ✅ کامل | 🔶 **~۹۰٪ — دروازه‌ی پذیرش رد می‌شود** |
+| ۱ | Canonical data and trustworthy Customer 360 | ✅ کامل | 🔶 **~۶۰٪** — «margin/gross profit» بسته شد |
+| ۲ | Actionable deterministic opportunity engine | ✅ کامل | 🔶 **~۸۰٪** — `filter_margin_floor` از «همیشه skip» درآمد (۱۰ از ۱۱ فیلتر) |
+| ۳ | Closed-loop campaigns and experiments | ✅ کامل | ✅ **دروازه‌ی پذیرش پاس شد** — سود افزوده گزارش می‌شود (۱۰ از ۱۳ سنجه) |
 | ۴ | Predictive models | ✅ | ❌ **~۲۵٪** |
 | ۵ | Causal offer optimization and pricing | ❌ صفر | 🔶 **~۲۰٪** |
 | ۶ | Operational optimization | ❌ شروع نشده | 🔶 **~۲۰٪** |
@@ -72,8 +72,8 @@
 | identity and product resolution | `partial` | ترتیبِ قطعی (تلفن → کلید خام) هست؛ ولی `merged_into_customer_id`، تاریخچه‌ی ادغام و صف بازبینی **نیست**، و `confidence_bp` همه‌جا ۱۰۰۰۰ هاردکد است — یعنی «اطمینان» عملاً متغیر نیست |
 | returns | `done` | خطوط برگشتی با `is_return` ماندگارند — `test_returns_are_in_the_ledger_not_dropped` |
 | discounts | `done` | `discount_rial` / `discount_rate_bp` |
-| cost | `partial` | فقط اگر فایل ستون بها داشته باشد پر می‌شود؛ هیچ زنجیره‌ی استخراج COGS نیست |
-| **margin / gross profit** | `missing` | `gross_profit` و `line_cogs` در کل مخزن **صفر مورد**. حاشیه فقط به‌صورت گذرا در `analysis/kpis.py` حساب می‌شود و هرگز در دفتر کل نمی‌نشیند |
+| cost | `done` | ستون فایل فروش **یا** مسیر ورودِ جدا (`POST /api/v1/costs` → `product_cost_history`). انتساب بر پایه‌ی **تاریخ خط** با سه سطح اطمینان `from_file`/`history_exact`/`history_imputed` (§۳.۴) |
+| **margin / gross profit** | `done` | `order_lines.gross_profit_rial` در دفتر کل می‌نشیند (بها `NULL` ⇒ سود `NULL`، هرگز صفر). حاشیه‌ی هر کالا از همان‌جا: `costs/register.py::margin_lookup` — `test_gross_profit_loop.py` |
 | reconciliation | `done` | `ImportReconciliation`، کنترل‌های L01–L07 — `test_reconciliation_rows_are_persisted` |
 | Customer 360 feature snapshots | `partial` | `as_of_date` و `feature_version` هست؛ **watermark منبع** و **نسخه‌ی کد** (§۱۰.۴) نیست — ۲ از ۴ |
 | Immutable imports (`import_rows_raw` §۷.۱) | `missing` | ردیف خام هیچ‌جا ذخیره نمی‌شود |
@@ -84,7 +84,12 @@
 ### جدول‌های §۷.۱/§۷.۵ که اصلاً وجود ندارند
 
 `branches` · `source_systems` · `promotions` · `price_history` ·
-`supplier_cost_history` · `inventory_snapshots` — هر شش `missing`.
+`inventory_snapshots` — پنج‌تا `missing`.
+
+`supplier_cost_history` **جایگزین دارد**: `product_cost_history` ساخته شد و عمداً نامِ
+«supplier» نگرفت، چون بُعدِ تأمین‌کننده در داده وجود ندارد و نامی که آن را وعده
+بدهد گمراه‌کننده است. `supplier` و `quantity tier` و `freight` که §۷.۵ می‌خواهد
+همچنان `blocked_by_data`.
 
 نوع مانع: `branches` و `promotions` و `price_history` → **`blocked_by_data`**
 (داده‌شان در فایل فروش نیست). `source_systems` → **`my_judgement`** (با یک منبع،
@@ -107,7 +112,7 @@
 | Basket-building baseline (§۱۵) | `missing` | attach rate، ارزش افزوده‌ی سبد، تغییر سود، هزینه‌ی تخفیف بسته و کانیبالیزیشن — هیچ‌کدام. نوع مانع: بخشی `blocked_by_data` (سود لازم دارد) و بخشی `my_judgement` |
 | Expansion-gap baseline (§۱۷) | `done` | `analysis/expansion_gap.py` + مولد اختصاصی. ⚠️ سند «gross profit» می‌خواهد، ما **درآمد**محور ساخته‌ایم (در خود فایل مستند شده) |
 | Opportunity common contract (§۱۲) | `done` | `opportunities/contract.py` |
-| Filters (§۱۲ — ۱۱ مرحله) | `partial` | **۹ از ۱۱** فیلتر |
+| Filters (§۱۲ — ۱۱ مرحله) | `partial` | **۱۰ از ۱۱** فیلتر. `filter_margin_floor` که تا دیروز همیشه `skip` می‌داد حالا واقعاً کار می‌کند: حاشیه از دفتر کل، کف **از کاربر** (`PUT /api/v1/margin-floor`). بدون کفِ تعیین‌شده همچنان `skip` ثبت می‌شود — نبودِ تصمیمِ کاربر «قبول» نیست |
 | Conflict suppression · expiry · EV ranking | `done` | `filter_conflict`، `_expire_overdue`، مرتب‌سازی نزولی بر ارزش |
 | Opportunity Inbox + Customer 360 UI | `done` | `OpportunityInbox.tsx`، `Customer360.tsx` |
 
@@ -126,15 +131,26 @@
 | incremental analysis | `done` | `test_injected_lift_is_recovered_with_the_right_magnitude` |
 | exports/connectors | `done` | خروجی اکسل + ارسال مستقیم کاوه‌نگار |
 | operator feedback | `done` | **۷ دلیل رد** دقیقاً مطابق §۳۰ — `test_dismiss_reasons_are_a_closed_vocabulary` |
-| §۲۲.۲ — ۱۳ سنجه | `partial` | **۹ از ۱۳**. غایب: Delivered و Viewed/clicked (`blocked_by_data` — webhook پنل وصل نیست)، **Incremental gross profit** (`blocked_by_data` — ستون بها در `campaign_outcomes` نیست)، و Cost per incremental order فقط برای ارسالِ درون‌سیستمی کار می‌کند نه کمپینِ اکسلی |
+| §۲۲.۲ — ۱۳ سنجه | `partial` | **۱۰ از ۱۳**. غایب: Delivered و Viewed/clicked (`blocked_by_data` — webhook پنل وصل نیست)، و Cost per incremental order فقط برای ارسالِ درون‌سیستمی کار می‌کند نه کمپینِ اکسلی |
 
-### ⛔ دروازه‌ی پذیرش فاز ۳ **رد می‌شود**
+### ✅ دروازه‌ی پذیرش فاز ۳ — حالا پاس می‌شود
 
 سند: *«a test campaign can be run end-to-end with treatment/control and
 **incremental gross profit** reporting.»*
 
-ما **درآمد** افزوده گزارش می‌کنیم، نه **سود** افزوده. پس این دروازه پاس نشده —
-و من قبلاً فاز ۳ را «کامل» اعلام کرده بودم.
+`test_campaign_reports_incremental_gross_profit_with_full_coverage` همین را
+سرتاسر اجرا می‌کند: تحلیل → ورودِ بها → کمپین با گروه کنترل → خروجی (لحظه‌ی
+تماس) → خواندن نتیجه از دفتر کل → **سود افزوده**، و عدد را با تفاضلِ سودِ سرانه
+تطبیق می‌دهد.
+
+گاردش هم تست دارد: با برداشتن بهای **یک** خط از پنجره‌ی گروه آزمایش، عدد
+گزارش نمی‌شود و `incremental_gross_profit` به `blocked_metrics` برمی‌گردد
+(`test_incomplete_cost_coverage_blocks_the_number`).
+
+⚠️ آنچه هنوز جای کار دارد: بهای واردشده بهای **واحد** است و سربار را در بر
+نمی‌گیرد؛ و اگر فایل بها تاریخ اثر نداشته باشد همه‌ی خطوطِ تاریخی
+`history_imputed` می‌شوند — که صریحاً برچسب می‌خورد، ولی برچسب جای دقت را
+نمی‌گیرد.
 
 ---
 
@@ -212,10 +228,11 @@ top-K economic metrics.»* هیچ مدلی promote نشده، چون رجیست�
 
 دو موضوع بارها تکرار می‌شوند و ریشه‌ی مشترک دارند:
 
-۱. **سود ناخالص.** نبودش هم‌زمان: دروازه‌ی پذیرش فاز ۳ را می‌شکند، یک قلم از فاز
-   ۱ است، CLV را از سند منحرف می‌کند، شکاف توسعه را درآمدمحور نگه می‌دارد، و
-   شمالِ‌ستاره‌ی خودِ سند (§۴: «incremental gross profit») را غیرقابل‌محاسبه
-   می‌کند. زیرساختِ بها **از قبل کار می‌کند** و داده‌ی نمونه ۱۰۰٪ پوشش دارد.
+۱. ~~**سود ناخالص.**~~ **بسته شد.** سود روی خط می‌نشیند، سود افزوده‌ی کمپین
+   گزارش می‌شود، کفِ حاشیه کار می‌کند، و شمالِ‌ستاره‌ی §۴ محاسبه‌شدنی است.
+   آنچه از این ریشه **باقی مانده**: CLV سودمحور (فاز ۴) و شکاف توسعه‌ی
+   سودمحور (فاز ۲) — هر دو حالا فقط عوض‌کردنِ مبنا از درآمد به سودند، نه
+   ساختِ زیرساخت. نسخه‌ی درآمدی حذف نمی‌شود؛ نسخه‌ی سودی کنارش می‌آید.
 
 ۲. **ماندگاریِ ردیف خام و قرنطینه.** نبودش یعنی هیچ ردیفِ ردشده‌ای قابل بازبینی
    نیست — که ادعای «auditability» سند (§۳.۵) را تضعیف می‌کند.

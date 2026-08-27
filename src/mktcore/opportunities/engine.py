@@ -167,12 +167,41 @@ def _opted_out_keys(business_slug: str, db_path: Path | None) -> set[str]:
         return set()
 
 
+def _margin_policy(
+    business_slug: str, db_path: Path | None,
+) -> tuple[int | None, dict[str, int]]:
+    """کفِ حاشیه‌ی تعیین‌شده‌ی کاربر + حاشیه‌ی هر کالا از دفتر کل.
+
+    مثل بقیه‌ی خواندن‌های کمکی، شکست اینجا موتور را نمی‌خواباند: خالی برمی‌گردد
+    و `filter_margin_floor` همان «بررسی نشد» صادقانه را ثبت می‌کند.
+    """
+    try:
+        from mktcore.costs.register import margin_lookup
+        from mktcore.db.engine import session_scope
+        from mktcore.db.lookup import resolve_business_id
+        from mktcore.settings_store import margin_floor_bp
+
+        with session_scope(db_path) as session:
+            business_id = resolve_business_id(session, business_slug)
+            if business_id is None:
+                return None, {}
+            return (
+                margin_floor_bp(session, business_id),
+                margin_lookup(session, business_id),
+            )
+    except Exception:  # noqa: BLE001 - نبودِ سیاست نباید موتور را بخواباند
+        logger.debug("سیاست حاشیه در دسترس نبود؛ فیلتر حاشیه رد شد", exc_info=True)
+        return None, {}
+
+
 def build_context(
     clean: pd.DataFrame,
     *,
     fatigue_window_days: int = 14,
     per_customer_open_cap: int = 3,
     consent_denied: set[str] | None = None,
+    margin_floor_bp: int | None = None,
+    margin_by_product: dict[str, int] | None = None,
 ) -> dict:
     """ساخت زمینه‌ی فیلترها از آنچه **واقعاً** در دست است.
 
@@ -183,11 +212,15 @@ def build_context(
     has_cost = bool(
         "cost" in clean.columns and clean["cost"].notna().any()
     )
+    # حاشیه از دفتر کل محاسبه می‌شود، ولی داشتنِ بها به‌تنهایی برای فیلتر کافی
+    # نیست: ستون بها ممکن است در خودِ فایل فروش نباشد و از تاریخچه آمده باشد.
+    margins = margin_by_product or {}
     return {
-        "has_cost_data": has_cost,
-        # کفِ حاشیه حتی با وجود ستون بها تعیین نشده است: معنای آن ستون (خرید؟
-        # تمام‌شده؟ با سربار؟) باید از کاربر پرسیده شود، نه حدس زده شود.
-        "margin_floor_bp": None,
+        "has_cost_data": has_cost or bool(margins),
+        # کفِ حاشیه را **کاربر** تعیین می‌کند؛ `None` یعنی تعیین نشده و آن‌وقت
+        # فیلتر «بررسی نشد» ثبت می‌کند، نه «قبول».
+        "margin_floor_bp": margin_floor_bp,
+        "margin_by_product": margins,
         "has_inventory_data": False,   # هیچ مسیر ورودِ موجودی وجود ندارد
         # ⚠️ عمداً `False` می‌ماند، حتی حالا که دفترِ انصراف وجود دارد.
         # دفترِ انصراف می‌گوید **چه کسی «نه» گفته**، نه اینکه چه کسی «بله» گفته.
@@ -217,8 +250,12 @@ def run_opportunity_engine(
     as_of = _as_of(clean)
     candidates = generate_candidates(bundle, clean)
     uplift_table = _load_uplift_table(db_path)
+    floor_bp, margins = _margin_policy(business_slug, db_path)
     ctx = build_context(
-        clean, consent_denied=_opted_out_keys(business_slug, db_path),
+        clean,
+        consent_denied=_opted_out_keys(business_slug, db_path),
+        margin_floor_bp=floor_bp,
+        margin_by_product=margins,
     )
     ctx["uplift_table"] = uplift_table
     # حالت چرخه‌ی عمر پیش از فیلتر لازم است، چون فیلترِ اثر بر پایه‌ی سلولِ

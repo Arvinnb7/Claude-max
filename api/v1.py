@@ -786,6 +786,129 @@ def revoke_customer_opt_out(customer_id: int, scope: str = Query("all")) -> dict
     }
 
 
+class CostRow(BaseModel):
+    """یک ردیف از فایل بها."""
+
+    product: str = Field(min_length=1, max_length=255)
+    cost: float = Field(gt=0)
+    # تاریخ اثر (ISO). نبودش یعنی «از همیشه» — و آن‌وقت خطوطِ قدیمی‌تر برچسب
+    # «تخمینی» می‌گیرند، نه «دقیق».
+    date: str | None = None
+
+
+class CostImportRequest(BaseModel):
+    rows: list[CostRow] = Field(min_length=1, max_length=20_000)
+    display_currency: str = "تومان"
+
+
+@router.post("/costs", dependencies=[Depends(require_token)])
+def import_product_costs(payload: CostImportRequest) -> dict:
+    """ثبت بهای کالاها — منبعِ محاسبه‌ی سود ناخالص.
+
+    بهای تمام‌شده در فایل فروش نیست و از سیستم دیگری می‌آید، پس مسیر ورودِ جدا
+    دارد. کالاهایی که به هیچ محصولی وصل نشوند **صریح گزارش می‌شوند**، نه بی‌صدا
+    حذف — وگرنه پوشش بها ناقص می‌ماند و کسی نمی‌فهمد چرا.
+    """
+    ensure_schema()
+    from mktcore.costs.register import apply_costs, import_costs
+
+    try:
+        result = import_costs(
+            [r.model_dump() for r in payload.rows],
+            display_currency=payload.display_currency,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    # انتساب بلافاصله انجام می‌شود تا کاربر نتیجه را همان لحظه ببیند
+    result["applied"] = apply_costs()
+    with session_scope() as session:
+        business_id = _business_id(session)
+        result["coverage"] = _cost_coverage(session, business_id)
+    result["coverage_note_fa"] = _economics_note(result["coverage"])
+    return result
+
+
+@router.get("/cost-coverage")
+def cost_coverage_report() -> dict:
+    """پوشش بها — پاسخِ «چرا سود محاسبه نشد؟»."""
+    ensure_schema()
+    from mktcore.costs.basis import coverage_note_fa
+    from mktcore.costs.register import cost_coverage
+
+    with session_scope() as session:
+        business_id = _business_id(session)
+        if business_id is None:
+            return {**_no_ledger_yet(), "coverage": 0.0}
+        total, with_cost, ratio = cost_coverage(session, business_id)
+    return {
+        "available": True,
+        "lines_total": total,
+        "lines_with_cost": with_cost,
+        "coverage": round(ratio, 4),
+        "note_fa": coverage_note_fa(ratio),
+    }
+
+
+class MarginFloorRequest(BaseModel):
+    """کف حاشیه به پایه‌ی هزارم (۲۰۰۰ = ۲۰٪). `None` یعنی برداشتنِ کف."""
+
+    margin_floor_bp: int | None = Field(default=None, ge=0, le=10_000)
+
+
+@router.get("/margin-floor")
+def read_margin_floor() -> dict:
+    """کف حاشیه‌ی تعیین‌شده + اینکه با این کف چه چیزی کنار گذاشته می‌شود.
+
+    عددِ تنها کافی نیست: کاربر باید پیش از تصمیم ببیند این کف کدام کالاها را
+    حذف می‌کند، وگرنه کفِ محافظه‌کارانه بی‌صدا نیمی از پیشنهادها را می‌بلعد.
+    """
+    ensure_schema()
+    from mktcore.costs.register import margin_by_product
+    from mktcore.settings_store import margin_floor_bp
+
+    with session_scope() as session:
+        business_id = _business_id(session)
+        if business_id is None:
+            return {**_no_ledger_yet(), "margin_floor_bp": None}
+        floor = margin_floor_bp(session, business_id)
+        margins = margin_by_product(session, business_id)
+
+    below = sorted(
+        (name for name, value in margins.items() if floor is not None and value < floor)
+    )
+    return {
+        "available": True,
+        "margin_floor_bp": floor,
+        "products_with_margin": len(margins),
+        "products_below_floor": below,
+        "note_fa": (
+            "کف حاشیه تعیین نشده است؛ فیلترِ حاشیه هیچ پیشنهادی را رد نمی‌کند و "
+            "در گزارش «بررسی نشد» ثبت می‌شود."
+            if floor is None else
+            f"با کف {floor / 100:.1f}٪، {len(below)} کالا از "
+            f"{len(margins)} کالای دارای حاشیه رد می‌شوند."
+        ),
+    }
+
+
+@router.put("/margin-floor", dependencies=[Depends(require_token)])
+def write_margin_floor(payload: MarginFloorRequest) -> dict:
+    """ثبت کف حاشیه — تصمیمِ کاربر است، نه حدسِ سیستم.
+
+    تا وقتی این عدد تعیین نشود `filter_margin_floor` صادقانه «بررسی نشد» ثبت
+    می‌کند؛ حدس‌زدنِ کف یعنی رد کردن پیشنهاد بر پایه‌ی معیاری که کسی نگفته.
+    """
+    ensure_schema()
+    from mktcore.settings_store import set_margin_floor_bp
+
+    try:
+        set_margin_floor_bp(payload.margin_floor_bp)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return read_margin_floor()
+
+
 @router.get("/experiment-plan")
 def experiment_plan(
     target_effect: float = Query(0.05, gt=0.0, lt=1.0),

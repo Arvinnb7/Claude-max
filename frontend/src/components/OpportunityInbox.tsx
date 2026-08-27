@@ -15,10 +15,15 @@ import {
 import {
   actOnOpportunity,
   createCampaign,
+  getCostCoverage,
+  getMarginFloor,
   getOpportunity,
   listDismissReasons,
   listOpportunities,
+  setMarginFloor,
+  type CostCoverage,
   type DismissReason,
+  type MarginFloor,
   type Opportunity,
   type OpportunityActionName,
   type OpportunityFactor,
@@ -231,6 +236,8 @@ export default function OpportunityInbox() {
             </p>
           </div>
         )}
+
+        <MarginPolicyPanel />
 
         {showCampaign && (
           <CampaignForm
@@ -558,6 +565,136 @@ function Evidence({ opportunity }: { opportunity: Opportunity }) {
         مولد: {opportunity.generator} (نسخه {toFa(String(opportunity.generator_version))}) ·
         دیده‌شده: {toFa(String(opportunity.seen_count))} بار
       </div>
+    </div>
+  );
+}
+
+
+/**
+ * سیاستِ حاشیه — پوششِ بها (که می‌گوید سود اصلاً محاسبه‌شدنی هست یا نه) و
+ * کفِ حاشیه (که **کاربر** تعیینش می‌کند).
+ *
+ * چرا کنار هم: تا وقتی بها نباشد، کف حاشیه هیچ کاری نمی‌کند؛ و تا وقتی کف
+ * تعیین نشده، فیلترِ حاشیه در گزارشِ هر فرصت «بررسی نشد» ثبت می‌شود. نشان‌دادن
+ * یکی بدون دیگری، کاربر را به این گمان می‌اندازد که حاشیه کنترل شده است.
+ */
+function MarginPolicyPanel() {
+  const [coverage, setCoverage] = useState<CostCoverage | null>(null);
+  const [floor, setFloor] = useState<MarginFloor | null>(null);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const [c, f] = await Promise.all([getCostCoverage(), getMarginFloor()]);
+      setCoverage(c);
+      setFloor(f);
+      setDraft(f.margin_floor_bp == null ? "" : String(f.margin_floor_bp / 100));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "خطا در خواندن سیاست حاشیه");
+    }
+  }, []);
+
+  // همان الگوی بقیه‌ی این فایل: خواندن بیرون از رندرِ همگام انجام می‌شود
+  useEffect(() => {
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) void load();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [load]);
+
+  async function save(bp: number | null) {
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await setMarginFloor(bp);
+      setFloor(next);
+      setDraft(next.margin_floor_bp == null ? "" : String(next.margin_floor_bp / 100));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "خطا در ثبت کف حاشیه");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!coverage || !floor) return null;
+
+  const percent = Math.round((coverage.coverage ?? 0) * 100);
+  return (
+    <div className="mb-4 rounded-xl border border-ink-200 p-3 text-sm dark:border-ink-700">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <b>پوشش بهای تمام‌شده:</b>{" "}
+          <span className="tnum">{toFa(String(percent))}٪</span>
+          {floor.margin_floor_bp != null && (
+            <>
+              {" · "}
+              <b>کف حاشیه:</b>{" "}
+              <span className="tnum">{toFa(String(floor.margin_floor_bp / 100))}٪</span>
+            </>
+          )}
+        </div>
+        <Button variant="ghost" onClick={() => setOpen((v) => !v)}>
+          {open ? <ChevronUp size={14} /> : <ChevronDown size={14} />} کف حاشیه
+        </Button>
+      </div>
+      <p className="mt-1 text-xs" style={{ color: "var(--muted)" }}>
+        {toFa(coverage.note_fa)}
+      </p>
+      <p className="mt-1 text-xs" style={{ color: "var(--muted)" }}>
+        {toFa(floor.note_fa)}
+      </p>
+
+      {open && (
+        <div className="mt-3 space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="text-xs" htmlFor="margin-floor">
+              کف حاشیه (درصد)
+            </label>
+            <input
+              id="margin-floor"
+              type="number"
+              min={0}
+              max={100}
+              step={0.5}
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              className="w-24 rounded-lg border border-ink-200 px-2 py-1 tnum dark:border-ink-700 dark:bg-ink-900"
+            />
+            <Button
+              variant="primary"
+              disabled={busy || draft.trim() === ""}
+              onClick={() => save(Math.round(Number(draft) * 100))}
+            >
+              ثبت
+            </Button>
+            <Button
+              variant="ghost"
+              disabled={busy || floor.margin_floor_bp == null}
+              onClick={() => save(null)}
+            >
+              برداشتن کف
+            </Button>
+          </div>
+          <p className="text-xs" style={{ color: "var(--muted)" }}>
+            تا وقتی کف تعیین نشده، هیچ پیشنهادی به‌خاطر حاشیه رد نمی‌شود و در
+            شواهدِ هر فرصت «بررسی نشد» ثبت می‌ماند — نه «قبول».
+          </p>
+          {!!floor.products_below_floor?.length && (
+            <p className="text-xs" style={{ color: "var(--muted)" }}>
+              با این کف، این کالاها کنار می‌روند:{" "}
+              {floor.products_below_floor.slice(0, 8).join("، ")}
+              {floor.products_below_floor.length > 8 ? " …" : ""}
+            </p>
+          )}
+          {error && <Alert tone="warn">{error}</Alert>}
+        </div>
+      )}
     </div>
   );
 }

@@ -14,6 +14,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from mktcore.catalog.normalize import normalize_product_name
+
 from .contract import (
     FILTER_CODES,
     OUTCOME_BLOCK,
@@ -162,7 +164,14 @@ def filter_margin_floor(candidate: OpportunityCandidate, ctx: dict) -> Opportuni
             "بهای تمام‌شده در داده هست، ولی کف حاشیه‌ی قابل‌قبول تعیین نشده؛ "
             "پس این پیشنهاد از نظر حاشیه بررسی نشده است.",
         )
-    margin_bp = ctx.get("margin_by_product", {}).get(candidate.product_name)
+    margins = ctx.get("margin_by_product") or {}
+    name = candidate.product_name
+    # نامِ پیشنهاد ممکن است نمایشی باشد و دفتر کل نامِ نرمال‌شده را بشناسد؛
+    # نبودِ تطبیق نباید به «حاشیه محاسبه نشده» ترجمه شود وقتی فقط شکلِ نوشتاری
+    # فرق دارد.
+    margin_bp = margins.get(name)
+    if margin_bp is None and name:
+        margin_bp = margins.get(normalize_product_name(name))
     if margin_bp is None:
         return OpportunityFactorNote(
             "margin_floor", FILTER_CODES["margin_floor"], OUTCOME_SKIP,

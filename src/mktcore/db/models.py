@@ -306,7 +306,13 @@ class OrderLine(Base):
     # بهای تمام‌شده‌ی همین خط (نه واحد). اگر فایل ستون بها نداشته باشد NULL
     # می‌ماند — هرگز صفر، چون صفر یعنی «رایگان» و سود را جعلی می‌کند.
     cost_rial: Mapped[int | None] = mapped_column(BigInteger)
-    cost_confidence: Mapped[str | None] = mapped_column(String(16))
+    # `from_file` | `history_exact` | `history_imputed` — سطح سوم یعنی بها از
+    # تاریخچه به عقب تعمیم داده شده (§۳.۴: «هر بهای تخمینی باید تخمینی برچسب
+    # بخورد و سطح اطمینان داشته باشد»).
+    cost_confidence: Mapped[str | None] = mapped_column(String(24))
+    # سود ناخالصِ همین خط = درآمد − بها. **بها NULL ⇒ این هم NULL**، هرگز صفر:
+    # صفر یعنی «سودی نداشت» در حالی که واقعیت «نمی‌دانیم» است.
+    gross_profit_rial: Mapped[int | None] = mapped_column(BigInteger)
 
     is_return: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     # provenance: با این دو ستون می‌شود از هر عددِ گزارش به ردیف فایل رسید
@@ -699,6 +705,10 @@ class CampaignOutcome(Base):
     orders_count: Mapped[int] = mapped_column(Integer, default=0)
     lines_count: Mapped[int] = mapped_column(Integer, default=0)
     revenue_rial: Mapped[int] = mapped_column(BigInteger, default=0)
+    # بهای خطوطِ همین پنجره. `NULL` یعنی پوشش کامل نبود — نه اینکه بها صفر بوده.
+    cost_rial: Mapped[int | None] = mapped_column(BigInteger)
+    # چند خط از چند خط بها داشتند؛ مبنای تصمیمِ «سود را گزارش کنیم یا نه»
+    lines_with_cost: Mapped[int] = mapped_column(Integer, default=0)
     # آیا دقیقاً همان کالایی که پیشنهاد شده بود خریداری شد؟
     matched_product: Mapped[bool] = mapped_column(Boolean, default=False)
     # آخرین بارگذاری‌ای که این عکس از آن ساخته شد
@@ -757,6 +767,75 @@ class CampaignSend(Base):
     sent_at: Mapped[float] = mapped_column(Float, default=now_ts, index=True)
 
 
+class ProductCostHistory(Base):
+    """بهای هر کالا در طول زمان — منبعِ محاسبه‌ی سود ناخالص.
+
+    **چرا جدولِ جدا و نه یک ستون روی `products`.** §۳.۴ سند صریح است: بهای هر
+    معامله باید بهای **زمانِ همان معامله** باشد، نه آخرین قیمت خرید. یک ستونِ
+    اسکالر روی کالا فقط «امروز» را می‌داند و سودِ سالِ گذشته را با قیمتِ امروز
+    حساب می‌کند — که در تورم، عددِ کاملاً غلط می‌دهد.
+
+    **چرا نامش `supplier_cost_history` نیست.** سند (§۷.۵) این نام را با بُعدِ
+    تأمین‌کننده و tier مقدار و کرایه می‌خواهد. داده‌ی تأمین‌کننده در دست نیست، پس
+    نامی که آن را وعده بدهد گمراه‌کننده است. همان قاعده‌ی پروژه که
+    `value_at_risk_rial` را «درآمدمحور» نامید تا کسی سود نپندارد.
+
+    `effective_to` خالی یعنی «تا اطلاع ثانوی معتبر است». بازه‌ها برای یک کالا
+    نباید هم‌پوشانی داشته باشند؛ ورودِ تازه بازه‌ی قبلی را می‌بندد.
+    """
+
+    __tablename__ = "product_cost_history"
+    __table_args__ = (
+        UniqueConstraint("business_id", "product_id", "effective_from"),
+        Index("ix_product_cost_lookup", "business_id", "product_id", "effective_from"),
+    )
+
+    SOURCE_FILE = "file"
+    SOURCE_MANUAL = "manual"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    business_id: Mapped[int] = mapped_column(ForeignKey("businesses.id"), index=True)
+    product_id: Mapped[int] = mapped_column(
+        ForeignKey("products.id", ondelete="CASCADE"), index=True
+    )
+    # بهای **یک واحد**، نه کل خط — تا با هر مقداری قابل ضرب باشد
+    unit_cost_rial: Mapped[int] = mapped_column(BigInteger)
+    effective_from: Mapped[str] = mapped_column(String(10), index=True)
+    effective_to: Mapped[str | None] = mapped_column(String(10))
+    source: Mapped[str] = mapped_column(String(16), default=SOURCE_FILE)
+    note_fa: Mapped[str | None] = mapped_column(Text)
+    raw_product_name: Mapped[str | None] = mapped_column(String(255))
+    created_at: Mapped[float] = mapped_column(Float, default=now_ts)
+
+
+class AppSetting(Base):
+    """تنظیمِ سیاست که **کاربر** می‌گذارد، نه سیستم حدس می‌زند.
+
+    چرا جدول و نه متغیر محیطی: کف حاشیه یک عددِ کسب‌وکاری است که ممکن است
+    ماهانه عوض شود؛ متغیر محیطی یعنی راه‌اندازی دوباره‌ی سرور برای هر تغییر، و
+    یعنی هیچ ردی از «چه‌کسی چه‌زمانی عوضش کرد» باقی نمی‌ماند.
+
+    چرا کلید/مقدارِ عمومی و نه ستونِ اختصاصی: تنظیم‌های سیاست کم‌اند ولی
+    یکی‌یکی اضافه می‌شوند؛ ستونِ تازه یعنی مهاجرت تازه برای هر عدد. مقدار
+    به‌صورت متن ذخیره می‌شود و لایه‌ی بالاتر تفسیرش می‌کند — هیچ تفسیرِ ضمنی
+    اینجا انجام نمی‌شود.
+    """
+
+    __tablename__ = "app_settings"
+    __table_args__ = (UniqueConstraint("business_id", "key"),)
+
+    # کف حاشیه‌ی سود به پایه‌ی هزارم (۲۰۰۰ = ۲۰٪). نبودنش یعنی «کاربر تعیین
+    # نکرده» و آن‌وقت `filter_margin_floor` صادقانه «بررسی نشد» ثبت می‌کند.
+    KEY_MARGIN_FLOOR_BP = "margin_floor_bp"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    business_id: Mapped[int] = mapped_column(ForeignKey("businesses.id"), index=True)
+    key: Mapped[str] = mapped_column(String(64), index=True)
+    value_text: Mapped[str] = mapped_column(Text)
+    note_fa: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[float] = mapped_column(Float, default=now_ts)
+
+
 class ContactSuppression(Base):
     """دفترِ «با این مشتری تماس نگیر».
 
@@ -805,6 +884,7 @@ class ContactSuppression(Base):
 
 
 __all__ = [
+    "AppSetting",
     "Business",
     "Campaign",
     "CampaignMember",
@@ -826,5 +906,6 @@ __all__ = [
     "OrderLine",
     "Product",
     "ProductAlias",
+    "ProductCostHistory",
     "UpliftSnapshot",
 ]

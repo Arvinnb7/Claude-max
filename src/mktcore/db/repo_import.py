@@ -424,6 +424,7 @@ def _build_line_payloads(
         revenue_rial = to_rial_int(revenues[i], display_currency) if revenues is not None else None
         if revenue_rial is None:
             continue  # خط بدون مبلغ در دفتر کل معنا ندارد
+        cost_rial = to_rial_int(costs[i], display_currency) if costs is not None else None
 
         source_row = None
         if source_rows is not None and not pd.isna(source_rows[i]):
@@ -467,8 +468,13 @@ def _build_line_payloads(
             ),
             "discount_rial": discount_rial,
             "discount_rate_bp": discount_bp,
-            "cost_rial": to_rial_int(costs[i], display_currency) if costs is not None else None,
-            "cost_confidence": "from_file" if costs is not None else None,
+            "cost_rial": cost_rial,
+            "cost_confidence": "from_file" if cost_rial is not None else None,
+            # سود همان‌جا که بها نوشته می‌شود حساب می‌شود، نه در گامی جدا —
+            # وگرنه خطی که بها **دارد** بی‌سود می‌ماند تا کسی گام بعد را بزند.
+            "gross_profit_rial": (
+                None if cost_rial is None else int(revenue_rial) - int(cost_rial)
+            ),
             "is_return": bool(is_returns[i]) if is_returns is not None else False,
             "source_row": source_row,
             "sheet_name": sheet,
@@ -486,7 +492,8 @@ def _build_line_payloads(
 _LINE_FIELDS = (
     "business_id", "batch_id", "customer_id", "product_id", "line_date",
     "quantity_milli", "unit_price_rial", "revenue_rial", "gross_amount_rial",
-    "discount_rial", "discount_rate_bp", "cost_rial", "cost_confidence", "is_return",
+    "discount_rial", "discount_rate_bp", "cost_rial", "cost_confidence",
+    "gross_profit_rial", "is_return",
     "source_row", "sheet_name", "raw_customer_key", "raw_product_name", "revision",
 )
 

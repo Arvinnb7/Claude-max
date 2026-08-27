@@ -782,6 +782,18 @@ def _report(session, campaign_id: int) -> dict:
         None if report["cost_per_incremental_order_rial"] is None
         else money_payload(report["cost_per_incremental_order_rial"])
     )
+    report["incremental_gross_profit"] = (
+        None if report["incremental_gross_profit_rial"] is None
+        else money_payload(report["incremental_gross_profit_rial"])
+    )
+    # مبالغ بازو هم سه‌کلیدی می‌شوند: قالب‌بندیِ ریالِ خام در UI همان اشتباهی
+    # است که یک‌بار عدد را ده برابر نشان داد.
+    for arm in report["arms"].values():
+        for key in ("cost_rial", "gross_profit_rial", "profit_per_customer_rial"):
+            value = arm.get(key)
+            arm[key.removesuffix("_rial")] = (
+                None if value is None else money_payload(value)
+            )
     return report
 
 

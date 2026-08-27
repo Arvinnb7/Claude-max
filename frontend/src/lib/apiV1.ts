@@ -323,6 +323,13 @@ export type ArmSummary = {
   revenue_rial: number;
   conversion_rate: number;
   revenue_per_customer_rial: number;
+  /** `null` یعنی پوششِ بها کامل نبود — نه اینکه بها صفر بوده. */
+  cost_rial: number | null;
+  gross_profit_rial: number | null;
+  profit_per_customer_rial: number | null;
+  cost: Money | null;
+  gross_profit: Money | null;
+  profit_per_customer: Money | null;
 };
 
 export type CampaignReport = {
@@ -349,6 +356,13 @@ export type CampaignReport = {
   contact_cost: Money | null;
   cost_per_incremental_order_rial: number | null;
   cost_per_incremental_order: Money | null;
+  /**
+   * سود ناخالص افزوده — شمالِ‌ستاره‌ی سند. `null` تا وقتی پوششِ بها در هر دو
+   * بازو کامل نباشد؛ دلیلش همیشه در `gross_profit_note_fa` است.
+   */
+  incremental_gross_profit_rial: number | null;
+  incremental_gross_profit: Money | null;
+  gross_profit_note_fa: string | null;
 };
 
 /** نتیجه‌ی یک ارسال کمپین. */
@@ -590,6 +604,42 @@ export async function revokeCustomerOptOut(
 ): Promise<{ revoked: boolean; note_fa: string }> {
   return handle(
     await fetch(`${BASE}/api/v1/customers/${customerId}/opt-out`, { method: "DELETE" }),
+  );
+}
+
+/** پوششِ بهای تمام‌شده — پاسخِ «چرا سود محاسبه نشد؟». */
+export type CostCoverage = {
+  available: boolean;
+  lines_total?: number;
+  lines_with_cost?: number;
+  coverage: number;
+  note_fa: string;
+};
+
+export async function getCostCoverage(): Promise<CostCoverage> {
+  return handle(await fetch(`${BASE}/api/v1/cost-coverage`, { cache: "no-store" }));
+}
+
+/** کف حاشیه — تصمیمِ کاربر، نه حدسِ سیستم. `null` یعنی تعیین‌نشده. */
+export type MarginFloor = {
+  available: boolean;
+  margin_floor_bp: number | null;
+  products_with_margin?: number;
+  products_below_floor?: string[];
+  note_fa: string;
+};
+
+export async function getMarginFloor(): Promise<MarginFloor> {
+  return handle(await fetch(`${BASE}/api/v1/margin-floor`, { cache: "no-store" }));
+}
+
+export async function setMarginFloor(bp: number | null): Promise<MarginFloor> {
+  return handle(
+    await fetch(`${BASE}/api/v1/margin-floor`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ margin_floor_bp: bp }),
+    }),
   );
 }
 

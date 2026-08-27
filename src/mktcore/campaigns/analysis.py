@@ -51,6 +51,22 @@ class ArmStats:
     converters: int = 0
     orders: int = 0
     revenue_rial: int = 0
+    # `None` یعنی پوششِ بها کامل نبود — نه اینکه بها صفر بوده.
+    cost_rial: int | None = None
+
+    @property
+    def gross_profit_rial(self) -> int | None:
+        """درآمد − بها. `None` وقتی بها کامل نیست."""
+        if self.cost_rial is None:
+            return None
+        return self.revenue_rial - self.cost_rial
+
+    @property
+    def profit_per_customer(self) -> float | None:
+        profit = self.gross_profit_rial
+        if profit is None or not self.size:
+            return None
+        return profit / self.size
 
     @property
     def conversion_rate(self) -> float:
@@ -84,6 +100,10 @@ class CampaignReport:
     # هزینه‌ی هر سفارشِ **افزوده**. فقط وقتی معنا دارد که اثر اثبات شده باشد،
     # چون تقسیم بر عددی که خودش اثبات‌نشده است، عددِ اثبات‌نشده می‌دهد.
     cost_per_incremental_order_rial: int | None = None
+    # سود ناخالص افزوده — شمالِ‌ستاره‌ی سند (§۴). `None` تا وقتی پوششِ بها در
+    # **هر دو** بازو کامل نباشد؛ جمعِ ناقص سود را بیشتر از واقع نشان می‌دهد.
+    incremental_gross_profit_rial: int | None = None
+    gross_profit_note_fa: str | None = None
 
     @property
     def is_causal(self) -> bool:
@@ -111,6 +131,8 @@ class CampaignReport:
             "detectable_effect": self.detectable_effect,
             "power_note_fa": self.power_note_fa,
             "contact_cost_rial": self.contact_cost_rial,
+            "incremental_gross_profit_rial": self.incremental_gross_profit_rial,
+            "gross_profit_note_fa": self.gross_profit_note_fa,
             "cost_per_incremental_order_rial": self.cost_per_incremental_order_rial,
         }
 
@@ -123,6 +145,13 @@ def _arm_dict(stats: ArmStats) -> dict:
         "revenue_rial": stats.revenue_rial,
         "conversion_rate": round(stats.conversion_rate, 4),
         "revenue_per_customer_rial": round(stats.revenue_per_customer),
+        # `None` یعنی پوششِ بها کامل نبود — نه اینکه بها صفر بوده.
+        "cost_rial": stats.cost_rial,
+        "gross_profit_rial": stats.gross_profit_rial,
+        "profit_per_customer_rial": (
+            None if stats.profit_per_customer is None
+            else round(stats.profit_per_customer)
+        ),
     }
 
 
@@ -135,9 +164,9 @@ _BLOCKED_METRICS = {
     "delivered": "وضعیت تحویل نیازمند webhook از پنل پیامکی است که هنوز وصل نشده.",
     "viewed_clicked": "پیامک بازخورد مشاهده یا کلیک ندارد؛ این سنجه کانالِ دیگری می‌خواهد.",
     "incremental_gross_profit": (
-        "نتیجه‌ی کمپین فقط درآمد را جمع می‌کند؛ ستون بهای تمام‌شده در "
-        "`campaign_outcomes` وجود ندارد. حتی با پوشش کاملِ بها هم تا سیم‌کشی‌نشدنِ "
-        "این ستون، سود افزوده محاسبه‌شدنی نیست."
+        "سود افزوده تا وقتی گزارش نمی‌شود که بهای تمام‌شده‌ی همه‌ی خطوطِ پنجره‌ی "
+        "سنجش در هر دو گروه موجود باشد. با پوشش کامل، این انسداد خودبه‌خود "
+        "برداشته می‌شود."
     ),
     "cost_per_incremental_order": "هزینه‌ی تماس در سیستم ثبت نمی‌شود.",
 }
@@ -257,6 +286,7 @@ def analyze_campaign(
     بوده — و در آن حالت «هزینه به‌ازای سفارش افزوده» مسدود می‌ماند.
     """
     report = _verdict(treatment, control, contact_cost_rial=contact_cost_rial)
+    _attach_gross_profit(report, treatment, control)
     if contact_cost_rial is None:
         return report
 
@@ -267,6 +297,48 @@ def analyze_campaign(
     if report.is_causal and orders and orders > 0:
         report.cost_per_incremental_order_rial = round(int(contact_cost_rial) / orders)
     return report
+
+
+def _attach_gross_profit(
+    report: CampaignReport, treatment: ArmStats, control: ArmStats,
+) -> None:
+    """سود ناخالص افزوده — فقط وقتی پوششِ بها در **هر دو** بازو کامل است.
+
+    فرمول همان فرمولِ درآمد افزوده است، با سود به‌جای درآمد:
+
+        سود افزوده = (سودِ سرانه‌ی آزمایش − سودِ سرانه‌ی کنترل) × اندازه‌ی آزمایش
+
+    اگر یکی از دو بازو پوششِ ناقص داشته باشد، عدد **گزارش نمی‌شود**. جمعِ ناقصِ
+    بها سود را بیشتر از واقع نشان می‌دهد و هیچ نشانه‌ای هم همراهش نیست — همان
+    چیزی که سند «a partial number is worse than no number» می‌نامد.
+    """
+    if not treatment.size or not control.size:
+        # دلیلِ واقعی اینجا بها نیست: یکی از دو گروه هنوز عضوِ سنجیده‌شده ندارد
+        # (مثلاً گروه آزمایش هنوز تماس نگرفته). گفتنِ «بها ثبت نشده» اینجا
+        # کاربر را دنبال مشکلی می‌فرستد که وجود ندارد.
+        report.gross_profit_note_fa = (
+            "سود افزوده محاسبه نشد: یکی از دو گروه هنوز عضوِ سنجیده‌شده ندارد. "
+            "تا وقتی گروه آزمایش تماس نگرفته، مقایسه‌ای در کار نیست."
+        )
+        return
+
+    treatment_profit = treatment.profit_per_customer
+    control_profit = control.profit_per_customer
+    if treatment_profit is None or control_profit is None:
+        report.gross_profit_note_fa = (
+            "سود افزوده محاسبه نشد: بهای تمام‌شده برای همه‌ی خطوطِ پنجره‌ی سنجش "
+            "در هر دو گروه ثبت نشده است. عددِ ناقص بدتر از نبودِ عدد است."
+        )
+        return
+
+    report.incremental_gross_profit_rial = round(
+        (treatment_profit - control_profit) * treatment.size
+    )
+    report.blocked_metrics.pop("incremental_gross_profit", None)
+    report.gross_profit_note_fa = (
+        "سود افزوده از تفاضل سودِ سرانه‌ی دو گروه محاسبه شد؛ بهای تمام‌شده برای "
+        "همه‌ی اعضا موجود بود."
+    )
 
 
 def _verdict(
