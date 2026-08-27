@@ -22,10 +22,10 @@ sys.path.insert(0, str(_ROOT / "src"))
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
 logger = logging.getLogger("mktcore.api")
 
-from fastapi import Body, FastAPI, File, HTTPException, UploadFile  # noqa: E402
+from fastapi import Body, Depends, FastAPI, File, HTTPException, UploadFile  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import HTMLResponse, Response  # noqa: E402
-from pydantic import BaseModel  # noqa: E402
+from pydantic import BaseModel, Field  # noqa: E402
 
 from mktcore.ai.client import api_key_available  # noqa: E402
 from mktcore.config import get_settings  # noqa: E402
@@ -50,6 +50,14 @@ from mktcore.ingest.profiler import profile_frame  # noqa: E402
 from mktcore.ingest.schema import REQUIRED_ROLES, ColumnRole, standard_column  # noqa: E402
 from mktcore.locale_fa import ROLE_LABELS_FA, format_number_fa  # noqa: E402
 from mktcore.pipeline import run_analysis  # noqa: E402
+from mktcore.security import (  # noqa: E402
+    NON_ASCII_NOTE_FA,
+    UNPROTECTED_NOTE_FA,
+    require_token,
+    token_configured,
+    token_is_usable,
+    warn_if_unprotected,
+)
 from mktcore.synthetic import generate_synthetic_sales  # noqa: E402
 
 from .campaigns_api import router as campaigns_router  # noqa: E402
@@ -80,6 +88,7 @@ def _catch_up_scheduler() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    warn_if_unprotected()
     recovered = store.recover_stale_jobs()
     if recovered:
         logger.warning("recovered %d stale jobs after restart", recovered)
@@ -179,6 +188,10 @@ def health() -> dict:
         "scheduler": scheduler_status()["running"],
         "data_dir": str(store.data_dir.resolve()),
         "retention": s.retention_policy,
+        # وضعیت گاردِ دسترسی — سکوت در برابر «هیچ گاردی نیست» پذیرفتنی نیست
+        "api_token_required": token_configured(),
+        **({} if token_configured() else {"امنیت_هشدار": UNPROTECTED_NOTE_FA}),
+        **({} if token_is_usable() else {"توکن_هشدار": NON_ASCII_NOTE_FA}),
     }
 
 
@@ -707,12 +720,14 @@ class SMSRequest(BaseModel):
     session_id: str
     kind: str
     template: str
-    limit: int = 100
+    # سقف عمدی: بدون آن، یک درخواست می‌توانست کل پایگاه مشتری را پیامک کند.
+    # همان سقفی که مسیر کمپین (`/api/v1/campaigns/{id}/send`) از قبل داشت.
+    limit: int = Field(default=100, ge=1, le=5000)
     dry_run: bool = True
     confirm: bool = False  # برای ارسال واقعی، تأیید صریح لازم است
 
 
-@app.post("/api/sms/send")
+@app.post("/api/sms/send", dependencies=[Depends(require_token)])
 def sms_send(req: SMSRequest) -> dict:
     """ساخت مخاطب، شخصی‌سازی پیام و ارسال.
 
@@ -793,9 +808,23 @@ def get_scheduler_status() -> dict:
     return scheduler_status()
 
 
-@app.post("/api/scheduler/run-now")
-def scheduler_run_now() -> dict:
-    """اجرای دستی اسکن چرخه (برای تست/راه‌اندازی)."""
+@app.post("/api/scheduler/run-now", dependencies=[Depends(require_token)])
+def scheduler_run_now(confirm: bool = False) -> dict:
+    """اجرای دستی اسکن چرخه (برای تست/راه‌اندازی).
+
+    اگر `MKT_AUTO_SMS=1` باشد، این مسیر **پیامک واقعی می‌فرستد**. برخلاف دو
+    مسیر ارسالِ دیگر، پارامتر `confirm` نداشت — یک درخواست خالی کافی بود. حالا
+    وقتی ارسال واقعی ممکن است، تأیید صریح لازم است.
+    """
+    settings = get_settings()
+    if settings.mkt_auto_sms and settings.sms_configured and not confirm:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "این اجرا با تنظیمات فعلی پیامک واقعی می‌فرستد. برای اجرای عمدی، "
+                "confirm=true بدهید."
+            ),
+        )
     return run_cycle_scan()
 
 

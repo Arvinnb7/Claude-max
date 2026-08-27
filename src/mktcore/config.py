@@ -100,6 +100,9 @@ class Settings(BaseSettings):
     # قابل تغییر بدون دست‌زدن به کد، چون تعرفه‌ی پنل عوض می‌شود.
     mkt_sms_cost_per_segment_rial: int = 3_000
     kavenegar_api_key: str | None = None
+    # توکنِ مشترک برای مسیرهای نوشتنی و پرخرج. خالی = بدون گارد (رفتار قبلی)،
+    # ولی در `/api/health` و لاگ صریح هشدار داده می‌شود.
+    mkt_api_token: str | None = None
 
     @property
     def has_api_key(self) -> bool:

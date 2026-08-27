@@ -21,7 +21,7 @@ import json
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 
@@ -47,6 +47,7 @@ from mktcore.db.models import (
 from mktcore.identity import mask_phone
 from mktcore.lifecycle import STATE_LABELS_FA
 from mktcore.money import money_payload
+from mktcore.security import require_token
 
 logger = logging.getLogger("mktcore.api.v1")
 
@@ -746,7 +747,7 @@ def contact_suppressions(active_only: bool = Query(True)) -> dict:
     }
 
 
-@router.post("/customers/{customer_id}/opt-out")
+@router.post("/customers/{customer_id}/opt-out", dependencies=[Depends(require_token)])
 def opt_out_customer(customer_id: int, payload: OptOutRequest) -> dict:
     """ثبت انصراف یک مشتری از تماس بازاریابی."""
     ensure_schema()
@@ -767,7 +768,7 @@ def opt_out_customer(customer_id: int, payload: OptOutRequest) -> dict:
     }
 
 
-@router.delete("/customers/{customer_id}/opt-out")
+@router.delete("/customers/{customer_id}/opt-out", dependencies=[Depends(require_token)])
 def revoke_customer_opt_out(customer_id: int, scope: str = Query("all")) -> dict:
     """پس گرفتن انصراف. ردیف پاک نمی‌شود تا تاریخش بماند."""
     ensure_schema()
@@ -911,7 +912,10 @@ _TRANSITIONS = {
 }
 
 
-@router.post("/opportunities/{opportunity_id}/{action}")
+@router.post(
+    "/opportunities/{opportunity_id}/{action}",
+    dependencies=[Depends(require_token)],
+)
 def act_on_opportunity(
     opportunity_id: int, action: str, body: OpportunityAction | None = None,
 ) -> dict:

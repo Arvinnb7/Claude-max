@@ -17,7 +17,7 @@ import logging
 from urllib.parse import quote
 
 import pandas as pd
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
@@ -47,6 +47,7 @@ from mktcore.execution.cost import cost_note_fa, message_cost_rial, segment_coun
 from mktcore.identity import normalize_phone
 from mktcore.lifecycle import STATE_LABELS_FA
 from mktcore.money import money_payload
+from mktcore.security import require_token
 
 logger = logging.getLogger("mktcore.api.campaigns")
 
@@ -82,7 +83,7 @@ def _no_ledger() -> dict:
     }
 
 
-@router.post("")
+@router.post("", dependencies=[Depends(require_token)])
 def create_campaign(req: CreateCampaignRequest) -> dict:
     """ساخت کمپین از فرصت‌های باز، با تخصیص تصادفیِ گروه کنترل."""
     ensure_schema()
@@ -374,7 +375,7 @@ class SendCampaignRequest(BaseModel):
     limit: int = Field(default=1000, ge=1, le=5000)
 
 
-@router.post("/{campaign_id}/send")
+@router.post("/{campaign_id}/send", dependencies=[Depends(require_token)])
 def send_campaign_sms(campaign_id: int, req: SendCampaignRequest) -> dict:
     """ارسال مستقیم پیامک به بازوی آزمایش.
 
@@ -709,7 +710,7 @@ def refresh_outcomes(campaign_id: int) -> dict:
     return payload
 
 
-@router.post("/{campaign_id}/close")
+@router.post("/{campaign_id}/close", dependencies=[Depends(require_token)])
 def close_campaign(campaign_id: int) -> dict:
     """بستن کمپین — پنجره‌ی سنجش دیگر به‌روز نمی‌شود."""
     ensure_schema()
