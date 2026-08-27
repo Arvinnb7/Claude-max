@@ -423,14 +423,20 @@ def send_campaign_sms(campaign_id: int, req: SendCampaignRequest) -> dict:
                 status_code=409, detail="این کمپین عضوی در گروه آزمایش ندارد.",
             )
 
-        # اعضایی که قبلاً فرستاده شده‌اند — گاردِ ارسال دوباره
-        already = {
-            int(cid) for (cid,) in session.execute(
-                select(CampaignSend.customer_id)
+        # گاردِ ارسال دوباره — **فقط** ارسالِ موفق مانع تلاش دوباره است.
+        # ردیفِ `skipped` یعنی هرگز چیزی نرفته (شماره نبود، یا متن نبود)؛ اگر آن
+        # هم مانع می‌شد، کاربری که بعد از دیدنِ «متن ندارد» قالب می‌دهد، با
+        # «قبلاً فرستاده شده» روبه‌رو می‌شد و راهِ جبران نداشت.
+        prior = {
+            int(cid): row for cid, row in session.execute(
+                select(CampaignSend.customer_id, CampaignSend)
                 .where(CampaignSend.campaign_id == campaign_id)
             ).all()
         }
-        pending = [m for m in members if int(m.customer_id) not in already]
+        delivered = {
+            cid for cid, row in prior.items() if row.status == CampaignSend.STATUS_SENT
+        }
+        pending = [m for m in members if int(m.customer_id) not in delivered]
         if not pending:
             raise HTTPException(
                 status_code=409,
@@ -451,16 +457,19 @@ def send_campaign_sms(campaign_id: int, req: SendCampaignRequest) -> dict:
             )
 
         drafts = _send_drafts(session, campaign_id, pending, req.template)
-        with_phone = [d for d in drafts if d["phone"]]
+        # ارسال‌شدنی = هم شماره دارد، هم **متن**. متنِ خالی به پنل POST می‌شد و
+        # هزینه هم ثبت می‌شد، بی‌آنکه چیزی به دست مشتری برسد.
+        sendable = [d for d in drafts if d["phone"] and d["text"]]
         without_phone = [d for d in drafts if not d["phone"]]
+        without_text = [d for d in drafts if d["phone"] and not d["text"]]
 
         result = None
-        if with_phone:
+        if sendable:
             messages = [
                 RenderedMessage(
                     customer_id=str(d["customer_id"]), phone=d["phone"], text=d["text"],
                 )
-                for d in with_phone
+                for d in sendable
             ]
             result = send_campaign(
                 messages,
@@ -470,11 +479,13 @@ def send_campaign_sms(campaign_id: int, req: SendCampaignRequest) -> dict:
                 dry_run=not real_send,
             )
 
-        status_of = {}
+        status_of: dict[str, str] = {}
+        message_id_of: dict[str, str | None] = {}
         if result is not None:
-            status_of = {
-                str(d.get("مشتری")): str(d.get("وضعیت", "")) for d in result.details
-            }
+            for d in result.details:
+                key = str(d.get("مشتری"))
+                status_of[key] = str(d.get("وضعیت", ""))
+                message_id_of[key] = d.get("شناسه_پیام")
         provider = result.provider if result is not None else "dry-run"
 
         stamp = now_ts()
@@ -484,20 +495,28 @@ def send_campaign_sms(campaign_id: int, req: SendCampaignRequest) -> dict:
 
         for draft in drafts:
             has_phone = bool(draft["phone"])
+            has_text = bool(draft["text"])
+            can_send = has_phone and has_text
             detail = status_of.get(str(draft["customer_id"]))
-            ok = has_phone and (result is not None) and "خطا" not in (detail or "")
+            ok = can_send and (result is not None) and "خطا" not in (detail or "")
             if not has_phone:
                 status = CampaignSend.STATUS_SKIPPED
                 detail = "شماره‌ی موبایل ثبت نشده است."
+            elif not has_text:
+                status = CampaignSend.STATUS_SKIPPED
+                detail = (
+                    "این فرصت متنِ آماده‌ی پیام ندارد. متنِ راهنمای تیم فروش برای "
+                    "مشتری فرستاده نمی‌شود؛ برای ارسال، قالب پیام بدهید."
+                )
             elif ok:
                 status = CampaignSend.STATUS_SENT
             else:
                 status = CampaignSend.STATUS_FAILED
 
-            segments = segment_count(draft["text"]) if has_phone else 0
+            segments = segment_count(draft["text"]) if can_send else 0
             cost = (
                 message_cost_rial(draft["text"], cost_per_segment_rial=cost_per_segment)
-                if has_phone else 0
+                if can_send else 0
             )
             # هزینه فقط برای ارسال واقعی جمع می‌شود؛ پیش‌نمایش پولی خرج نمی‌کند
             if real_send and status == CampaignSend.STATUS_SENT:
@@ -508,20 +527,31 @@ def send_campaign_sms(campaign_id: int, req: SendCampaignRequest) -> dict:
             elif status == CampaignSend.STATUS_FAILED:
                 failed += 1
 
-            session.add(CampaignSend(
-                business_id=campaign.business_id,
-                campaign_id=campaign_id,
-                customer_id=int(draft["customer_id"]),
-                phone_e164=draft["phone"],
-                message_text=draft["text"],
-                segments=segments,
-                cost_rial=cost if real_send else 0,
-                provider=provider,
-                dry_run=not real_send,
-                status=status,
-                status_detail_fa=detail,
-                sent_at=stamp,
-            ))
+            # ردیفِ قبلیِ همین عضو (اگر `skipped` بود) به‌روز می‌شود، نه دوباره
+            # ساخته — قید یکتاییِ (campaign, customer) اجازه‌ی ردیف دوم نمی‌دهد.
+            row = prior.get(int(draft["customer_id"]))
+            if row is None:
+                row = CampaignSend(
+                    business_id=campaign.business_id,
+                    campaign_id=campaign_id,
+                    customer_id=int(draft["customer_id"]),
+                )
+                session.add(row)
+            row.phone_e164 = draft["phone"]
+            row.message_text = draft["text"]
+            row.segments = segments
+            # هزینه فقط برای ارسالِ **واقعیِ موفق**. ردیفِ ناموفق یا آزمایشی
+            # هزینه‌ی صفر می‌گیرد، وگرنه دفترِ هزینه پولی را ثبت می‌کند که
+            # خرج نشده.
+            billable = real_send and status == CampaignSend.STATUS_SENT
+            row.cost_rial = cost if billable else 0
+            row.provider = provider
+            row.dry_run = not real_send
+            row.status = status
+            row.status_detail_fa = detail
+            # شناسه‌ی پیام نزد پنل — پیش‌نیازِ webhook تحویل در گام بعد.
+            row.provider_message_id = message_id_of.get(str(draft["customer_id"]))
+            row.sent_at = stamp
 
             # ⚠️ مهرِ تماس **فقط** برای ارسالِ واقعیِ موفق.
             # پیش‌نمایش هیچ پیامی نفرستاده؛ اگر مهر بخورد، سنجشِ اثر تماسی را
@@ -541,6 +571,7 @@ def send_campaign_sms(campaign_id: int, req: SendCampaignRequest) -> dict:
         "ارسال‌شده": sent,
         "ناموفق": failed,
         "بدون_شماره": len(without_phone),
+        "بدون_متن": len(without_text),
         "حالت_آزمایشی": not real_send,
         "ارائه‌دهنده": provider,
         "قطعه": total_segments,
@@ -599,7 +630,13 @@ def _send_drafts(
         if template:
             text = render_template(template, {"نام": name})
         else:
-            text = (message_fa or action_fa or "").strip()
+            # ⚠️ عمداً هیچ fallbackی به `action_fa` نیست.
+            # `action_fa` طبق تعریفِ خودش «جمله‌ی امری برای تیم فروش» است، نه متنِ
+            # مشتری — سوم‌شخص و درباره‌ی خودِ مشتری. فرستادنش یعنی پیامی مثل
+            # «به این مشتری فلان را معرفی کنید؛ مشتریان مشابهش می‌خرند ولی او نه»
+            # مستقیم برای همان مشتری برود، که هم بی‌معنا است هم پروفایلِ داخلی را
+            # لو می‌دهد. نبودِ متن یعنی «قابل ارسال نیست»، نه «هرچه هست بفرست».
+            text = (message_fa or "").strip()
         drafts.append({
             "member": member,
             "customer_id": customer_id,
