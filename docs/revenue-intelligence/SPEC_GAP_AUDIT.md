@@ -1,0 +1,221 @@
+# حسابرسی شکاف در برابر سند
+
+> مرجع: `MASTER_SPEC.md` (همان متنی که کاربر داد، دست‌نخورده در همین پوشه).
+> ارجاع بندها به شماره‌ی بخش‌های همان فایل است.
+>
+> **این سند برای دفاع نوشته نشده.** جایی که ادعای قبلی من غلط بوده، همان‌جا
+> نوشته شده که غلط بوده.
+
+## چهار وضعیت
+
+| وضعیت | معنی |
+|---|---|
+| `done` | پیاده شده، با شاهد کد و تستی که **وجودش راستی‌آزمایی شده** |
+| `partial` | بخشی پیاده شده — بخشِ نشده صریح گفته می‌شود |
+| `missing` | ساخته نشده و تصمیمی هم درباره‌اش ثبت نشده بود |
+| `declined` | عمداً ساخته نشد؛ با دلیل، و با تفکیک نوعِ مانع |
+
+و برای هر مانع، تفکیکِ صریح:
+
+* **`blocked_by_data`** — داده‌اش وجود ندارد؛ تصمیم من نبود.
+* **`my_judgement`** — داده بود یا شدنی بود؛ **من** تصمیم گرفتم نسازم.
+
+این دو را در گزارش‌های قبلی گاهی یکی نشان داده بودم. تفکیکشان مهم است، چون
+دومی قابل بازبینی است و اولی نه.
+
+---
+
+## جمع‌بندی فازها (§۳۵)
+
+| فاز | عنوان سند | ادعای قبلی من | واقعیت |
+|---|---|---|---|
+| ۰ | Audit and safety foundation | ✅ کامل | ✅ **کامل** — هر ۶ قلم |
+| ۱ | Canonical data and trustworthy Customer 360 | ✅ کامل | 🔶 **~۵۰٪** |
+| ۲ | Actionable deterministic opportunity engine | ✅ کامل | 🔶 **~۷۵٪** |
+| ۳ | Closed-loop campaigns and experiments | ✅ کامل | 🔶 **~۹۰٪ — دروازه‌ی پذیرش رد می‌شود** |
+| ۴ | Predictive models | ✅ | ❌ **~۲۵٪** |
+| ۵ | Causal offer optimization and pricing | ❌ صفر | 🔶 **~۲۰٪** |
+| ۶ | Operational optimization | ❌ شروع نشده | 🔶 **~۲۰٪** |
+
+### دو خطای بزرگ در ادعاهای قبلی
+
+**۱. «رتبه‌بندی مبتنی بر اثر» فاز ۴ نیست، فاز ۵ است.**
+سند مدل‌های uplift/treatment-effect را صریحاً زیر
+«Phase 5 — Causal offer optimization and pricing intelligence» گذاشته. من آن را
+«فاز ۴» نامیدم. نتیجه‌ی این جابه‌جایی: فاز ۴ عملاً دست‌نخورده ماند در حالی که
+«✅» خورده بود، و فاز ۵ «صفر» اعلام شد در حالی که اولین قلمش ساخته شده بود.
+
+**۲. فاز ۱ و ۲ «کامل» نبودند.** جدول‌های پایین نشان می‌دهند چه چیزی کم است.
+
+---
+
+## فاز ۰ — Audit and safety foundation
+
+| قلم سند | وضعیت | شاهد |
+|---|---|---|
+| Current-system audit | `done` | `CURRENT_SYSTEM_AUDIT.md` |
+| Target architecture document | `done` | `TARGET_ARCHITECTURE.md` |
+| Schema migration plan | `done` | `db/migrations.py` (۷ مهاجرت، جدول `schema_migrations`) |
+| Implementation status checklist | `done` | `IMPLEMENTATION_STATUS.md` |
+| Baseline test suite around current imports | `done` | `tests/test_baseline_imports.py` |
+| Backup/rollback instructions | `done` | `ROLLBACK.md` |
+
+**دروازه‌ی پذیرش:** ندارد. ✅ کامل.
+
+---
+
+## فاز ۱ — Canonical data and trustworthy Customer 360
+
+| قلم سند | وضعیت | شاهد / آنچه کم است |
+|---|---|---|
+| canonical orders/order_lines/customers/products | `done` | `db/models.py` — گرینِ خط سفارش، یکتا بر `line_uid` |
+| identity and product resolution | `partial` | ترتیبِ قطعی (تلفن → کلید خام) هست؛ ولی `merged_into_customer_id`، تاریخچه‌ی ادغام و صف بازبینی **نیست**، و `confidence_bp` همه‌جا ۱۰۰۰۰ هاردکد است — یعنی «اطمینان» عملاً متغیر نیست |
+| returns | `done` | خطوط برگشتی با `is_return` ماندگارند — `test_returns_are_in_the_ledger_not_dropped` |
+| discounts | `done` | `discount_rial` / `discount_rate_bp` |
+| cost | `partial` | فقط اگر فایل ستون بها داشته باشد پر می‌شود؛ هیچ زنجیره‌ی استخراج COGS نیست |
+| **margin / gross profit** | `missing` | `gross_profit` و `line_cogs` در کل مخزن **صفر مورد**. حاشیه فقط به‌صورت گذرا در `analysis/kpis.py` حساب می‌شود و هرگز در دفتر کل نمی‌نشیند |
+| reconciliation | `done` | `ImportReconciliation`، کنترل‌های L01–L07 — `test_reconciliation_rows_are_persisted` |
+| Customer 360 feature snapshots | `partial` | `as_of_date` و `feature_version` هست؛ **watermark منبع** و **نسخه‌ی کد** (§۱۰.۴) نیست — ۲ از ۴ |
+| Immutable imports (`import_rows_raw` §۷.۱) | `missing` | ردیف خام هیچ‌جا ذخیره نمی‌شود |
+| Quarantine (`import_quarantine` §۷.۱) | `missing` | ردیف‌های ردشده فقط در `df.attrs` موقت‌اند؛ بعد از پایان پروسه از بین می‌روند. فقط **شمارش**شان در `ImportBatch.rows_invalid/rows_duplicate` می‌ماند |
+| Versioned per-source mappings (§۸.۲) | `missing` | `mapping_profiles` با هشِ سرستون کلید می‌خورد، بدون `version` و بدون `source_system` |
+| data-quality UI/API (§۸.۵ — ۹ بُعد) | `partial` | **۳ از ۹**: پوشش بها، نرخ شناسه‌ی مشتری، نرخ تطبیق کالا. غایب: completeness عمومی، validity، uniqueness، پوشش شعبه، وضوح برگشت/وضعیت، سازگاری بازه‌ی تاریخ |
+
+### جدول‌های §۷.۱/§۷.۵ که اصلاً وجود ندارند
+
+`branches` · `source_systems` · `promotions` · `price_history` ·
+`supplier_cost_history` · `inventory_snapshots` — هر شش `missing`.
+
+نوع مانع: `branches` و `promotions` و `price_history` → **`blocked_by_data`**
+(داده‌شان در فایل فروش نیست). `source_systems` → **`my_judgement`** (با یک منبع،
+لازم ندیدم).
+
+**دروازه‌ی پذیرش فاز ۱** («بارگذاری دوباره idempotent و آشتی با مجموع مبدأ»):
+✅ **می‌گذرد** — `test_reimport_is_idempotent` + کنترل‌های L01–L07.
+یعنی دروازه پاس می‌شود ولی نیمی از اقلامِ تحویلی ساخته نشده.
+
+---
+
+## فاز ۲ — Actionable deterministic opportunity engine
+
+| قلم سند | وضعیت | شاهد / آنچه کم است |
+|---|---|---|
+| Lifecycle states (§۱۱ — ۱۲ حالت) | `done` | **هر ۱۲ حالت** در `lifecycle/states.py` پیاده و قابل‌دسترسی‌اند؛ گذارها با دلیل در `CustomerLifecycleEvent` ثبت می‌شوند |
+| Rule-based replenishment (§۱۳) | `partial` | میانه‌ی **ساده**ی فاصله‌ها استفاده می‌شود، نه میانه‌ی وزنیِ مقاوم + MAD (§۱۳.۳). تعدیل بر پایه‌ی مقدار/اندازه‌ی بسته (§۱۳.۴) **نیست**. سلسله‌مراتب ۵ سطحیِ شواهد (§۱۳.۲) **نیست** |
+| Rule-based churn/slipping (§۱۶.۱) | `done` | آستانه‌ها مضربِ آهنگ خودِ مشتری‌اند، نه ۹۰ روزِ ثابت |
+| Association / sequential NBP baseline (§۱۴) | `partial` | الگوهای توالی کاملاً به فرصت وصل‌اند (`KIND_SEQUENCE`)؛ قواعد انجمنی وجود دارند ولی بیشتر به‌عنوان سیگنالِ **پشتیبان** در توصیه‌گر، نه مولدِ درجه‌یک |
+| Basket-building baseline (§۱۵) | `missing` | attach rate، ارزش افزوده‌ی سبد، تغییر سود، هزینه‌ی تخفیف بسته و کانیبالیزیشن — هیچ‌کدام. نوع مانع: بخشی `blocked_by_data` (سود لازم دارد) و بخشی `my_judgement` |
+| Expansion-gap baseline (§۱۷) | `done` | `analysis/expansion_gap.py` + مولد اختصاصی. ⚠️ سند «gross profit» می‌خواهد، ما **درآمد**محور ساخته‌ایم (در خود فایل مستند شده) |
+| Opportunity common contract (§۱۲) | `done` | `opportunities/contract.py` |
+| Filters (§۱۲ — ۱۱ مرحله) | `partial` | **۹ از ۱۱** فیلتر |
+| Conflict suppression · expiry · EV ranking | `done` | `filter_conflict`، `_expire_overdue`، مرتب‌سازی نزولی بر ارزش |
+| Opportunity Inbox + Customer 360 UI | `done` | `OpportunityInbox.tsx`، `Customer360.tsx` |
+
+**دروازه‌ی پذیرش فاز ۲** («هر فرصت شواهد دارد و بازتولیدپذیر است»): ✅ می‌گذرد.
+
+---
+
+## فاز ۳ — Closed-loop campaigns and experiments
+
+| قلم سند | وضعیت | شاهد |
+|---|---|---|
+| action/exposure/outcome events | `done` | `CampaignMember.exposure_*`، `CampaignOutcome`، `OpportunityEvent` |
+| campaign audience builder | `done` | `POST /api/v1/campaigns` |
+| treatment/control randomization | `done` | هشِ قطعی، طبقه‌بندی‌شده، در سطح **مشتری** (§۲۲.۱) |
+| attribution reporting | `done` | `analyze_campaign` — حکمِ `attribution_only` وقتی کنترل نیست |
+| incremental analysis | `done` | `test_injected_lift_is_recovered_with_the_right_magnitude` |
+| exports/connectors | `done` | خروجی اکسل + ارسال مستقیم کاوه‌نگار |
+| operator feedback | `done` | **۷ دلیل رد** دقیقاً مطابق §۳۰ — `test_dismiss_reasons_are_a_closed_vocabulary` |
+| §۲۲.۲ — ۱۳ سنجه | `partial` | **۹ از ۱۳**. غایب: Delivered و Viewed/clicked (`blocked_by_data` — webhook پنل وصل نیست)، **Incremental gross profit** (`blocked_by_data` — ستون بها در `campaign_outcomes` نیست)، و Cost per incremental order فقط برای ارسالِ درون‌سیستمی کار می‌کند نه کمپینِ اکسلی |
+
+### ⛔ دروازه‌ی پذیرش فاز ۳ **رد می‌شود**
+
+سند: *«a test campaign can be run end-to-end with treatment/control and
+**incremental gross profit** reporting.»*
+
+ما **درآمد** افزوده گزارش می‌کنیم، نه **سود** افزوده. پس این دروازه پاس نشده —
+و من قبلاً فاز ۳ را «کامل» اعلام کرده بودم.
+
+---
+
+## فاز ۴ — Predictive models
+
+| قلم سند | وضعیت | شاهد / آنچه کم است |
+|---|---|---|
+| Calibrated churn/survival model | `partial` | کالیبراسیون و Brier و منحنی اتکا **هست** (`probability_eval.py`). ولی خودِ مدل، دامپینگِ هندسیِ heuristic با π=۰٫۸۵ **هاردکد** است — نه sBG/BG-NBD برازش‌شده، نه Cox/Weibull. اعتبارسنجی زمانی فقط **یک** برش دارد، نه backtest غلتان |
+| Advanced replenishment model (§۱۳.۵) | `missing` | نه survival، نه hazard، نه recurrent-event. `lifelines` حتی وابستگی پروژه نیست |
+| CLV (§۱۹) | `partial` | وجود دارد ولی **درآمدمحور است نه سودمحور** (سند صریحاً «gross-profit based» می‌خواهد)، و **بازه‌ی اطمینان ندارد** |
+| Future-whale model (§۱۸) | `declined` → واقعاً `missing` | قبلاً گفتم «`clv` موجود همین کار را می‌کند». این **جایگزینِ درستی نیست**: سند برچسب را «صدکِ سودِ **آینده**» تعریف می‌کند با جلوگیری از نشت، نه CLV فعلی. نوع مانع: `my_judgement` |
+| Hybrid next-best-product ranking (§۱۴.۴ — ۹ سیگنال) | `partial` | **۴ از ۹**: زمان‌بندی، تمایل، لیفت مکمل، محبوبیت. غایب از امتیاز: سود، موجودی، سازگاری، جریمه‌ی تکرار، اطمینان، خستگی (سه‌تای آخر به‌عنوان **فیلترِ** بعدی هستند، نه ورودیِ رتبه) |
+| Model registry / promotion / rollback / drift (§۲۶.۴، §۲۹.۷) | `declined` | `uplift_snapshots` بازتولیدپذیری و rollback را می‌دهد ولی **رجیستری نیست**: نه artifact، نه گردش‌کار promotion، نه endpointهای `/models/*`. نوع مانع: `my_judgement` |
+
+### ⛔ دروازه‌ی پذیرش فاز ۴ رد می‌شود
+
+سند: *«promoted models beat deterministic baselines on temporal holdout and
+top-K economic metrics.»* هیچ مدلی promote نشده، چون رجیستری و گردش‌کارش وجود
+ندارد.
+
+---
+
+## فاز ۵ — Causal offer optimization and pricing intelligence
+
+| قلم سند | وضعیت | شاهد / آنچه کم است |
+|---|---|---|
+| uplift / treatment-effect models (§۲۰.۴) | `partial` | تفاضل نرخ تبدیل در سلولِ (نوع × چرخه‌ی عمر) با انقباض به والد و بازه‌ی اطمینان. این یک تخمین‌گرِ **طبقه‌بندی‌شده‌ی ساده** است — نه T/S/X-learner، نه causal forest، نه هیچ ویژگیِ سطحِ مشتری. `test_small_cell_is_pulled_toward_the_parent` |
+| minimum effective incentive policy (§۲۰) | `missing` | `filter_offer_policy` عملاً no-op است و سیستم **هرگز تخفیف تولید نمی‌کند** — `test_no_offer_or_discount_is_ever_generated`. هیچ فیلدی برای سطح آفر وجود ندارد. نوع مانع: `blocked_by_data` (داده‌ی آزمایشیِ آفر نداریم) |
+| price elasticity and simulation (§۲۱) | `missing` | هیچ ماژولی نیست. `unit_price_rial` نوشته می‌شود ولی **هیچ‌جا خوانده نمی‌شود**. نوع مانع: `blocked_by_data` (تنوع قیمتِ عامدانه وجود ندارد) |
+| next-best-action optimization (§۲۵ — ~۱۴ نوع اقدام) | `partial` | **۶ نوع فرصت** و **یک کانال** (پیامک). «بدون اقدام»، «اعلان موجودی»، تفکیک تماس/واتساپ/ایمیل/پرامپت فروشگاهی: هیچ‌کدام |
+
+---
+
+## فاز ۶ — Operational optimization
+
+| قلم سند | وضعیت | شاهد / آنچه کم است |
+|---|---|---|
+| operator assignment / capacity | `partial` | `assigned_to` فقط یک رشته است؛ هیچ منطق ظرفیت/بار/نوبت‌دهی وجود ندارد |
+| branch-aware fulfillment (§۲۴.۵) | `missing` | `Order.branch` ذخیره می‌شود ولی در `analysis/`، `opportunities/` و `campaigns/` **صفر بار خوانده می‌شود** |
+| notification and scheduled workflows | `done` | APScheduler، اسکن روزانه، جبران اجرای ازدست‌رفته، گاردِ مجوز تماس |
+| performance tuning (§۳۳) | `partial` | ایندکس‌ها و صفحه‌بندی هست؛ تنظیم عامدانه‌ی کارایی انجام نشده |
+| advanced monitoring (§۳۲) | `missing` | نه correlation ID، نه لاگ ساختاریافته، نه `/metrics` |
+| documented deployment/runbook | `missing` | `OPERATIONS_RUNBOOK.md` ساخته نشده |
+
+---
+
+## اسناد الزامی (§۳۶): ۴ از ۱۵
+
+| موجود | غایب |
+|---|---|
+| `CURRENT_SYSTEM_AUDIT` · `TARGET_ARCHITECTURE` · `FINANCIAL_CALCULATION_RULES` · `IMPLEMENTATION_STATUS` | `DATA_DICTIONARY` · `SOURCE_MAPPING_GUIDE` · `IDENTITY_RESOLUTION` · `FEATURE_CATALOG` · `OPPORTUNITY_ENGINE` · `MODEL_CARDS` · `EXPERIMENTATION_GUIDE` · `API_GUIDE` · `OPERATIONS_RUNBOOK` · `SECURITY_AND_PRIVACY` · `RELEASE_NOTES` |
+
+`PRESERVE_CONTRACT.md` و `ROLLBACK.md` و همین فایل، **افزون بر** فهرست سندند.
+
+---
+
+## امنیت (§۳۱)
+
+| قلم | وضعیت |
+|---|---|
+| Authentication | `partial` — توکنِ مشترک روی مسیرهای نوشتنی؛ احراز هویتِ هر کاربر نیست |
+| Business/tenant scoping | `done` — `business_id` روی همه‌ی جداول و در همه‌ی پرس‌وجوها |
+| RBAC (۵ نقش) | `missing` — `my_judgement` (برای تک‌کاربره سربار دانستم) |
+| PII masking in logs | `partial` — `mask_phone` در پاسخ API هست، در لاگ **نیست** |
+| Audit logs | `partial` — فقط `OpportunityEvent`؛ برای ادغام هویت، promotion و export **نیست** |
+| Contact consent / do-not-contact | `done` — دفترِ انصراف و دروازه‌ی مجوز تماس |
+
+---
+
+## نتیجه
+
+سیستم در **عمق** جاهایی که ساخته شده قوی است (دفتر کل idempotent با آشتی
+خودحسابرس، حلقه‌ی بسته‌ی آزمایش با گروه کنترل واقعی، گاردهای تماس)، ولی در
+**پهنا** حدود نیمی از سند را پوشش می‌دهد.
+
+دو موضوع بارها تکرار می‌شوند و ریشه‌ی مشترک دارند:
+
+۱. **سود ناخالص.** نبودش هم‌زمان: دروازه‌ی پذیرش فاز ۳ را می‌شکند، یک قلم از فاز
+   ۱ است، CLV را از سند منحرف می‌کند، شکاف توسعه را درآمدمحور نگه می‌دارد، و
+   شمالِ‌ستاره‌ی خودِ سند (§۴: «incremental gross profit») را غیرقابل‌محاسبه
+   می‌کند. زیرساختِ بها **از قبل کار می‌کند** و داده‌ی نمونه ۱۰۰٪ پوشش دارد.
+
+۲. **ماندگاریِ ردیف خام و قرنطینه.** نبودش یعنی هیچ ردیفِ ردشده‌ای قابل بازبینی
+   نیست — که ادعای «auditability» سند (§۳.۵) را تضعیف می‌کند.
