@@ -25,6 +25,7 @@ from sqlalchemy import func, select
 from mktcore.campaigns.analysis import ArmStats, analyze_campaign
 from mktcore.campaigns.assign import ARM_CONTROL, ARM_TREATMENT, assign_arms
 from mktcore.campaigns.outcomes import arm_stats, compute_campaign_outcomes
+from mktcore.config import get_settings
 from mktcore.contact.register import build_gate
 from mktcore.db.base import now_ts
 from mktcore.db.engine import session_scope, write_lock
@@ -35,10 +36,14 @@ from mktcore.db.models import (
     CampaignMember,
     CampaignOpportunity,
     CampaignOutcome,
+    CampaignSend,
     Customer,
     CustomerFeature,
     Opportunity,
 )
+from mktcore.execution import send_campaign
+from mktcore.execution.audience import RenderedMessage, render_template
+from mktcore.execution.cost import cost_note_fa, message_cost_rial, segment_count
 from mktcore.identity import normalize_phone
 from mktcore.lifecycle import STATE_LABELS_FA
 from mktcore.money import money_payload
@@ -48,6 +53,7 @@ logger = logging.getLogger("mktcore.api.campaigns")
 router = APIRouter(prefix="/api/v1/campaigns", tags=["campaigns"])
 
 EXPOSURE_CHANNEL_EXCEL = "excel_export"
+EXPOSURE_CHANNEL_SMS = "sms"
 EXPOSURE_NOTE_FA = (
     "لحظه‌ی دانلود فهرست به‌عنوان «تماس گرفته شد» ثبت می‌شود. اگر فهرستی را "
     "دانلود کنید ولی تماس نگیرید، آن افراد در گروه آزمایش می‌مانند و اثر "
@@ -352,6 +358,257 @@ def export_campaign(campaign_id: int):
     )
 
 
+class SendCampaignRequest(BaseModel):
+    """درخواست ارسال مستقیم کمپین.
+
+    پیش‌فرض **آزمایشی** است. ارسال واقعی سه شرط هم‌زمان لازم دارد:
+    `dry_run=false` و `confirm=true` و پیکربندی‌شدن پنل در env — همان گیت
+    سه‌لایه‌ی `/api/sms/send` که از قبل وجود داشت.
+    """
+
+    # اگر ندهید، متنِ پیشنهادیِ خودِ فرصت استفاده می‌شود
+    template: str | None = Field(default=None, max_length=1000)
+    dry_run: bool = True
+    confirm: bool = False
+    limit: int = Field(default=1000, ge=1, le=5000)
+
+
+@router.post("/{campaign_id}/send")
+def send_campaign_sms(campaign_id: int, req: SendCampaignRequest) -> dict:
+    """ارسال مستقیم پیامک به بازوی آزمایش.
+
+    تفاوت بنیادی با `/api/sms/send` قدیمی: آن مسیر مخاطبش را از تحلیل می‌ساخت و
+    از کمپین بی‌خبر بود. این مسیر از **اعضای کمپین** می‌خواند، پس:
+
+    * گروه کنترل ساختاراً غیرممکن است که پیام بگیرد (فیلتر `arm` در پرس‌وجو).
+    * لحظه‌ی تماس دقیق ثبت می‌شود، نه تقریبیِ «وقتی اکسل را گرفتم».
+    * هزینه‌ی هر پیام ثبت می‌شود، پس «هزینه به‌ازای سفارش افزوده» باز می‌شود.
+
+    ارسالِ دوباره امکان‌ناپذیر است: هر عضو حداکثر یک ردیف در `campaign_sends`
+    دارد و اعضای فرستاده‌شده از فهرست کنار گذاشته می‌شوند.
+    """
+    ensure_schema()
+    settings = get_settings()
+    cost_per_segment = int(settings.mkt_sms_cost_per_segment_rial)
+
+    wants_real = not req.dry_run
+    real_send = wants_real and req.confirm and settings.sms_configured
+    note = None
+    if wants_real and not real_send:
+        if not settings.sms_configured:
+            note = (
+                "ارسال واقعی غیرفعال است: MKT_SMS_ENABLE=1 و KAVENEGAR_API_KEY را در "
+                "تنظیمات سرور بگذارید. نتیجه به‌صورت آزمایشی برگردانده شد."
+            )
+        else:
+            note = "برای ارسال واقعی، تأیید صریح (confirm=true) لازم است. نتیجه آزمایشی است."
+
+    with write_lock, session_scope() as session:
+        campaign = session.get(Campaign, campaign_id)
+        if campaign is None:
+            raise HTTPException(status_code=404, detail="این کمپین یافت نشد.")
+        if campaign.status == "closed":
+            raise HTTPException(
+                status_code=409, detail="این کمپین بسته شده است و ارسال تازه نمی‌پذیرد.",
+            )
+
+        members = session.scalars(
+            select(CampaignMember).where(
+                CampaignMember.campaign_id == campaign_id,
+                CampaignMember.arm == ARM_TREATMENT,
+            )
+        ).all()
+        if not members:
+            raise HTTPException(
+                status_code=409, detail="این کمپین عضوی در گروه آزمایش ندارد.",
+            )
+
+        # اعضایی که قبلاً فرستاده شده‌اند — گاردِ ارسال دوباره
+        already = {
+            int(cid) for (cid,) in session.execute(
+                select(CampaignSend.customer_id)
+                .where(CampaignSend.campaign_id == campaign_id)
+            ).all()
+        }
+        pending = [m for m in members if int(m.customer_id) not in already]
+        if not pending:
+            raise HTTPException(
+                status_code=409,
+                detail="برای همه‌ی اعضای گروه آزمایش قبلاً پیام فرستاده شده است.",
+            )
+
+        # دروازه‌ی مجوز تماس — همان گاردی که خروجی اکسل هم از آن رد می‌شود
+        gate = build_gate(session, campaign.business_id)
+        screened = gate.partition(pending, key=lambda m: str(m.customer_id))
+        pending = screened.allowed[:req.limit]
+        if not pending:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "همه‌ی اعضای باقی‌مانده با دروازه‌ی مجوز تماس کنار گذاشته شدند: "
+                    f"{screened.note_fa()}"
+                ),
+            )
+
+        drafts = _send_drafts(session, campaign_id, pending, req.template)
+        with_phone = [d for d in drafts if d["phone"]]
+        without_phone = [d for d in drafts if not d["phone"]]
+
+        result = None
+        if with_phone:
+            messages = [
+                RenderedMessage(
+                    customer_id=str(d["customer_id"]), phone=d["phone"], text=d["text"],
+                )
+                for d in with_phone
+            ]
+            result = send_campaign(
+                messages,
+                provider=settings.mkt_sms_provider,
+                api_key=settings.kavenegar_api_key if real_send else None,
+                sender=settings.mkt_sms_sender,
+                dry_run=not real_send,
+            )
+
+        status_of = {}
+        if result is not None:
+            status_of = {
+                str(d.get("مشتری")): str(d.get("وضعیت", "")) for d in result.details
+            }
+        provider = result.provider if result is not None else "dry-run"
+
+        stamp = now_ts()
+        today = pd.Timestamp.now().date().isoformat()
+        sent = failed = 0
+        total_segments = total_cost = 0
+
+        for draft in drafts:
+            has_phone = bool(draft["phone"])
+            detail = status_of.get(str(draft["customer_id"]))
+            ok = has_phone and (result is not None) and "خطا" not in (detail or "")
+            if not has_phone:
+                status = CampaignSend.STATUS_SKIPPED
+                detail = "شماره‌ی موبایل ثبت نشده است."
+            elif ok:
+                status = CampaignSend.STATUS_SENT
+            else:
+                status = CampaignSend.STATUS_FAILED
+
+            segments = segment_count(draft["text"]) if has_phone else 0
+            cost = (
+                message_cost_rial(draft["text"], cost_per_segment_rial=cost_per_segment)
+                if has_phone else 0
+            )
+            # هزینه فقط برای ارسال واقعی جمع می‌شود؛ پیش‌نمایش پولی خرج نمی‌کند
+            if real_send and status == CampaignSend.STATUS_SENT:
+                total_segments += segments
+                total_cost += cost
+            if status == CampaignSend.STATUS_SENT:
+                sent += 1
+            elif status == CampaignSend.STATUS_FAILED:
+                failed += 1
+
+            session.add(CampaignSend(
+                business_id=campaign.business_id,
+                campaign_id=campaign_id,
+                customer_id=int(draft["customer_id"]),
+                phone_e164=draft["phone"],
+                message_text=draft["text"],
+                segments=segments,
+                cost_rial=cost if real_send else 0,
+                provider=provider,
+                dry_run=not real_send,
+                status=status,
+                status_detail_fa=detail,
+                sent_at=stamp,
+            ))
+
+            # ⚠️ مهرِ تماس **فقط** برای ارسالِ واقعیِ موفق.
+            # پیش‌نمایش هیچ پیامی نفرستاده؛ اگر مهر بخورد، سنجشِ اثر تماسی را
+            # می‌شمارد که رخ نداده و اثر را کمتر از واقع نشان می‌دهد.
+            if real_send and status == CampaignSend.STATUS_SENT:
+                member = draft["member"]
+                if member.exposure_at is None:
+                    member.exposure_at = stamp
+                    member.exposure_date = today
+                    member.exposure_channel = EXPOSURE_CHANNEL_SMS
+
+        session.flush()
+        payload = _campaign_detail(session, campaign)
+
+    money = money_payload(total_cost, get_settings().mkt_currency)
+    payload["send"] = {
+        "ارسال‌شده": sent,
+        "ناموفق": failed,
+        "بدون_شماره": len(without_phone),
+        "حالت_آزمایشی": not real_send,
+        "ارائه‌دهنده": provider,
+        "قطعه": total_segments,
+        "هزینه": money,
+        **screened.to_dict(),
+    }
+    payload["send"]["یادداشت_هزینه"] = cost_note_fa(
+        sent, total_segments, total_cost, display_text=money["display_text"],
+    )
+    if note:
+        payload["send"]["توضیح"] = note
+    gate_note = screened.note_fa()
+    if gate_note:
+        payload["send"]["یادداشت_مجوز_تماس"] = gate_note
+    return payload
+
+
+def _send_drafts(
+    session, campaign_id: int, members: list[CampaignMember], template: str | None,
+) -> list[dict]:
+    """متن و شماره‌ی هر عضو.
+
+    اگر قالبی داده نشود، **متن پیشنهادیِ خودِ فرصت** استفاده می‌شود — همان متنی
+    که در خروجی اکسل هم می‌آمد، پس دو کانال یک پیام می‌فرستند.
+    """
+    ids = {int(m.customer_id) for m in members}
+    customers = {
+        c.id: c for c in session.scalars(
+            select(Customer).where(Customer.id.in_(sorted(ids)))
+        ).all()
+    }
+    rows = session.execute(
+        select(
+            CampaignOpportunity.customer_id,
+            Opportunity.message_fa,
+            Opportunity.action_fa,
+            Opportunity.score_rial,
+        ).join(Opportunity, Opportunity.id == CampaignOpportunity.opportunity_id)
+        .where(CampaignOpportunity.campaign_id == campaign_id)
+    ).all()
+
+    # ارزشمندترین فرصتِ هر مشتری متنِ پیام را تعیین می‌کند
+    best: dict[int, tuple] = {}
+    for customer_id, message_fa, action_fa, score in rows:
+        key = int(customer_id)
+        current = best.get(key)
+        if current is None or int(score or 0) > int(current[2] or 0):
+            best[key] = (message_fa, action_fa, score)
+
+    drafts: list[dict] = []
+    for member in members:
+        customer_id = int(member.customer_id)
+        customer = customers.get(customer_id)
+        name = (customer.display_name if customer else None) or "مشتری گرامی"
+        message_fa, action_fa, _score = best.get(customer_id, (None, None, None))
+        if template:
+            text = render_template(template, {"نام": name})
+        else:
+            text = (message_fa or action_fa or "").strip()
+        drafts.append({
+            "member": member,
+            "customer_id": customer_id,
+            "phone": normalize_phone(customer.phone_e164) if customer else None,
+            "text": text,
+        })
+    return drafts
+
+
 def _export_rows(session, campaign_id: int, members: list[CampaignMember]) -> list[dict]:
     ids = {m.customer_id for m in members}
     customers = {
@@ -440,12 +697,40 @@ def _customer_names(session, customer_ids: set[int]) -> dict[int, str]:
     return {cid: name for cid, name in rows if name}
 
 
+def _contact_cost_rial(session, campaign_id: int) -> int | None:
+    """هزینه‌ی واقعیِ تماس این کمپین — فقط ارسال‌های **واقعیِ موفق**.
+
+    `None` یعنی هیچ ارسالی از داخل سیستم انجام نشده (کانال، خروجی اکسل بوده)،
+    و آن‌وقت «هزینه به‌ازای سفارش افزوده» صادقانه مسدود می‌ماند. صفر با `None`
+    فرق دارد: صفر یعنی «فرستادیم و رایگان بود» که دروغ است.
+    """
+    total, rows = session.execute(
+        select(func.sum(CampaignSend.cost_rial), func.count(CampaignSend.id)).where(
+            CampaignSend.campaign_id == campaign_id,
+            CampaignSend.dry_run.is_(False),
+            CampaignSend.status == CampaignSend.STATUS_SENT,
+        )
+    ).one()
+    if not rows:
+        return None
+    return int(total or 0)
+
+
 def _report(session, campaign_id: int) -> dict:
     stats = arm_stats(session, campaign_id)
     treatment = ArmStats(arm=ARM_TREATMENT, **stats.get(ARM_TREATMENT, {}))
     control = ArmStats(arm=ARM_CONTROL, **stats.get(ARM_CONTROL, {}))
-    report = analyze_campaign(treatment, control).to_dict()
+    cost = _contact_cost_rial(session, campaign_id)
+    report = analyze_campaign(treatment, control, contact_cost_rial=cost).to_dict()
     report["incremental_revenue"] = money_payload(report["incremental_revenue_rial"])
+    report["contact_cost"] = (
+        None if report["contact_cost_rial"] is None
+        else money_payload(report["contact_cost_rial"])
+    )
+    report["cost_per_incremental_order"] = (
+        None if report["cost_per_incremental_order_rial"] is None
+        else money_payload(report["cost_per_incremental_order_rial"])
+    )
     return report
 
 

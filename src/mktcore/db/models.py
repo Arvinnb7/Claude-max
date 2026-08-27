@@ -708,6 +708,53 @@ class CampaignOutcome(Base):
     computed_at: Mapped[float] = mapped_column(Float, default=now_ts)
 
 
+class CampaignSend(Base):
+    """هر پیامی که برای یک کمپین فرستاده شد — دفترِ ارسال.
+
+    چرا جدولِ تازه و نه ستون روی `outbox` قدیمی: `outbox` جدولِ legacy است و
+    قرارداد صفر-رگرسیون دست‌زدن به آن را ممنوع کرده. ضمناً این دفتر چیزهایی
+    نگه می‌دارد که آن‌جا جا ندارند: قطعه‌شماری، هزینه‌ی ریالی، شناسه‌ی پیام نزد
+    پنل، و وضعیت تحویل.
+
+    وجود این جدول یک سنجه‌ی مسدود را باز می‌کند: **هزینه به‌ازای سفارش افزوده**.
+    تا پیش از این، هزینه‌ی تماس هیچ‌جا ثبت نمی‌شد.
+
+    `provider_message_id` امروز فقط ذخیره می‌شود؛ وقتی webhook پنل وصل شود،
+    وضعیت تحویل روی همین ردیف به‌روز می‌شود بدون تغییر طرح‌واره.
+    """
+
+    __tablename__ = "campaign_sends"
+    __table_args__ = (
+        # یک پیام به هر عضو در هر کمپین — گاردِ ارسالِ دوباره در سطح دیتابیس
+        UniqueConstraint("campaign_id", "customer_id"),
+        Index("ix_campaign_sends_campaign_status", "campaign_id", "status"),
+    )
+
+    STATUS_SENT = "sent"
+    STATUS_FAILED = "failed"
+    STATUS_SKIPPED = "skipped"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    business_id: Mapped[int] = mapped_column(ForeignKey("businesses.id"), index=True)
+    campaign_id: Mapped[int] = mapped_column(
+        ForeignKey("campaigns.id", ondelete="CASCADE"), index=True
+    )
+    customer_id: Mapped[int] = mapped_column(
+        ForeignKey("customers.id", ondelete="CASCADE"), index=True
+    )
+    phone_e164: Mapped[str | None] = mapped_column(String(20))
+    message_text: Mapped[str | None] = mapped_column(Text)
+    segments: Mapped[int] = mapped_column(Integer, default=0)
+    cost_rial: Mapped[int] = mapped_column(BigInteger, default=0)
+    provider: Mapped[str] = mapped_column(String(32), default="dry-run")
+    # ارسالِ آزمایشی هم ثبت می‌شود، ولی با این پرچم از ارسالِ واقعی جدا می‌ماند
+    dry_run: Mapped[bool] = mapped_column(Boolean, default=True)
+    status: Mapped[str] = mapped_column(String(32), default=STATUS_SENT, index=True)
+    status_detail_fa: Mapped[str | None] = mapped_column(Text)
+    provider_message_id: Mapped[str | None] = mapped_column(String(128))
+    sent_at: Mapped[float] = mapped_column(Float, default=now_ts, index=True)
+
+
 class ContactSuppression(Base):
     """دفترِ «با این مشتری تماس نگیر».
 
@@ -761,6 +808,7 @@ __all__ = [
     "CampaignMember",
     "CampaignOpportunity",
     "CampaignOutcome",
+    "CampaignSend",
     "ContactSuppression",
     "Customer",
     "CustomerFeature",

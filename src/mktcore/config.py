@@ -96,6 +96,9 @@ class Settings(BaseSettings):
     mkt_sms_enable: bool = False
     mkt_sms_provider: str = "kavenegar"
     mkt_sms_sender: str | None = None
+    # هزینه‌ی هر **قطعه** پیامک به ریال (۳۰۰ تومان = ۳۰۰۰ ریال).
+    # قابل تغییر بدون دست‌زدن به کد، چون تعرفه‌ی پنل عوض می‌شود.
+    mkt_sms_cost_per_segment_rial: int = 3_000
     kavenegar_api_key: str | None = None
 
     @property

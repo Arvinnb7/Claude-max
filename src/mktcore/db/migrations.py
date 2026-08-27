@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("mktcore.db.migrations")
 
 # نسخه‌ی جاری طرح‌واره‌ی canonical. با افزودن هر مهاجرت، یک عدد بالا می‌رود.
-CANONICAL_SCHEMA_VERSION = 6
+CANONICAL_SCHEMA_VERSION = 7
 
 _MIGRATION_TABLE = "schema_migrations"
 
@@ -129,6 +129,13 @@ def _migration_0006_create_contact_suppressions(conn: Connection) -> None:
     Base.metadata.create_all(bind=conn, checkfirst=True)
 
 
+def _migration_0007_create_campaign_sends(conn: Connection) -> None:
+    """دفترِ ارسال کمپین (فاز ۵ — ارسال مستقیم و اقتصاد تماس)."""
+    from mktcore.db import models  # noqa: F401 - ثبت مدل‌ها در metadata
+
+    Base.metadata.create_all(bind=conn, checkfirst=True)
+
+
 _MIGRATIONS: tuple[tuple[int, str, Callable[[Connection], None]], ...] = (
     (1, "create_canonical_tables", _migration_0001_create_canonical_tables),
     (2, "create_opportunity_tables", _migration_0002_create_opportunity_tables),
@@ -136,6 +143,7 @@ _MIGRATIONS: tuple[tuple[int, str, Callable[[Connection], None]], ...] = (
     (4, "create_campaign_tables", _migration_0004_create_campaign_tables),
     (5, "create_uplift_snapshots", _migration_0005_create_uplift_snapshots),
     (6, "create_contact_suppressions", _migration_0006_create_contact_suppressions),
+    (7, "create_campaign_sends", _migration_0007_create_campaign_sends),
 )
 
 

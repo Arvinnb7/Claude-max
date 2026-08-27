@@ -344,7 +344,41 @@ export type CampaignReport = {
    */
   detectable_effect: number | null;
   power_note_fa: string | null;
+  /** هزینه‌ی واقعیِ تماس. `null` یعنی ارسالی از داخل سیستم انجام نشده. */
+  contact_cost_rial: number | null;
+  contact_cost: Money | null;
+  cost_per_incremental_order_rial: number | null;
+  cost_per_incremental_order: Money | null;
 };
+
+/** نتیجه‌ی یک ارسال کمپین. */
+export type CampaignSendResult = {
+  "ارسال‌شده": number;
+  "ناموفق": number;
+  "بدون_شماره": number;
+  "حالت_آزمایشی": boolean;
+  "ارائه‌دهنده": string;
+  "قطعه": number;
+  "هزینه": Money;
+  "مسدودشده": number;
+  "دلایل_مسدودی": { "دلیل": string; "تعداد": number }[];
+  "یادداشت_هزینه": string;
+  "توضیح"?: string;
+  "یادداشت_مجوز_تماس"?: string;
+};
+
+export async function sendCampaignSms(
+  id: number,
+  body: { template?: string; dry_run?: boolean; confirm?: boolean } = {},
+): Promise<CampaignDetail & { send: CampaignSendResult }> {
+  return handle(
+    await fetch(`${BASE}/api/v1/campaigns/${id}/send`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dry_run: true, ...body }),
+    }),
+  );
+}
 
 /** یک سطر از برنامه‌ی آزمایش: یک گروه، و اینکه چه می‌دانیم و چه لازم داریم. */
 export type ExperimentCell = {

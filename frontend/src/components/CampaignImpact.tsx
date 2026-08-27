@@ -7,6 +7,7 @@ import {
   FlaskConical,
   Lock,
   RefreshCw,
+  Send,
   ShieldAlert,
   Sparkles,
   Target,
@@ -22,7 +23,9 @@ import {
   getLearnedUplift,
   listCampaigns,
   refreshCampaign,
+  sendCampaignSms,
   type CampaignDetail,
+  type CampaignSendResult,
   type CampaignReport,
   type CampaignSummary,
   type ExperimentPlan,
@@ -219,6 +222,100 @@ export default function CampaignImpact() {
  * این جدول مستقیماً ترتیب صندوق فرصت‌ها را تعیین می‌کند، پس دیدنی‌بودنش لازم
  * است: کاربر باید بتواند بفهمد چرا فهرستش عوض شده.
  */
+function SendPanel({ campaignId }: { campaignId: number }) {
+  const [result, setResult] = useState<CampaignSendResult | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
+
+  async function run(real: boolean) {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await sendCampaignSms(campaignId, {
+        dry_run: !real,
+        confirm: real,
+      });
+      setResult(res.send);
+      if (real) setConfirming(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "ارسال ناموفق بود");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="mb-4 rounded-xl border p-3" style={{ borderColor: "var(--border)" }}>
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <span className="inline-flex items-center gap-1 font-medium">
+          <Send size={14} /> ارسال پیامک
+        </span>
+        <span className="text-xs" style={{ color: "var(--muted)" }}>
+          گروه کنترل هرگز پیام نمی‌گیرد.
+        </span>
+        <div className="ms-auto flex gap-2">
+          <Button variant="outline" disabled={busy} onClick={() => void run(false)}>
+            برآورد هزینه (بدون ارسال)
+          </Button>
+          {confirming ? (
+            <Button variant="outline" disabled={busy} onClick={() => void run(true)}>
+              تأیید می‌کنم، بفرست
+            </Button>
+          ) : (
+            <Button
+              variant="ghost"
+              disabled={busy || !result}
+              onClick={() => setConfirming(true)}
+            >
+              ارسال واقعی
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {!result && !error && (
+        <p className="text-xs" style={{ color: "var(--muted)" }}>
+          اول برآورد بگیرید تا تعداد پیام و هزینه معلوم شود؛ ارسال واقعی بعد از آن
+          فعال می‌شود.
+        </p>
+      )}
+
+      {error && <Alert tone="warn">{error}</Alert>}
+
+      {result && (
+        <div className="space-y-2">
+          <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+            <StatCard label="ارسال‌شده" value={toFa(String(result["ارسال‌شده"]))} />
+            <StatCard label="قطعه" value={toFa(String(result["قطعه"]))} />
+            <StatCard label="هزینه" value={toFa(result["هزینه"].display_text)} />
+            <StatCard
+              label="کنار گذاشته‌شده"
+              value={toFa(String(result["مسدودشده"]))}
+              hint={result["یادداشت_مجوز_تماس"]}
+            />
+          </div>
+          <p className="text-xs tnum" style={{ color: "var(--muted)" }}>
+            {toFa(result["یادداشت_هزینه"])}
+          </p>
+          {result["حالت_آزمایشی"] && (
+            <Alert tone="info">
+              این فقط برآورد بود؛ هیچ پیامی ارسال نشد و لحظه‌ی تماس هم ثبت نشده است.
+              {result["توضیح"] ? ` ${result["توضیح"]}` : ""}
+            </Alert>
+          )}
+          {result["بدون_شماره"] > 0 && (
+            <p className="text-xs" style={{ color: "var(--muted)" }}>
+              {toFa(String(result["بدون_شماره"]))} نفر شماره‌ی موبایل ثبت‌شده ندارند و
+              کنار گذاشته شدند.
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function NextExperiment() {
   const [plan, setPlan] = useState<ExperimentPlan | null>(null);
   const [expanded, setExpanded] = useState(false);
@@ -475,6 +572,7 @@ function CampaignDetailView({
 }) {
   const r = data.report;
   const t = r.arms.treatment;
+  const canSend = data.status !== "closed";
   const c = r.arms.control;
 
   return (
@@ -501,6 +599,8 @@ function CampaignDetailView({
             )}
           </div>
         </div>
+
+        {canSend && <SendPanel campaignId={data.id} />}
 
         <Alert tone={r.is_causal ? "info" : "warn"}>
           <span className="inline-flex items-center gap-1">
@@ -540,6 +640,40 @@ function CampaignDetailView({
               ? " — چون صفر داخل بازه است، اثر اثبات‌نشده می‌ماند."
               : ""}
           </p>
+        )}
+
+        {/*
+          اقتصاد تماس. تا پیش از ارسال مستقیم، هزینه هیچ‌جا ثبت نمی‌شد و این
+          سنجه صریحاً مسدود بود.
+        */}
+        {r.contact_cost && (
+          <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-3">
+            <StatCard label="هزینه‌ی تماس" value={toFa(r.contact_cost.display_text)} />
+            <StatCard
+              label="هزینه‌ی هر سفارش افزوده"
+              value={
+                r.cost_per_incremental_order
+                  ? toFa(r.cost_per_incremental_order.display_text)
+                  : "—"
+              }
+              hint={
+                r.cost_per_incremental_order
+                  ? undefined
+                  : "تا اثبات اثر، تقسیم بر سفارش افزوده معنا ندارد"
+              }
+            />
+            {r.is_causal && r.incremental_revenue.rial != null && r.contact_cost.rial
+              ? (
+                <StatCard
+                  label="بازگشت هر ریال"
+                  value={toFa(
+                    (r.incremental_revenue.rial / r.contact_cost.rial).toFixed(1),
+                  )}
+                  hint="درآمد افزوده به‌ازای هر ریال هزینه‌ی پیامک — درآمد است نه سود"
+                />
+              )
+              : null}
+          </div>
         )}
 
         {/*

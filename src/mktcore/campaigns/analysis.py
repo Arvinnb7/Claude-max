@@ -79,6 +79,11 @@ class CampaignReport:
     # قدرت تفکیکِ این کمپین: کوچک‌ترین اثری که با این اندازه دیدنی است
     detectable_effect: float | None = None
     power_note_fa: str | None = None
+    # هزینه‌ی واقعیِ ثبت‌شده‌ی تماس. `None` یعنی ارسالی از داخل سیستم نبوده.
+    contact_cost_rial: int | None = None
+    # هزینه‌ی هر سفارشِ **افزوده**. فقط وقتی معنا دارد که اثر اثبات شده باشد،
+    # چون تقسیم بر عددی که خودش اثبات‌نشده است، عددِ اثبات‌نشده می‌دهد.
+    cost_per_incremental_order_rial: int | None = None
 
     @property
     def is_causal(self) -> bool:
@@ -105,6 +110,8 @@ class CampaignReport:
             "blocked_metrics": self.blocked_metrics,
             "detectable_effect": self.detectable_effect,
             "power_note_fa": self.power_note_fa,
+            "contact_cost_rial": self.contact_cost_rial,
+            "cost_per_incremental_order_rial": self.cost_per_incremental_order_rial,
         }
 
 
@@ -231,11 +238,42 @@ def _power_note(mde: float | None, holdout_pct: int = 10) -> str | None:
     return text
 
 
-def analyze_campaign(treatment: ArmStats, control: ArmStats) -> CampaignReport:
-    """ساخت گزارش اثر با حکم صریح درباره‌ی اعتبارش."""
+def analyze_campaign(
+    treatment: ArmStats,
+    control: ArmStats,
+    *,
+    contact_cost_rial: int | None = None,
+) -> CampaignReport:
+    """ساخت گزارش اثر با حکم صریح درباره‌ی اعتبارش.
+
+    `contact_cost_rial` هزینه‌ی **واقعیِ ثبت‌شده‌ی** تماس است (از دفتر ارسال).
+    `None` یعنی هیچ ارسالی از داخل سیستم انجام نشده — مثلاً کانال، خروجی اکسل
+    بوده — و در آن حالت «هزینه به‌ازای سفارش افزوده» مسدود می‌ماند.
+    """
+    report = _verdict(treatment, control, contact_cost_rial=contact_cost_rial)
+    if contact_cost_rial is None:
+        return report
+
+    report.contact_cost_rial = int(contact_cost_rial)
+    # تقسیم بر سفارشِ افزوده تنها وقتی معنا دارد که خودِ آن عدد اثبات شده باشد.
+    # وگرنه «هزینه‌ی هر سفارش افزوده» عددی است که مخرجش ممکن است نوفه باشد.
+    orders = report.incremental_orders
+    if report.is_causal and orders and orders > 0:
+        report.cost_per_incremental_order_rial = round(int(contact_cost_rial) / orders)
+    return report
+
+
+def _verdict(
+    treatment: ArmStats,
+    control: ArmStats,
+    *,
+    contact_cost_rial: int | None = None,
+) -> CampaignReport:
     blocked = dict(_BLOCKED_METRICS)
     mde = minimum_detectable_effect(treatment, control)
     power = _power_note(mde)
+    if contact_cost_rial is not None:
+        blocked.pop("cost_per_incremental_order", None)
 
     # ۱) بدون گروه کنترل → هیچ ادعای علّی ممکن نیست
     if control.size == 0:
