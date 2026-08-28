@@ -45,6 +45,7 @@ _slowest: dict[str, float] = {}
 
 __all__ = [
     "REQUEST_ID_HEADER",
+    "UNMATCHED_ROUTE",
     "RequestContextMiddleware",
     "RequestIdLogFilter",
     "current_request_id",
@@ -99,14 +100,21 @@ def _clean_id(raw: str | None) -> str:
     return safe.strip()[:64]
 
 
+UNMATCHED_ROUTE = "<مسیر ناشناخته>"
+
+
 def _route_template(request: Request) -> str:
     """قالبِ مسیر، نه مسیرِ پرشده.
 
     بدون این، `/api/jobs/{id}` هزار کلیدِ متفاوت می‌سازد و شمارنده به‌جای
     خلاصه، یک فهرستِ بی‌فایده می‌شود.
+
+    و مسیری که به هیچ روتی نمی‌خورد **همه** زیر یک کلید جمع می‌شود: وگرنه یک
+    خزنده با آدرس‌های تصادفی می‌تواند این دیکشنری را بی‌کران بزرگ کند — یعنی
+    نشتِ حافظه از راهِ سنجه‌ای که قرار بود سلامت را نشان دهد.
     """
     route = request.scope.get("route")
-    return getattr(route, "path", None) or request.url.path
+    return getattr(route, "path", None) or UNMATCHED_ROUTE
 
 
 class RequestContextMiddleware(BaseHTTPMiddleware):

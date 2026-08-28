@@ -222,3 +222,30 @@ def test_a_file_over_the_cap_says_so_instead_of_pretending(tmp_path, monkeypatch
     assert notes["raw_rows_skipped"] > 0
     assert "ذخیره نشد" in notes["raw_capture_note_fa"]
     assert "قرنطینه" in notes["raw_capture_note_fa"]
+
+
+def test_a_catastrophically_broken_file_does_not_store_unbounded_detail(
+    tmp_path, monkeypatch,
+):
+    """فایلِ به‌کل خراب نباید ده‌ها هزار JSON بنویسد — ولی شمارِ کل باید بماند."""
+    import json
+
+    from mktcore.db import repo_import
+    from mktcore.db.models import ImportBatch
+
+    monkeypatch.setattr(repo_import, "QUARANTINE_ROW_CAP", 2, raising=True)
+    db = tmp_path / "app.db"
+    _ingest(db)
+
+    with session_scope(db) as session:
+        rows = session.scalars(select(ImportQuarantine)).all()
+        batch = session.scalars(select(ImportBatch)).first()
+        notes = json.loads(batch.notes_json)
+        rows_invalid = batch.rows_invalid
+        rows_duplicate = batch.rows_duplicate
+
+    assert len(rows) == 2, "جزئیات باید بریده شود"
+    assert notes["quarantine_detail_truncated"] is True
+    assert notes["rejected_rows_total"] > 2
+    # شمارِ کل هرگز از بین نمی‌رود
+    assert (rows_invalid or 0) + (rows_duplicate or 0) == notes["rejected_rows_total"]

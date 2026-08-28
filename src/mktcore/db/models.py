@@ -1159,7 +1159,9 @@ class JobLease(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     job_name: Mapped[str] = mapped_column(String(64), index=True)
-    # دامنه‌ی یکتایی، مثلاً «۳|۱۴۰۵-۰۶-۰۶» یعنی کسب‌وکار ۳ در آن تاریخ
+    # دامنه‌ی یکتایی، مثلاً «default|2026-08-28» یعنی همان کسب‌وکار در آن
+    # تاریخ. از **نامِ** کسب‌وکار استفاده می‌شود نه شناسه‌اش، چون اجاره پیش از
+    # بازکردنِ تراکنشِ اصلی گرفته می‌شود و نگاشتِ نام↔شناسه یک‌به‌یک است.
     scope_key: Mapped[str] = mapped_column(String(128), index=True)
     holder: Mapped[str] = mapped_column(String(128))
     acquired_at: Mapped[float] = mapped_column(Float, default=now_ts)

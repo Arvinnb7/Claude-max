@@ -858,6 +858,7 @@ def write_import(
         from mktcore.ingest.cleaning import get_exclusions
 
         exclusions = get_exclusions(clean)
+        rejected_total = 0 if exclusions is None or exclusions.empty else len(exclusions)
         quarantined = _write_quarantine(session, business.id, batch.id, exclusions)
         raw_capture = _write_raw_rows(
             session, business.id, batch.id, clean, exclusions,
@@ -867,6 +868,10 @@ def write_import(
         batch.notes_json = json.dumps(
             {
                 "quarantined_rows": quarantined,
+                # اگر جزئیات بریده شده باشد، همین‌جا گفته می‌شود؛ شمارِ کل
+                # در `rows_invalid` و `rows_duplicate` دست‌نخورده است.
+                "quarantine_detail_truncated": quarantined < rejected_total,
+                "rejected_rows_total": rejected_total,
                 "raw_rows_captured": raw_capture["captured"],
                 "raw_rows_skipped": raw_capture["skipped"],
                 "raw_capture_note_fa": raw_capture["note_fa"],
@@ -929,6 +934,12 @@ def _json_row(row: pd.Series) -> str:
     return json.dumps(payload, ensure_ascii=False, default=str)
 
 
+# سقفِ جزئیاتِ قرنطینه در هر بارگذاری. **شمارِ کلِ** ردیف‌های ردشده در
+# `ImportBatch.rows_invalid` و `rows_duplicate` می‌ماند و از بین نمی‌رود؛ این
+# سقف فقط جلوی ذخیره‌ی ده‌ها هزار JSON را می‌گیرد وقتی فایل به‌کل خراب است.
+QUARANTINE_ROW_CAP = 10_000
+
+
 def _write_quarantine(
     session: Session, business_id: int, batch_id: int, exclusions: pd.DataFrame,
 ) -> int:
@@ -940,6 +951,14 @@ def _write_quarantine(
     """
     if exclusions is None or exclusions.empty:
         return 0
+    if len(exclusions) > QUARANTINE_ROW_CAP:
+        logger.warning(
+            "%s ردیف ردشده بیشتر از سقفِ جزئیاتِ قرنطینه (%s) است؛ فقط "
+            "پرارزش‌ترین بخش با جزئیات ذخیره می‌شود. شمارِ کل در خودِ بارگذاری "
+            "ثبت شده است.",
+            len(exclusions), QUARANTINE_ROW_CAP,
+        )
+        exclusions = exclusions.head(QUARANTINE_ROW_CAP)
 
     from mktcore.ingest.cleaning import (
         EXCLUSION_REASONS_FA,

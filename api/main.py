@@ -145,8 +145,10 @@ app = FastAPI(
     dependencies=[Depends(require_token_for_writes)],
 )
 
-# ترتیب مهم است: این middleware **بیرونی‌ترین** باشد تا شناسه‌ی درخواست حتی
-# روی پاسخِ خطای CORS و ۴۰۱ هم بنشیند.
+# ترتیب: در Starlette آخرین `add_middleware` بیرونی‌ترین است، پس CORS بیرونِ
+# این می‌نشیند — و همین درست است: پاسخِ خطا هم باید هدرهای CORS داشته باشد.
+# فقط پاسخِ preflight (که CORS خودش کوتاه می‌کند) شناسه نمی‌گیرد؛ آن پاسخ
+# بدنه‌ای هم ندارد که ردیابی‌اش لازم باشد.
 app.add_middleware(RequestContextMiddleware)
 
 app.add_middleware(

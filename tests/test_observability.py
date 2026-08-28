@@ -124,11 +124,20 @@ def test_metrics_are_reachable_from_the_api():
     assert "ری‌استارت" in body["note_fa"]
 
 
-def test_metrics_do_not_explode_on_an_unknown_path():
-    reset_metrics()
-    client.get("/مسیری/که/وجود/ندارد")
+def test_unmatched_paths_share_one_counter_key():
+    """خزنده‌ای با آدرس‌های تصادفی نباید شمارنده را بی‌کران بزرگ کند."""
+    from api.observability import UNMATCHED_ROUTE
 
-    assert metrics_snapshot()["requests_total"] == 1
+    reset_metrics()
+    for i in range(5):
+        client.get(f"/مسیری/که/وجود/ندارد/{i}")
+
+    snapshot = metrics_snapshot()
+    routes = {row["route"]: row for row in snapshot["routes"]}
+
+    assert snapshot["requests_total"] == 5
+    assert len(routes) == 1
+    assert routes[f"GET {UNMATCHED_ROUTE}"]["count"] == 5
 
 
 # ═════════════════════════════════════════════════════════ health
