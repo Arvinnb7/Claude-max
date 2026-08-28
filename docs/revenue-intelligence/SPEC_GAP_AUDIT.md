@@ -1,5 +1,10 @@
 # حسابرسی شکاف در برابر سند
 
+> ⚠️ **این سند عکسِ لحظه‌ی حسابرسی است (پیش از دورِ «نقص‌ها + فاز ۶»).** ردیف‌هایی
+> که از آن زمان بسته شده‌اند با ✅ و شماره‌ی گام علامت خورده‌اند؛ متنِ اصلی
+> **پاک نشده** تا معلوم بماند چه چیزی کجا بود. برای وضعیتِ امروز،
+> `RELEASE_NOTES.md` مرجع است.
+
 > مرجع: `MASTER_SPEC.md` (همان متنی که کاربر داد، دست‌نخورده در همین پوشه).
 > ارجاع بندها به شماره‌ی بخش‌های همان فایل است.
 >
@@ -76,10 +81,10 @@
 | **margin / gross profit** | `done` | `order_lines.gross_profit_rial` در دفتر کل می‌نشیند (بها `NULL` ⇒ سود `NULL`، هرگز صفر). حاشیه‌ی هر کالا از همان‌جا: `costs/register.py::margin_lookup` — `test_gross_profit_loop.py` |
 | reconciliation | `done` | `ImportReconciliation`، کنترل‌های L01–L07 — `test_reconciliation_rows_are_persisted` |
 | Customer 360 feature snapshots | `partial` | `as_of_date` و `feature_version` هست؛ **watermark منبع** و **نسخه‌ی کد** (§۱۰.۴) نیست — ۲ از ۴ |
-| Immutable imports (`import_rows_raw` §۷.۱) | `missing` | ردیف خام هیچ‌جا ذخیره نمی‌شود |
-| Quarantine (`import_quarantine` §۷.۱) | `missing` | ردیف‌های ردشده فقط در `df.attrs` موقت‌اند؛ بعد از پایان پروسه از بین می‌روند. فقط **شمارش**شان در `ImportBatch.rows_invalid/rows_duplicate` می‌ماند |
+| Immutable imports (`import_rows_raw` §۷.۱) | ✅ **بسته شد (S4)** | تا سقفِ `MKT_RAW_ROWS_CAP` ذخیره می‌شود؛ بالاتر از سقف صریحاً «ذخیره نشد» ثبت می‌شود |
+| Quarantine (`import_quarantine` §۷.۱) | ✅ **بسته شد (S4)** | جدولِ `import_quarantine` در دفتر کل، با کدِ دلیل و راهِ اصلاح؛ تستی که بقایش را بعد از هرس اثبات می‌کند |
 | Versioned per-source mappings (§۸.۲) | `missing` | `mapping_profiles` با هشِ سرستون کلید می‌خورد، بدون `version` و بدون `source_system` |
-| data-quality UI/API (§۸.۵ — ۹ بُعد) | `partial` | **۳ از ۹**: پوشش بها، نرخ شناسه‌ی مشتری، نرخ تطبیق کالا. غایب: completeness عمومی، validity، uniqueness، پوشش شعبه، وضوح برگشت/وضعیت، سازگاری بازه‌ی تاریخ |
+| data-quality UI/API (§۸.۵ — ۹ بُعد) | ✅ **بسته شد (S5)** | هر نُه بُعد؛ بُعدی که مبنایش نیست `None` («سنجیده نشد») می‌گیرد، نه صفر |
 
 ### جدول‌های §۷.۱/§۷.۵ که اصلاً وجود ندارند
 
@@ -208,11 +213,11 @@ top-K economic metrics.»*
 
 | قلم سند | وضعیت | شاهد / آنچه کم است |
 |---|---|---|
-| operator assignment / capacity | `partial` | `assigned_to` فقط یک رشته است؛ هیچ منطق ظرفیت/بار/نوبت‌دهی وجود ندارد |
-| branch-aware fulfillment (§۲۴.۵) | `missing` | `Order.branch` ذخیره می‌شود ولی در `analysis/`، `opportunities/` و `campaigns/` **صفر بار خوانده می‌شود** |
+| operator assignment / capacity | 🔶 **نیمه‌بسته (S3)** | فیلترِ ظرفیتِ روزانه اضافه شد (تنظیم‌نشده ⇒ «بررسی نشد»). نوبت‌دهی و بارِ هر مسئول همچنان نیست |
+| branch-aware fulfillment (§۲۴.۵) | 🔶 **نیمه‌بسته (S3)** | «شعبه‌ی محتملِ مشتری» با سهم و درجه‌ی اتکا در پرونده‌ی مشتری. تخصیصِ موجودیِ شعبه‌ای همچنان بدونِ داده‌ی موجودی ممکن نیست |
 | notification and scheduled workflows | `done` | APScheduler، اسکن روزانه، جبران اجرای ازدست‌رفته، گاردِ مجوز تماس |
 | performance tuning (§۳۳) | `partial` | ایندکس‌ها و صفحه‌بندی هست؛ تنظیم عامدانه‌ی کارایی انجام نشده |
-| advanced monitoring (§۳۲) | `missing` | نه correlation ID، نه لاگ ساختاریافته، نه `/metrics` |
+| advanced monitoring (§۳۲) | ✅ **بسته شد (S2)** | `X-Request-Id` (با انتقال به jobها)، لاگِ ساختاریافته، `/api/v1/ops/metrics`، و healthی که واقعاً دیتابیس را می‌زند |
 | documented deployment/runbook | `missing` | `OPERATIONS_RUNBOOK.md` ساخته نشده |
 
 ---
@@ -254,5 +259,7 @@ top-K economic metrics.»*
    سودمحور (فاز ۲) — هر دو حالا فقط عوض‌کردنِ مبنا از درآمد به سودند، نه
    ساختِ زیرساخت. نسخه‌ی درآمدی حذف نمی‌شود؛ نسخه‌ی سودی کنارش می‌آید.
 
-۲. **ماندگاریِ ردیف خام و قرنطینه.** نبودش یعنی هیچ ردیفِ ردشده‌ای قابل بازبینی
-   نیست — که ادعای «auditability» سند (§۳.۵) را تضعیف می‌کند.
+۲. ~~**ماندگاریِ ردیف خام و قرنطینه.**~~ **بسته شد (S4).** ردیفِ ردشده حالا در
+   دفتر کل می‌نشیند — با کدِ دلیل، راهِ اصلاح، و بقای اثبات‌شده در برابر سیاست
+   نگه‌داری. این همان چیزی بود که واقعاً از بین می‌رفت، نه فقط «بازبینی‌ناپذیر»
+   بود.
