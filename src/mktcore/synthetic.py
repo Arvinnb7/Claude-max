@@ -136,3 +136,162 @@ def generate_synthetic_sales(
                 _add_line(date, oid, customer, "باکس حمل", 1, region)
 
     return pd.DataFrame(rows)
+
+
+# ═══════════════════════════════ داده‌ی کوهورت‌دار (برای مدل‌های پیش‌بین)
+#
+# **چرا تابع جداگانه و نه یک پارامتر تازه روی `generate_synthetic_sales`.**
+# آن تابع دکمه‌ی «داده‌ی نمونه»ی برنامه است و اعداد خروجی‌اش در تست‌های طلایی
+# پین شده‌اند (`total_revenue == 1090` و مانند آن). هر شاخه‌ی تازه‌ای داخل بدنه‌اش
+# می‌تواند یک قرعه‌ی تصادفی جابه‌جا کند و کلِ جریان اعداد را عوض کند. تابع خواهر
+# **هیچ** مکانیزمی برای تغییرِ آن ندارد.
+#
+# **چه چیزی اینجا هست که آنجا نیست.** مولد قدیمی مشتری‌ها را از یک استخر ثابت
+# انتخاب می‌کند، پس «مشتری تازه» ندارد و §۱۸.۴ («اعتبارسنجی روی کوهورت‌های
+# بعدی») روی آن اجراشدنی نیست. اینجا مشتری‌ها در طول زمان **وارد می‌شوند**، هر
+# کدام یک «کیفیت» پنهان دارند، و حاشیه‌ی سودشان با همان کیفیت همبسته است — نه
+# تصادفی. اگر حاشیه نویزِ محض بود، مدل می‌توانست روی آن بیش‌برازش کند و الکی
+# موفق به‌نظر برسد.
+
+# نسبت بهای تمام‌شده به قیمت پایه — عمداً متفاوت، تا «ترکیب سبد» روی حاشیه اثر
+# بگذارد و ویژگیِ «کیفیت حاشیه» معنا پیدا کند.
+_COHORT_COST_RATIO = {
+    "پرو": 0.52, "استاندارد": 0.66, "لایت": 0.72,
+    "کلاسیک": 0.45, "ویژه": 0.40, "باکس حمل": 0.60,
+}
+# کالاهای «گران‌قیمت» که مشتریِ باکیفیت بیشتر سراغشان می‌رود
+_PREMIUM = ("ویژه", "کلاسیک", "پرو")
+
+
+def generate_cohort_sales(
+    *,
+    seed: int = 101,
+    start: str = "2021-01-01",
+    days: int = 1_460,
+    arrivals_per_day: float = 0.8,
+    whale_fraction: float = 0.12,
+) -> pd.DataFrame:
+    """داده‌ی فروش با **فرایند جذب مشتری** و حاشیه‌ی همبسته با کیفیت مشتری.
+
+    ستون‌ها دقیقاً همان ستون‌های `generate_synthetic_sales` است، پس از همان
+    مسیر ورودِ معمول عبور می‌کند؛ این یک **مجموعه‌داده‌ی دیگر** است، نه
+    طرح‌واره‌ی دیگر.
+
+    `whale_fraction` سهمِ مشتریانی است که کیفیت پنهانشان بالاست. عمداً از دهکِ
+    برچسب بزرگ‌تر است تا برچسب‌گذاری «مرزی» بماند و مدل کارِ واقعی داشته باشد.
+    """
+    rng = np.random.default_rng(seed)
+    dates = pd.date_range(start=start, periods=days, freq="D")
+
+    rows: list[dict] = []
+    order_counter = 1
+    customers: dict[str, dict] = {}
+    next_id = 1
+
+    def _spawn(day_index: int) -> str:
+        nonlocal next_id
+        key = f"K{next_id:05d}"
+        next_id += 1
+        # کیفیت پنهان: چولگی به‌سمت پایین، با دُمی از مشتریان بسیار خوب
+        quality = float(rng.beta(2.0, 5.0))
+        if rng.random() < whale_fraction:
+            quality = min(1.0, quality + float(rng.uniform(0.35, 0.6)))
+        region = str(rng.choice(REGIONS, p=[0.40, 0.18, 0.16, 0.14, 0.12]))
+        customers[key] = {
+            "quality": quality,
+            "region": region,
+            "phone": "0912" + "".join(str(d) for d in rng.integers(0, 10, 7)),
+            "joined": day_index,
+            # آهنگ خرید: مشتری باکیفیت‌تر زودتر برمی‌گردد
+            "cadence": float(np.clip(rng.normal(70 - 45 * quality, 12), 9.0, 160.0)),
+            "next_due": day_index + int(rng.integers(5, 40)),
+            # عمرِ رابطه: باکیفیت‌ها دیرتر می‌روند
+            "lifespan": int(np.clip(rng.normal(220 + 900 * quality, 120), 45, days)),
+        }
+        return key
+
+    def _basket(quality: float) -> list[str]:
+        """سبدِ خرید — مشتری باکیفیت‌تر بیشتر سراغ کالای گران و پرحاشیه می‌رود."""
+        premium_bias = 0.15 + 0.6 * quality
+        weights = np.array([
+            0.20 + 0.25 * premium_bias,   # پرو
+            0.30 - 0.10 * premium_bias,   # استاندارد
+            0.28 - 0.15 * premium_bias,   # لایت
+            0.12 + 0.15 * premium_bias,   # کلاسیک
+            0.10 + 0.25 * premium_bias,   # ویژه
+        ])
+        weights = weights / weights.sum()
+        basket = [str(rng.choice(PRODUCTS, p=weights))]
+        # تنوع دسته: باکیفیت‌ها سبد بزرگ‌تری می‌بندند
+        if rng.random() < 0.15 + 0.45 * quality:
+            second = str(rng.choice(PRODUCTS, p=weights))
+            if second != basket[0]:
+                basket.append(second)
+        if rng.random() < 0.10 + 0.25 * quality:
+            basket.append("باکس حمل")
+        return basket
+
+    def _add_line(date, order_id: str, key: str, product: str, qty: int) -> None:
+        profile = customers[key]
+        unit_price = BASE_PRICE[product] * (1 + rng.normal(0, 0.04))
+        # تخفیف: مشتری باکیفیت‌تر کمتر تخفیف می‌گیرد (و کمتر هم می‌خواهد)
+        discount = 0.0
+        if rng.random() < 0.35 - 0.25 * profile["quality"]:
+            discount = float(rng.choice([0.05, 0.10, 0.15]))
+        revenue = unit_price * qty * (1 - discount)
+        # بها از **قیمت پایه** می‌آید و با روند تورمی بالا می‌رود؛ حاشیه‌ی هر
+        # کالا متفاوت است، پس ترکیب سبدِ مشتری حاشیه‌اش را تعیین می‌کند.
+        drift = 1.0 + 0.00008 * (date - dates[0]).days
+        unit_cost = BASE_PRICE[product] * _COHORT_COST_RATIO[product] * drift
+        rows.append({
+            "تاریخ": date,
+            "شماره سفارش": order_id,
+            "کد مشتری": key,
+            "شماره موبایل": profile["phone"],
+            "نام محصول": product,
+            "دسته‌بندی": CATEGORIES[product],
+            "کانال فروش": str(rng.choice(CHANNELS, p=[0.45, 0.25, 0.18, 0.12])),
+            "استان": profile["region"],
+            "شعبه": _branch_of(profile["region"]),
+            "فروشنده": str(rng.choice(SALESPEOPLE[profile["region"]])),
+            "تعداد": qty,
+            "قیمت واحد": round(unit_price),
+            "تخفیف": discount,
+            "مبلغ کل": round(revenue),
+            "بهای تمام شده": round(unit_cost * qty),
+        })
+
+    for day_index, date in enumerate(dates):
+        for _ in range(int(rng.poisson(arrivals_per_day))):
+            _spawn(day_index)
+
+        for key, profile in customers.items():
+            if day_index < profile["next_due"]:
+                continue
+            if day_index - profile["joined"] > profile["lifespan"]:
+                continue
+            order_id = f"CINV-{order_counter:06d}"
+            order_counter += 1
+            quality = profile["quality"]
+            for product in _basket(quality):
+                quantity = int(rng.integers(1, 3 + int(2 * quality)))
+                _add_line(date, order_id, key, product, quantity)
+            profile["next_due"] = day_index + max(
+                3, int(rng.normal(profile["cadence"], profile["cadence"] * 0.35))
+            )
+
+    return pd.DataFrame(rows)
+
+
+def cohort_quality(frame: pd.DataFrame) -> dict[str, float]:
+    """کیفیتِ پنهانِ هر مشتری — فقط برای **تستِ خودِ مولد**.
+
+    مدل هرگز این را نمی‌بیند؛ اینجاست تا تست بتواند بسنجد که ویژگی‌های
+    مشاهده‌پذیر واقعاً با کیفیت همبسته‌اند. اگر نبودند، fixture چیزی به مدل
+    یاد نمی‌داد و تستِ «مدل خط پایه را برد» بی‌معنا می‌شد.
+    """
+    if frame.empty:
+        return {}
+    profit = frame["مبلغ کل"] - frame["بهای تمام شده"]
+    by_customer = profit.groupby(frame["کد مشتری"]).sum()
+    return {str(key): float(value) for key, value in by_customer.items()}

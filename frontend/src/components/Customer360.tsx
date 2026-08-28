@@ -6,6 +6,7 @@ import {
   getCustomer,
   optOutCustomer,
   revokeCustomerOptOut,
+  type CustomerFeatures,
   type CustomerProfile,
 } from "@/lib/apiV1";
 import { toFa } from "@/lib/format";
@@ -253,6 +254,8 @@ export default function Customer360({
           </Alert>
         )}
 
+        {f && <FutureValuePanel features={f} />}
+
         <p className="mt-3 text-xs" style={{ color: "var(--muted)" }}>
           {data.economics_note_fa}
         </p>
@@ -383,6 +386,70 @@ export default function Customer360({
           </div>
         )}
       </Card>
+    </div>
+  );
+}
+
+
+/**
+ * ارزش آینده‌ی مشتری — دو عدد کنار هم، با برچسبی که فرقشان را می‌گوید.
+ *
+ * چرا در یک گروه: دو عددِ پولیِ لُخت کنار هم، کاربر را به مقایسه‌ی اشتباه
+ * می‌کشاند. جمله‌ی پایینی تنها چیزی است که جلوی «سود را درآمد خواندن» را
+ * می‌گیرد، و همان جمله‌ای است که سند (§۳.۶) می‌خواهد.
+ */
+function FutureValuePanel({ features }: { features: CustomerFeatures }) {
+  const profit = features.clv_gross_profit;
+  return (
+    <div className="mt-4 rounded-xl border border-ink-200 p-3 dark:border-ink-700">
+      <div className="mb-2 text-sm font-medium">ارزش آینده‌ی مشتری</div>
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+        <StatCard
+          label="درآمد ۱۲ ماه آینده"
+          value={toFa(features.clv_12m.display_text)}
+        />
+        <StatCard
+          label="سود ناخالص ۱۲ ماه آینده"
+          value={
+            profit?.available && profit["365d"]
+              ? toFa(profit["365d"].display_text)
+              : "—"
+          }
+          hint={
+            profit?.available
+              ? undefined
+              : "بدون بهای کاملِ خطوط، سود محاسبه نمی‌شود"
+          }
+        />
+        {profit?.available && profit["90d"] && profit["180d"] && (
+          <StatCard
+            label="سود ۹۰ و ۱۸۰ روز"
+            value={`${toFa(profit["90d"].display_text)} · ${toFa(
+              profit["180d"].display_text,
+            )}`}
+          />
+        )}
+      </div>
+      {profit?.available && profit["365d_low"] && profit["365d_high"] && (
+        <p className="mt-2 text-xs tnum" style={{ color: "var(--muted)" }}>
+          بازه‌ی سود ۱۲ ماه: از {toFa(profit["365d_low"].display_text)} تا{" "}
+          {toFa(profit["365d_high"].display_text)}
+          {profit.model_version != null && (
+            <> · نسخه‌ی مدل {toFa(String(profit.model_version))}</>
+          )}
+          {profit.as_of && <> · تا تاریخ {toFa(profit.as_of)}</>}
+        </p>
+      )}
+      <p className="mt-1 text-xs" style={{ color: "var(--muted)" }}>
+        {profit?.note_fa ??
+          "عدد بالایی درآمد است؛ تصمیم خرج‌کردن باید روی سود گرفته شود."}
+      </p>
+      {features.whale_probability != null && (
+        <p className="mt-1 text-xs" style={{ color: "var(--muted)" }}>
+          احتمال «مشتری کلیدی آینده»:{" "}
+          {toFa(String(Math.round(features.whale_probability * 100)))}٪
+        </p>
+      )}
     </div>
   );
 }

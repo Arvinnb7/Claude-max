@@ -525,8 +525,49 @@ def _customer_row(customer: Customer, feature: Any | None) -> dict:
         ),
         "cycle_status": feature.cycle_status,
         "top_product": feature.top_product,
+        # CLV سودمحور — **افزودنی**؛ `clv_12m` بالا دست‌نخورده و درآمدی می‌ماند.
+        "clv_gross_profit": _clv_profit_payload(feature),
+        # امتیازهای مدل. `None` یعنی مدلی فعال نیست، نه «احتمال صفر».
+        "whale_probability": (
+            None if feature.whale_probability_bp is None
+            else round(feature.whale_probability_bp / 10_000, 4)
+        ),
+        "whale_model_run_id": feature.whale_model_run_id,
+        "scored_at": feature.scored_at,
     }
     return row
+
+
+def _clv_profit_payload(feature: Any) -> dict:
+    """CLV سودمحور با افق‌ها و بازه — یا دلیلِ صریحِ نبودش.
+
+    نبودِ عدد هرگز به صفر ترجمه نمی‌شود: «سودِ آینده‌اش صفر است» ادعایی است که
+    نداریم؛ آنچه داریم این است که «بها کامل نیست، پس سود محاسبه نشد».
+    """
+    if not feature.clv_gp_basis:
+        return {
+            "available": False,
+            "basis": None,
+            "note_fa": (
+                "سود ناخالصِ آینده محاسبه نشد: یا بهای همه‌ی خطوط این مشتری ثبت "
+                "نشده، یا آهنگ خریدش (با کمتر از دو خرید) معلوم نیست."
+            ),
+        }
+    return {
+        "available": True,
+        "basis": feature.clv_gp_basis,
+        "model_version": feature.clv_model_version,
+        "as_of": feature.as_of_date,
+        "90d": _money(feature.clv_gp_90d_rial),
+        "180d": _money(feature.clv_gp_180d_rial),
+        "365d": _money(feature.clv_gp_365d_rial),
+        "365d_low": _money(feature.clv_gp_365d_low_rial),
+        "365d_high": _money(feature.clv_gp_365d_high_rial),
+        "note_fa": (
+            "این عدد **سود** است نه درآمد؛ عددِ «ارزش ۱۲ ماه آینده» درآمدی است. "
+            "تصمیم خرج‌کردن باید روی سود گرفته شود."
+        ),
+    }
 
 
 # ------------------------------------------------------------------- فرصت‌ها

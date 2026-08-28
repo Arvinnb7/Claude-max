@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("mktcore.db.migrations")
 
 # نسخه‌ی جاری طرح‌واره‌ی canonical. با افزودن هر مهاجرت، یک عدد بالا می‌رود.
-CANONICAL_SCHEMA_VERSION = 9
+CANONICAL_SCHEMA_VERSION = 11
 
 _MIGRATION_TABLE = "schema_migrations"
 
@@ -171,6 +171,56 @@ def _migration_0009_create_app_settings(conn: Connection) -> None:
     Base.metadata.create_all(bind=conn, checkfirst=True)
 
 
+def _migration_0010_create_model_runs(conn: Connection) -> None:
+    """رجیستری مدل + ستون‌های امتیاز روی عکس ویژگی (فاز ۴).
+
+    جدولِ تازه با `create_all` می‌آید، ولی ستون‌های امتیاز روی جدولِ **موجود**
+    می‌نشینند، پس مثل مهاجرت ۸ یک حلقه‌ی `ALTER TABLE` هم لازم است.
+    """
+    from mktcore.db import models  # noqa: F401 - ثبت مدل‌ها در metadata
+
+    Base.metadata.create_all(bind=conn, checkfirst=True)
+
+    added_columns = (
+        ("customer_features", "whale_probability_bp", "INTEGER"),
+        ("customer_features", "whale_model_run_id", "INTEGER"),
+        ("customer_features", "churn_probability_bp", "INTEGER"),
+        ("customer_features", "churn_model_run_id", "INTEGER"),
+        ("customer_features", "replenish_probability_bp", "INTEGER"),
+        ("customer_features", "replenish_model_run_id", "INTEGER"),
+        ("customer_features", "scored_at", "REAL"),
+    )
+    for table, column, ddl_type in added_columns:
+        existing = {
+            row[1] for row in conn.exec_driver_sql(f"PRAGMA table_info({table})")
+        }
+        if column not in existing:
+            conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {column} {ddl_type}")
+
+
+def _migration_0011_create_gross_profit_clv(conn: Connection) -> None:
+    """ستون‌های CLV سودمحور روی عکس ویژگی (§۱۹).
+
+    فقط `ALTER TABLE`: جدولِ تازه‌ای در کار نیست و `create_all` هم چیزی اضافه
+    نمی‌کند، چون جدول از قبل وجود دارد.
+    """
+    added_columns = (
+        ("customer_features", "clv_gp_90d_rial", "BIGINT"),
+        ("customer_features", "clv_gp_180d_rial", "BIGINT"),
+        ("customer_features", "clv_gp_365d_rial", "BIGINT"),
+        ("customer_features", "clv_gp_365d_low_rial", "BIGINT"),
+        ("customer_features", "clv_gp_365d_high_rial", "BIGINT"),
+        ("customer_features", "clv_gp_basis", "VARCHAR(16)"),
+        ("customer_features", "clv_model_version", "INTEGER"),
+    )
+    for table, column, ddl_type in added_columns:
+        existing = {
+            row[1] for row in conn.exec_driver_sql(f"PRAGMA table_info({table})")
+        }
+        if column not in existing:
+            conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {column} {ddl_type}")
+
+
 _MIGRATIONS: tuple[tuple[int, str, Callable[[Connection], None]], ...] = (
     (1, "create_canonical_tables", _migration_0001_create_canonical_tables),
     (2, "create_opportunity_tables", _migration_0002_create_opportunity_tables),
@@ -181,6 +231,8 @@ _MIGRATIONS: tuple[tuple[int, str, Callable[[Connection], None]], ...] = (
     (7, "create_campaign_sends", _migration_0007_create_campaign_sends),
     (8, "create_product_cost_history", _migration_0008_create_product_cost_history),
     (9, "create_app_settings", _migration_0009_create_app_settings),
+    (10, "create_model_runs", _migration_0010_create_model_runs),
+    (11, "create_gross_profit_clv", _migration_0011_create_gross_profit_clv),
 )
 
 

@@ -64,6 +64,7 @@ from .campaigns_api import router as campaigns_router  # noqa: E402
 from .canonical_hook import canonical_enabled, record_analysis  # noqa: E402
 from .export import EXPORT_FA_NAMES, EXPORT_SECTIONS, EmptySection, build_export  # noqa: E402
 from .jobs import JobError, submit_job  # noqa: E402
+from .models_api import router as models_router  # noqa: E402
 from .persistence import store  # noqa: E402
 from .scheduler import (  # noqa: E402
     catch_up_missed_scan,
@@ -132,6 +133,7 @@ app.add_middleware(
 # مسیرهای دفتر کل و کمپین — **افزودنی**؛ هیچ endpoint موجودی جابه‌جا نمی‌شود.
 app.include_router(v1_router)
 app.include_router(campaigns_router)
+app.include_router(models_router)
 
 
 def _columns_payload(df) -> dict:

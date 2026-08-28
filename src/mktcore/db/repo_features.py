@@ -16,8 +16,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import pandas as pd
-from sqlalchemy import insert, select
+from sqlalchemy import func, insert, select
 
+from mktcore.analysis.clv import gross_profit_per_order_rial, horizon_clv
 from mktcore.lifecycle import LifecycleInput, LifecycleVerdict, classify_lifecycle
 from mktcore.lifecycle.states import population_gap, vip_threshold
 from mktcore.money import to_basis_points, to_rial_int
@@ -26,7 +27,7 @@ from .base import now_ts
 from .engine import session_scope, write_lock
 from .lookup import customer_ids_by_raw_key, resolve_business_id
 from .migrations import ensure_schema
-from .models import Business, CustomerFeature, CustomerLifecycleEvent
+from .models import Business, CustomerFeature, CustomerLifecycleEvent, OrderLine
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -163,6 +164,7 @@ def write_customer_features(
             for p in predictions.values()
         ])
         previous_states = _previous_states(session, business.id, as_of, set(grouped))
+        profits = _profit_lookup(session, business.id, set(grouped))
 
         to_insert: list[dict] = []
         to_update: list[dict] = []
@@ -186,6 +188,7 @@ def write_customer_features(
                 cycle_status=cycles.get(dominant_key),
                 display_currency=display_currency,
                 lifecycle=verdict,
+                profit=profits.get(customer_id),
             )
             if customer_id in existing:
                 to_update.append({**payload, "id": existing[customer_id]})
@@ -257,6 +260,92 @@ def _existing_snapshots(
     return out
 
 
+def _profit_lookup(
+    session: Session, business_id: int, customer_ids: set[int],
+) -> dict[int, dict]:
+    """سودِ ناخالصِ هر مشتری از **دفتر کل** — نه از فریمِ تحلیل.
+
+    چرا از دفتر کل: بها ممکن است از فایل فروش نیامده باشد و با
+    `POST /api/v1/costs` وارد شده باشد؛ آن بها فقط در دفتر کل هست.
+
+    قاعده‌ی پوشش همان قاعده‌ی همیشگی است: اگر **یک** خط بها نداشته باشد، سودِ
+    این مشتری `None` می‌ماند. جمعِ ناقص سود را کمتر از واقع نشان می‌دهد بدون
+    اینکه معلوم باشد.
+    """
+    if not customer_ids:
+        return {}
+    out: dict[int, dict] = {}
+    ids = sorted(customer_ids)
+    for start in range(0, len(ids), CHUNK):
+        rows = session.execute(
+            select(
+                OrderLine.customer_id,
+                func.count(OrderLine.id),
+                func.count(OrderLine.gross_profit_rial),
+                func.sum(OrderLine.gross_profit_rial),
+                func.count(func.distinct(OrderLine.order_id)),
+            )
+            .where(
+                OrderLine.business_id == business_id,
+                OrderLine.customer_id.in_(ids[start:start + CHUNK]),
+            )
+            .group_by(OrderLine.customer_id)
+        ).all()
+        for customer_id, n_lines, n_with_profit, profit, n_orders in rows:
+            covered = int(n_with_profit or 0) == int(n_lines or 0) and int(n_lines or 0) > 0
+            out[int(customer_id)] = {
+                "gross_profit_rial": int(profit or 0) if covered else None,
+                "n_orders": int(n_orders or 0) or int(n_lines or 0),
+                "covered": covered,
+                "n_lines": int(n_lines or 0),
+                "n_lines_with_profit": int(n_with_profit or 0),
+            }
+    return out
+
+
+def _clv_profit_fields(
+    *, profit: dict | None, prediction: Any | None, as_of: str,
+) -> dict:
+    """CLV سودمحور برای سه افق + بازه‌ی ۳۶۵ روزه (§۱۹).
+
+    نبودِ سود یا آهنگ خرید ⇒ همه‌ی ستون‌ها `None` و `clv_gp_basis` خالی؛ لایه‌ی
+    API دلیلش را به کاربر می‌گوید. صفر نوشتن یعنی «این مشتری سودی ندارد» که
+    ادعایی است نداریم.
+    """
+    empty = {
+        "clv_gp_90d_rial": None, "clv_gp_180d_rial": None, "clv_gp_365d_rial": None,
+        "clv_gp_365d_low_rial": None, "clv_gp_365d_high_rial": None,
+        "clv_gp_basis": None, "clv_model_version": None,
+    }
+    if not profit:
+        return empty
+
+    per_order = gross_profit_per_order_rial(
+        gross_profit_rial=profit.get("gross_profit_rial"),
+        n_orders=profit.get("n_orders"),
+    )
+    horizons = horizon_clv(
+        gp_per_order_rial=per_order,
+        mu_days=getattr(prediction, "avg_interval_days", None) if prediction else None,
+        p_alive=getattr(prediction, "alive_probability", None) if prediction else None,
+        n_orders=profit.get("n_orders"),
+        as_of=as_of,
+    )
+    by_days = {item.horizon_days: item for item in horizons}
+    year = by_days.get(365)
+    if year is None or year.value_rial is None:
+        return empty
+    return {
+        "clv_gp_90d_rial": by_days[90].value_rial,
+        "clv_gp_180d_rial": by_days[180].value_rial,
+        "clv_gp_365d_rial": year.value_rial,
+        "clv_gp_365d_low_rial": year.low_rial,
+        "clv_gp_365d_high_rial": year.high_rial,
+        "clv_gp_basis": year.basis,
+        "clv_model_version": year.model_version,
+    }
+
+
 def _feature_payload(
     *,
     business_id: int,
@@ -269,6 +358,7 @@ def _feature_payload(
     cycle_status: str | None,
     display_currency: str,
     lifecycle: LifecycleVerdict | None = None,
+    profit: dict | None = None,
 ) -> dict:
     n_orders = int(row["n_orders"])
     monetary = float(row["monetary"])
@@ -308,6 +398,7 @@ def _feature_payload(
             else None
         ),
         "value_at_risk_rial": to_rial_int(at_risk, display_currency),
+        **_clv_profit_fields(profit=profit, prediction=prediction, as_of=as_of),
         "created_at": now_ts(),
     }
 

@@ -104,6 +104,28 @@ export type CustomerFeatures = {
   lifecycle_label: string | null;
   cycle_status: string | null;
   top_product: string | null;
+  /**
+   * CLV **سودمحور** (§۱۹). `available: false` یعنی محاسبه نشد و `note_fa`
+   * می‌گوید چرا — هرگز به صفر ترجمه نمی‌شود.
+   */
+  clv_gross_profit?: ClvGrossProfit;
+  /** احتمال «نهنگ آینده». `null` یعنی مدلی فعال نیست، نه احتمال صفر. */
+  whale_probability?: number | null;
+  whale_model_run_id?: number | null;
+  scored_at?: number | null;
+};
+
+export type ClvGrossProfit = {
+  available: boolean;
+  basis: string | null;
+  note_fa: string;
+  model_version?: number | null;
+  as_of?: string;
+  "90d"?: Money;
+  "180d"?: Money;
+  "365d"?: Money;
+  "365d_low"?: Money;
+  "365d_high"?: Money;
 };
 
 export type LifecycleTransition = {

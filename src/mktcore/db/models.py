@@ -367,7 +367,114 @@ class CustomerFeature(Base):
     top_product: Mapped[str | None] = mapped_column(String(255))
     # درآمدمحور است، نه سودمحور — نام ستون همین را می‌گوید تا کسی اشتباه نکند
     value_at_risk_rial: Mapped[int | None] = mapped_column(BigInteger)
+
+    # ── امتیازهای مدل (فاز ۴). همه nullable‌اند و `NULL` یعنی «مدلی promote
+    # نشده»، نه «احتمال صفر». `FEATURE_VERSION` عمداً بالا نمی‌رود: دو پرس‌وجو
+    # (`_previous_states` و `get_customer`) بدون فیلترِ نسخه می‌خوانند و با دو
+    # نسخه در یک `as_of` نتیجه‌شان نامعین می‌شد.
+    # CLV سودمحور (§۱۹) — کنارِ `clv_rial` درآمدی می‌نشیند، نه به‌جایش. نامِ
+    # ستون‌ها خودشان مبنا را می‌گویند تا کسی درآمد و سود را قاطی نکند.
+    clv_gp_90d_rial: Mapped[int | None] = mapped_column(BigInteger)
+    clv_gp_180d_rial: Mapped[int | None] = mapped_column(BigInteger)
+    clv_gp_365d_rial: Mapped[int | None] = mapped_column(BigInteger)
+    clv_gp_365d_low_rial: Mapped[int | None] = mapped_column(BigInteger)
+    clv_gp_365d_high_rial: Mapped[int | None] = mapped_column(BigInteger)
+    # gross_profit | blocked — «blocked» یعنی محاسبه نشد و دلیلش در API می‌آید
+    clv_gp_basis: Mapped[str | None] = mapped_column(String(16))
+    clv_model_version: Mapped[int | None] = mapped_column(Integer)
+
+    whale_probability_bp: Mapped[int | None] = mapped_column(Integer)
+    whale_model_run_id: Mapped[int | None] = mapped_column(Integer)
+    churn_probability_bp: Mapped[int | None] = mapped_column(Integer)
+    churn_model_run_id: Mapped[int | None] = mapped_column(Integer)
+    replenish_probability_bp: Mapped[int | None] = mapped_column(Integer)
+    replenish_model_run_id: Mapped[int | None] = mapped_column(Integer)
+    scored_at: Mapped[float | None] = mapped_column(Float)
+
     created_at: Mapped[float] = mapped_column(Float, default=now_ts)
+
+
+class ModelRun(Base):
+    """یک اجرای آموزشِ مدل — و **خودِ مدل**.
+
+    §۷.۶ می‌خواهد دوره‌ی آموزش، نسخه‌ی کد، هشِ داده، پارامترها، سنجه‌ها، آرتیفکتِ
+    کالیبراسیون، طرح‌واره‌ی ویژگی، خط‌پایه‌ی drift و وضعیت promote ماندگار شوند.
+
+    **چرا ضرایب به‌صورت JSON و نه pickle.** همه‌ی تخمین‌گرهای این سیستم خطی‌اند،
+    پس کل مدل در چند آرایه جا می‌شود: میانه‌های جای‌گذاری، مرکز/مقیاس، ضرایب،
+    عرض از مبدأ — و کالیبراسیون isotonic هم دو آرایه است. سه پیامد:
+
+    * `rollback` کامل و بی‌دردسر است، چون **خودِ ردیف، خودِ مدل است**؛ نه فایلی
+      که ممکن است گم شود یا با دیتابیس ناهم‌خوان شود.
+    * سند بازگشت دسته‌ی تازه‌ای از آرتیفکت پیدا نمی‌کند.
+    * ارتقای scikit-learn مدلِ ذخیره‌شده را نمی‌شکند؛ pickle می‌شکست.
+
+    **چرا «داده‌ی ناکافی» هم یک ردیف است.** §۲۹.۶ «حالتِ صریحِ داده‌ی ناکافی»
+    می‌خواهد. اگر امتناع فقط یک استثنا باشد، فردا کسی نمی‌فهمد چرا مدلی وجود
+    ندارد. ردیفِ `insufficient_data` دلیل و اعدادش را نگه می‌دارد.
+    """
+
+    __tablename__ = "model_runs"
+    __table_args__ = (
+        UniqueConstraint("business_id", "model_key", "model_version"),
+        Index("ix_model_runs_key_promoted", "business_id", "model_key", "promoted"),
+    )
+
+    # وضعیت‌ها — چرخه‌ی عمرِ یک اجرا
+    STATUS_INSUFFICIENT = "insufficient_data"
+    STATUS_TRAINED = "trained"
+    STATUS_VALIDATED = "validated"
+    STATUS_REJECTED = "validated_rejected"
+    STATUS_PROMOTED = "promoted"
+    STATUS_ROLLED_BACK = "rolled_back"
+    STATUS_SUPERSEDED = "superseded"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    business_id: Mapped[int] = mapped_column(ForeignKey("businesses.id"), index=True)
+    # whale | churn | replenish | nbp_rank
+    model_key: Mapped[str] = mapped_column(String(64), index=True)
+    model_kind: Mapped[str] = mapped_column(String(64))
+    model_version: Mapped[int] = mapped_column(Integer)
+    code_version: Mapped[str | None] = mapped_column(String(64))
+
+    feature_schema_version: Mapped[int | None] = mapped_column(Integer)
+    feature_schema_json: Mapped[str | None] = mapped_column(Text)
+    params_json: Mapped[str | None] = mapped_column(Text)
+
+    train_start: Mapped[str | None] = mapped_column(String(10))
+    train_end: Mapped[str | None] = mapped_column(String(10))
+    validate_start: Mapped[str | None] = mapped_column(String(10))
+    validate_end: Mapped[str | None] = mapped_column(String(10))
+    # هشِ **آنچه روی آن آموزش دیدیم**، نه بایت‌های فایل: جمعِ سود هم در آن هست
+    # تا ورودِ دوباره‌ی بها (که درآمد را عوض نمی‌کند) مدلِ سودمحور را باطل کند.
+    data_hash: Mapped[str | None] = mapped_column(String(64), index=True)
+
+    n_train: Mapped[int | None] = mapped_column(Integer)
+    n_validate: Mapped[int | None] = mapped_column(Integer)
+    n_train_positives: Mapped[int | None] = mapped_column(Integer)
+    n_validate_positives: Mapped[int | None] = mapped_column(Integer)
+    # gross_profit | future_clv — هرگز `revenue`؛ §۱۸.۲ آن را ممنوع کرده
+    label_basis: Mapped[str | None] = mapped_column(String(32))
+
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    blocked_reason_code: Mapped[str | None] = mapped_column(String(64))
+    blocked_reason_fa: Mapped[str | None] = mapped_column(Text)
+
+    metrics_json: Mapped[str | None] = mapped_column(Text)
+    calibration_json: Mapped[str | None] = mapped_column(Text)
+    drift_baseline_json: Mapped[str | None] = mapped_column(Text)
+    coefficients_json: Mapped[str | None] = mapped_column(Text)
+
+    promoted: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    promoted_at: Mapped[float | None] = mapped_column(Float)
+    promoted_by: Mapped[str | None] = mapped_column(String(128))
+    rolled_back_at: Mapped[float | None] = mapped_column(Float)
+    rollback_of_run_id: Mapped[int | None] = mapped_column(Integer)
+
+    last_scored_at: Mapped[float | None] = mapped_column(Float)
+    n_scored: Mapped[int] = mapped_column(Integer, default=0)
+    note_fa: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[float] = mapped_column(Float, default=now_ts, index=True)
 
 
 class CustomerLifecycleEvent(Base):
@@ -548,17 +655,19 @@ class OpportunityEvent(Base):
 
 
 class UpliftSnapshot(Base):
-    """عکسِ جدولِ اثرِ آموخته‌شده در یک لحظه — به‌جای رجیستری کاملِ مدل.
+    """عکسِ جدولِ اثرِ آموخته‌شده در یک لحظه.
 
-    سند §۲۹ رجیستری با promotion/rollback/drift می‌خواهد. برای این دامنه، نسخه‌ی
-    متناسب همین است: هر بار که اثر محاسبه می‌شود یک عکس ثبت می‌شود. نتیجه:
+    هر بار که اثر محاسبه می‌شود یک عکس ثبت می‌شود. نتیجه:
 
     * **بازتولیدپذیری**: «چرا این فرصت آن روز صدر فهرست بود؟» پاسخ دارد.
     * **drift**: تغییر اثرِ یک گروه در طول زمان با مقایسه‌ی عکس‌ها دیده می‌شود.
     * **rollback**: استفاده از عکس قبلی، بدون تغییر کد.
 
-    رجیستری کاملِ ML (ثبت وزن‌ها، محیط، وابستگی‌ها) برای یک تخمینِ نسبتِ ساده
-    سربار است و ساخته نشده.
+    ⚠️ **تقسیم کار با `model_runs`.** نسخه‌ی قبلی این متن می‌گفت رجیستری کاملِ
+    مدل «سربار است و ساخته نشده»؛ با ساخته‌شدن `model_runs` آن جمله دیگر درست
+    نیست. مرزشان این است: این جدول **اثرِ علّی** (فاز ۵) را نگه می‌دارد که از
+    آزمایش می‌آید، و `model_runs` مدل‌های **پیش‌بین** (فاز ۴) را که از تاریخچه
+    آموزش می‌بینند. هیچ‌کدام جای دیگری را نمی‌گیرد.
     """
 
     __tablename__ = "uplift_snapshots"
@@ -898,6 +1007,7 @@ __all__ = [
     "CustomerLifecycleEvent",
     "ImportBatch",
     "ImportReconciliation",
+    "ModelRun",
     "Opportunity",
     "OpportunityEvent",
     "OpportunityFactor",
