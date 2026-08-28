@@ -32,6 +32,9 @@ import { toFa } from "@/lib/format";
 
 import { Alert, Badge, Button, Card, SectionTitle, Spinner } from "./ui";
 
+/** همان رشته‌ای که سرور در `relationship_value_kind` می‌فرستد (§۱۸.۵). */
+const RELATIONSHIP_VALUE_KIND = "بدون عدد ریالی";
+
 const STATUS_LABELS: Record<string, string> = {
   open: "باز",
   accepted: "پذیرفته‌شده",
@@ -234,6 +237,15 @@ export default function OpportunityInbox() {
             <p className="mt-1 text-xs" style={{ color: "var(--muted)" }}>
               {data.economics_note_fa}
             </p>
+            {!!data.relationship_open_count && (
+              <p className="mt-1 text-xs" style={{ color: "var(--muted)" }}>
+                <b>اقدام رابطه‌ای با مشتریان کلیدی آینده:</b>{" "}
+                <span className="tnum">
+                  {toFa(String(data.relationship_open_count))} مشتری
+                </span>{" "}
+                — {data.relationship_note_fa}
+              </p>
+            )}
           </div>
         )}
 
@@ -297,10 +309,21 @@ export default function OpportunityInbox() {
                   </div>
 
                   <div className="shrink-0 text-end">
-                    {/* عدد ریالی هرگز خودش قالب‌بندی نمی‌شود؛ متن آماده رندر می‌شود */}
+                    {/*
+                      عدد ریالی هرگز خودش قالب‌بندی نمی‌شود؛ متن آماده رندر می‌شود.
+                      اقدام رابطه‌ای عمداً مبلغ ندارد و نشان‌دادنِ «۰ تومان» برایش
+                      دروغ است — پس به‌جای عدد، ماهیتش نوشته می‌شود.
+                    */}
                     <div className="text-base font-bold tnum">
-                      {toFa(o.expected_value.display_text)}
+                      {o.value_kind === RELATIONSHIP_VALUE_KIND
+                        ? "—"
+                        : toFa(o.expected_value.display_text)}
                     </div>
+                    {o.value_kind === RELATIONSHIP_VALUE_KIND && (
+                      <div className="text-xs" style={{ color: "var(--muted)" }}>
+                        بدون عدد ریالی
+                      </div>
+                    )}
                     <div className="mt-2 flex flex-wrap justify-end gap-1.5">
                       {o.status !== "accepted" && (
                         <Button

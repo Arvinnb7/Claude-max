@@ -29,6 +29,7 @@ from typing import Any
 
 LINEAR_KIND = "logistic_l2"
 ISOTONIC_KIND = "isotonic"
+SIGMOID_KIND = "sigmoid"
 
 
 def linear_model_to_json(
@@ -68,7 +69,7 @@ def calibration_to_json(
     y: list[float],
     reliability_bins: list[dict] | None = None,
 ) -> dict[str, Any]:
-    """آرتیفکتِ کالیبراسیون (§۷.۶) — دو آرایه و بین‌های اتکا.
+    """آرتیفکتِ کالیبراسیونِ isotonic (§۷.۶) — دو آرایه و بین‌های اتکا.
 
     `reliability_bins` همان چیزی است که §۲۹.۴ می‌خواهد: «۸۰٪ نمایش‌داده‌شده باید
     تقریباً به نرخ ۸۰٪ منجر شود» فقط با جدولِ بین‌ها قابل بررسی است.
@@ -84,4 +85,36 @@ def calibration_to_json(
     }
 
 
-__all__ = ["ISOTONIC_KIND", "LINEAR_KIND", "calibration_to_json", "linear_model_to_json"]
+def sigmoid_calibration_to_json(
+    *,
+    slope: float,
+    intercept: float,
+    reliability_bins: list[dict] | None = None,
+    n_calibration: int | None = None,
+) -> dict[str, Any]:
+    """کالیبراسیونِ سیگموئید (Platt) — دو عدد به‌جای دو آرایه.
+
+    **چرا پیش‌فرض این است و نه isotonic.** isotonic یک تابع پله‌ای با
+    درجه‌آزادیِ بالاست و با نمونه‌ی کم، خودش را به نوفه برازش می‌دهد؛ در همین
+    پروژه هم روی برشِ کالیبراسیونِ چندصدتایی، خطای بین‌ها را **بدتر** کرد.
+    سیگموئید دو پارامتر دارد و در نمونه‌ی کم پایدارتر است — همان توصیه‌ای که
+    مستندات scikit-learn هم دارد. وقتی برشِ کالیبراسیون بزرگ شد، isotonic
+    انتخاب می‌شود.
+    """
+    return {
+        "kind": SIGMOID_KIND,
+        "slope": float(slope),
+        "intercept": float(intercept),
+        "reliability_bins": reliability_bins or [],
+        "n_calibration": n_calibration,
+    }
+
+
+__all__ = [
+    "ISOTONIC_KIND",
+    "LINEAR_KIND",
+    "SIGMOID_KIND",
+    "calibration_to_json",
+    "linear_model_to_json",
+    "sigmoid_calibration_to_json",
+]

@@ -41,9 +41,18 @@ from mktcore.db.models import (
 from mktcore.money import to_basis_points, to_rial_int
 from mktcore.uplift.empirical import BASIS_LABELS_FA, BASIS_NONE
 
-from .contract import OUTCOME_EVIDENCE, OpportunityCandidate, OpportunityFactorNote
+from .contract import (
+    OUTCOME_EVIDENCE,
+    VALUE_RELATIONSHIP,
+    OpportunityCandidate,
+    OpportunityFactorNote,
+)
 from .filters import apply_filters
-from .generators import generate_candidates
+from .generators import (
+    WHALE_MAX_PER_RUN,
+    generate_candidates,
+    generate_whale_relationship,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -249,6 +258,11 @@ def run_opportunity_engine(
     ensure_schema(db_path)
     as_of = _as_of(clean)
     candidates = generate_candidates(bundle, clean)
+    # این مولد برخلاف بقیه به دفتر کل نگاه می‌کند (امتیازِ مدلِ فعال)، پس اینجا
+    # صدا زده می‌شود که `business_slug` و مسیر دیتابیس در دست است.
+    candidates += generate_whale_relationship(
+        business_slug=business_slug, db_path=db_path,
+    )
     uplift_table = _load_uplift_table(db_path)
     floor_bp, margins = _margin_policy(business_slug, db_path)
     ctx = build_context(
@@ -267,13 +281,19 @@ def run_opportunity_engine(
 
     # `apply_filters` خروجی را بر پایه‌ی ارزش نزولی پردازش می‌کند، پس بریدنِ
     # انتها یعنی حذف کم‌ارزش‌ترین‌ها — نه تصادفی‌ها.
-    overflow = accepted[MAX_PERSISTED_PER_RUN:]
+    #
+    # ⚠️ اقدام‌های رابطه‌ای عمداً ارزش ریالی ندارند، پس در همان مرتب‌سازی همیشه
+    # ته صف می‌افتند و دقیقاً همان‌ها بریده می‌شوند. سهمیه‌ی جدا این را درست
+    # می‌کند و **بدون هیچ اقدام رابطه‌ای، حسابش دقیقاً مثل قبل است**.
+    money = [c for c in accepted if c.value_kind != VALUE_RELATIONSHIP]
+    rapport = [c for c in accepted if c.value_kind == VALUE_RELATIONSHIP]
+    overflow = money[MAX_PERSISTED_PER_RUN:] + rapport[WHALE_MAX_PER_RUN:]
     capped_out = len(overflow)
     if capped_out:
-        accepted = accepted[:MAX_PERSISTED_PER_RUN]
+        accepted = money[:MAX_PERSISTED_PER_RUN] + rapport[:WHALE_MAX_PER_RUN]
         logger.info(
             "سقف صندوق: %s فرصتِ کم‌ارزش‌تر از %s نامزدِ واجد شرایط ذخیره نشد",
-            capped_out, capped_out + MAX_PERSISTED_PER_RUN,
+            capped_out, capped_out + len(accepted),
         )
     # فرصت‌هایی که فقط به‌خاطر سقف کنار ماندند هنوز **مصداق دارند**؛ اگر
     # «ناپدید» حساب شوند، هر اجرا بین باز و بی‌مصداق نوسان می‌کنند.

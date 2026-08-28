@@ -80,8 +80,17 @@ def score_from_json(
 def apply_calibration(
     calibration: dict[str, Any] | None, probability: np.ndarray,
 ) -> np.ndarray:
-    """اعمالِ isotonic ذخیره‌شده. بدون آرتیفکت، عددِ خام برمی‌گردد."""
-    if not calibration or not calibration.get("x"):
+    """اعمالِ آرتیفکتِ کالیبراسیون. بدون آرتیفکت، عددِ خام برمی‌گردد."""
+    if not calibration:
+        return probability
+    kind = calibration.get("kind")
+    if kind == "sigmoid":
+        eps = 1e-9
+        clipped = np.clip(probability, eps, 1.0 - eps)
+        logit = np.log(clipped / (1.0 - clipped))
+        z = float(calibration["slope"]) * logit + float(calibration["intercept"])
+        return 1.0 / (1.0 + np.exp(-np.clip(z, -60.0, 60.0)))
+    if not calibration.get("x"):
         return probability
     x = np.asarray(calibration["x"], dtype=float)
     y = np.asarray(calibration["y"], dtype=float)

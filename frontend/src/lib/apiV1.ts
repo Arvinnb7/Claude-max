@@ -238,7 +238,12 @@ export type OpportunityList = {
   items: Opportunity[];
   total: number;
   status_counts?: Record<string, number>;
+  /** فقط فرصت‌های **ریالی**؛ اقدام رابطه‌ای عمداً در این جمع نیست. */
   open_pipeline?: Money;
+  /** §۳۸: این گروه با تعداد مشتری گزارش می‌شود، نه با مبلغ. */
+  relationship_open_count?: number;
+  relationship_value_kind?: string;
+  relationship_note_fa?: string;
   economics_note_fa?: string;
 };
 
@@ -299,6 +304,7 @@ export async function listOpportunities(params: {
   status?: string;
   kind?: string;
   assignedTo?: string;
+  valueKind?: string;
   limit?: number;
   offset?: number;
 } = {}): Promise<OpportunityList> {
@@ -306,6 +312,7 @@ export async function listOpportunities(params: {
   search.set("status", params.status ?? "open");
   if (params.kind) search.set("kind", params.kind);
   if (params.assignedTo) search.set("assigned_to", params.assignedTo);
+  if (params.valueKind) search.set("value_kind", params.valueKind);
   search.set("limit", String(params.limit ?? 50));
   search.set("offset", String(params.offset ?? 0));
   return handle(

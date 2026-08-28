@@ -21,6 +21,7 @@ from .contract import (
     OUTCOME_BLOCK,
     OUTCOME_PASS,
     OUTCOME_SKIP,
+    VALUE_RELATIONSHIP,
     OpportunityCandidate,
     OpportunityFactorNote,
 )
@@ -40,6 +41,13 @@ def filter_eligibility(candidate: OpportunityCandidate, ctx: dict) -> Opportunit
         return OpportunityFactorNote(
             "eligibility", FILTER_CODES["eligibility"], OUTCOME_BLOCK,
             "این نامزد مشتری مشخصی ندارد، پس قابل واگذاری به کسی نیست.",
+        )
+    if candidate.value_kind == VALUE_RELATIONSHIP:
+        # این نوع فرصت عمداً عدد ریالی ندارد (§۱۸.۵)؛ سنجیدنش با آستانه‌ی ارزش،
+        # یعنی حذفِ همان چیزی که قرار بود بدون عدد باشد.
+        return OpportunityFactorNote(
+            "eligibility", FILTER_CODES["eligibility"], OUTCOME_PASS,
+            "این فرصت عمداً عدد ریالی ندارد؛ ارزشش رابطه است، نه یک سفارش مشخص.",
         )
     if candidate.expected_value_display < MIN_VALUE_DISPLAY:
         return OpportunityFactorNote(
@@ -230,17 +238,30 @@ def filter_uplift(candidate: OpportunityCandidate, ctx: dict) -> OpportunityFact
     )
 
 
+# سقفِ اقدامِ رابطه‌ای به‌ازای هر مشتری. عمداً ۱ است: دو «تماس آشناسازی» در یک
+# زمان بی‌معناست، ولی یک اقدامِ خدمتی با یک یادآوری چرخه تداخل ندارد.
+RELATIONSHIP_CAP = 1
+
+
 def filter_conflict(candidate: OpportunityCandidate, ctx: dict) -> OpportunityFactorNote:
-    """تداخل: یک مشتری نباید هم‌زمان با چند پیام متضاد هدف گرفته شود."""
-    cap = ctx.get("per_customer_open_cap", 3)
-    counts: dict[str, int] = ctx.setdefault("_customer_counts", {})
-    used = counts.get(candidate.customer_key, 0)
+    """تداخل: یک مشتری نباید هم‌زمان با چند پیام متضاد هدف گرفته شود.
+
+    شمارش **به‌تفکیک نوعِ ارزش** انجام می‌شود: فرصت‌های فروشی با هم رقابت
+    می‌کنند، ولی اقدامِ رابطه‌ای (که پیشنهاد فروش نیست) نباید جای یک یادآوری
+    چرخه را بگیرد — و برعکس.
+    """
+    relationship = candidate.value_kind == VALUE_RELATIONSHIP
+    bucket = "relationship" if relationship else "money"
+    cap = RELATIONSHIP_CAP if relationship else ctx.get("per_customer_open_cap", 3)
+    counts: dict[tuple[str, str], int] = ctx.setdefault("_customer_counts", {})
+    key = (candidate.customer_key, bucket)
+    used = counts.get(key, 0)
     if used >= cap:
         return OpportunityFactorNote(
             "conflict", FILTER_CODES["conflict"], OUTCOME_BLOCK,
-            f"این مشتری از قبل {used} فرصت باز دارد (سقف {cap}).",
+            f"این مشتری از قبل {used} فرصت باز از همین نوع دارد (سقف {cap}).",
         )
-    counts[candidate.customer_key] = used + 1
+    counts[key] = used + 1
     return OpportunityFactorNote(
         "conflict", FILTER_CODES["conflict"], OUTCOME_PASS,
         f"شمار فرصت‌های باز این مشتری زیر سقف {cap} است.",
@@ -297,5 +318,6 @@ def apply_filters(
 __all__ = [
     "FILTER_CHAIN",
     "MIN_VALUE_DISPLAY",
+    "RELATIONSHIP_CAP",
     "apply_filters",
 ]

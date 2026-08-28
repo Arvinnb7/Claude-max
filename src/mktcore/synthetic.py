@@ -168,7 +168,7 @@ def generate_cohort_sales(
     seed: int = 101,
     start: str = "2021-01-01",
     days: int = 1_460,
-    arrivals_per_day: float = 0.8,
+    arrivals_per_day: float = 1.8,
     whale_fraction: float = 0.12,
 ) -> pd.DataFrame:
     """داده‌ی فروش با **فرایند جذب مشتری** و حاشیه‌ی همبسته با کیفیت مشتری.

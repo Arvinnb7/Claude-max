@@ -14,6 +14,15 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, field
 
+# نوعِ ارزشِ فرصت. دو تای اول ریالی‌اند؛ سومی عمداً عدد ندارد.
+#
+# **چرا یک نوعِ بدون عدد لازم است.** اقدامِ رابطه‌ای (§۱۸.۵) خدمت است نه فروش:
+# «تماس آشناسازی» درآمدِ مشخصی ندارد و هر عددی برایش بگذاریم، عددِ ساختگی است.
+# سند هم در نمونه‌ی خروجی روزانه (§۳۸) این گروه را تنها گروهی می‌کند که **فقط
+# تعداد مشتری** دارد، نه مبلغ. پس به‌جای گذاشتنِ صفر یا حدس، نوعش را صریح
+# می‌کنیم تا هر لایه‌ای بداند اینجا عدد نباید نشان داده شود.
+VALUE_RELATIONSHIP = "بدون عدد ریالی"
+
 # نتیجه‌ی یک فیلتر
 OUTCOME_EVIDENCE = "evidence"
 OUTCOME_PASS = "filter_pass"
@@ -97,6 +106,7 @@ class OpportunityCandidate:
 
 
 __all__ = [
+    "VALUE_RELATIONSHIP",
     "FILTER_CODES",
     "OUTCOME_BLOCK",
     "OUTCOME_EVIDENCE",

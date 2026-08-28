@@ -47,6 +47,7 @@ from mktcore.db.models import (
 from mktcore.identity import mask_phone
 from mktcore.lifecycle import STATE_LABELS_FA
 from mktcore.money import money_payload
+from mktcore.opportunities.contract import VALUE_RELATIONSHIP
 from mktcore.security import require_token
 
 logger = logging.getLogger("mktcore.api.v1")
@@ -613,6 +614,9 @@ def list_opportunities(
     status: str = Query("open"),
     kind: str | None = Query(None),
     assigned_to: str | None = Query(None),
+    # «بدون عدد ریالی» گروهِ اقدام‌های رابطه‌ای است؛ جدا خواندنش لازم است چون
+    # در UI هم جدا و **بدون مبلغ** نمایش داده می‌شود (§۳۸).
+    value_kind: str | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ) -> dict:
@@ -630,6 +634,8 @@ def list_opportunities(
             stmt = stmt.where(Opportunity.kind == kind)
         if assigned_to:
             stmt = stmt.where(Opportunity.assigned_to == assigned_to)
+        if value_kind:
+            stmt = stmt.where(Opportunity.value_kind == value_kind)
 
         total = session.scalar(select(func.count()).select_from(stmt.subquery())) or 0
         rows = session.scalars(
@@ -644,10 +650,20 @@ def list_opportunities(
             .where(Opportunity.business_id == business_id)
             .group_by(Opportunity.status)
         ).all())
+        # ارزشِ فهرست فقط از فرصت‌های **ریالی** جمع می‌شود؛ اقدام رابطه‌ای عمداً
+        # عدد ندارد و افزودنِ صفرش به جمع، فقط توهمِ «حساب‌شده بودن» می‌سازد.
         pipeline_rial = session.scalar(
             select(func.sum(Opportunity.expected_value_rial)).where(
                 Opportunity.business_id == business_id,
                 Opportunity.status == "open",
+                Opportunity.value_kind != VALUE_RELATIONSHIP,
+            )
+        ) or 0
+        relationship_open = session.scalar(
+            select(func.count()).select_from(Opportunity).where(
+                Opportunity.business_id == business_id,
+                Opportunity.status == "open",
+                Opportunity.value_kind == VALUE_RELATIONSHIP,
             )
         ) or 0
         note = _economics_note(_cost_coverage(session, business_id))
@@ -658,6 +674,13 @@ def list_opportunities(
         "total": total,
         "status_counts": counts,
         "open_pipeline": _money(int(pipeline_rial)),
+        # §۳۸: این گروه با **تعداد مشتری** گزارش می‌شود، نه با مبلغ.
+        "relationship_open_count": int(relationship_open),
+        "relationship_value_kind": VALUE_RELATIONSHIP,
+        "relationship_note_fa": (
+            "اقدام‌های رابطه‌ای عمداً عدد ریالی ندارند؛ ارزششان رابطه‌ی بلندمدت "
+            "است و گذاشتنِ مبلغِ حدسی رویشان، عددِ ساختگی می‌ساخت."
+        ),
         "economics_note_fa": note,
     }
 

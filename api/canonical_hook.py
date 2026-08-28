@@ -73,6 +73,9 @@ def record_analysis(
         payload["features_written"] = _record_features(
             clean, bundle, display_currency=display_currency, business_slug=slug,
         )
+        # امتیازِ مدل‌ها **پیش از** فرصت‌ها: مولدهای فرصت ممکن است به آن نگاه
+        # کنند. بدون مدلِ فعال این گام هیچ‌چیز نمی‌نویسد.
+        payload["models"] = _score_models(business_slug=slug)
         payload["opportunities"] = _run_opportunities(
             clean, bundle, session_id=session_id,
             display_currency=display_currency, business_slug=slug,
@@ -110,6 +113,21 @@ def _record_features(clean: pd.DataFrame, bundle: Any, *, display_currency: str,
     except Exception:  # noqa: BLE001 - همان جداسازی، یک لایه پایین‌تر
         logger.exception("نوشتن عکس ویژگی مشتری ناموفق بود")
         return 0
+
+
+def _score_models(*, business_slug: str = "default") -> dict | None:
+    """امتیازِ مدل‌های فعال روی تازه‌ترین عکس ویژگی.
+
+    مثل بقیه‌ی این پل، شکستش کسی را نمی‌کُشد: تحلیل و دفتر کل مستقل از این گام
+    کامل می‌مانند. و بدون مدلِ **فعال**، این گام هیچ ستونی را لمس نمی‌کند.
+    """
+    try:
+        from mktcore.ml.whale import score_whale_customers
+
+        return {"whale": score_whale_customers(business_slug=business_slug)}
+    except Exception:  # noqa: BLE001 - همان جداسازی عمدی
+        logger.exception("امتیازدهی مدل‌ها ناموفق بود")
+        return None
 
 
 def _run_opportunities(
