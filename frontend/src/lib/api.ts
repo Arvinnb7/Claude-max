@@ -10,6 +10,7 @@ import type {
   StrategyResponse,
   UploadResponse,
 } from "./types";
+import { UnauthorizedError, apiFetch } from "./token";
 
 const BASE =
   process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") || "http://localhost:8000";
@@ -23,13 +24,14 @@ async function handle<T>(res: Response): Promise<T> {
     } catch {
       /* noop */
     }
+    if (res.status === 401) throw new UnauthorizedError(detail);
     throw new Error(detail);
   }
   return res.json() as Promise<T>;
 }
 
 export async function getHealth(): Promise<HealthResponse> {
-  return handle<HealthResponse>(await fetch(`${BASE}/api/health`, { cache: "no-store" }));
+  return handle<HealthResponse>(await apiFetch(`${BASE}/api/health`, { cache: "no-store" }));
 }
 
 /** health با چند بار retry — تا بنر «سرور در دسترس نیست» ناخواسته ظاهر نشود. */
@@ -49,7 +51,7 @@ export async function getHealthWithRetry(retries = 3): Promise<HealthResponse> {
 // ---------------------------------------------------------------- jobها
 export async function getJob(jobId: string): Promise<JobStatus> {
   return handle<JobStatus>(
-    await fetch(`${BASE}/api/jobs/${encodeURIComponent(jobId)}`, { cache: "no-store" }),
+    await apiFetch(`${BASE}/api/jobs/${encodeURIComponent(jobId)}`, { cache: "no-store" }),
   );
 }
 
@@ -97,7 +99,7 @@ export async function uploadFile(
   const form = new FormData();
   form.append("file", file);
   const { job_id, session_id } = await handle<{ job_id: string; session_id: string }>(
-    await fetch(`${BASE}/api/upload`, { method: "POST", body: form }),
+    await apiFetch(`${BASE}/api/upload`, { method: "POST", body: form }),
   );
   // شناسه‌ی نشست از همین لحظه در دسترس است تا بعد از کرش/رفرش گم نشود
   onSession?.(session_id);
@@ -105,7 +107,7 @@ export async function uploadFile(
 }
 
 export async function loadSample(): Promise<UploadResponse> {
-  return handle<UploadResponse>(await fetch(`${BASE}/api/sample`, { method: "POST" }));
+  return handle<UploadResponse>(await apiFetch(`${BASE}/api/sample`, { method: "POST" }));
 }
 
 export async function analyze(
@@ -120,7 +122,7 @@ export async function analyze(
   onProgress?: (pct: number, stage: string) => void,
 ): Promise<AnalyzeResponse> {
   const { job_id } = await handle<{ job_id: string }>(
-    await fetch(`${BASE}/api/analyze`, {
+    await apiFetch(`${BASE}/api/analyze`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(params),
@@ -132,7 +134,7 @@ export async function analyze(
 // ------------------------------------------------------------ بازیابی نشست
 export async function getSessionInfo(sessionId: string): Promise<SessionInfo> {
   return handle<SessionInfo>(
-    await fetch(`${BASE}/api/session/${encodeURIComponent(sessionId)}`, {
+    await apiFetch(`${BASE}/api/session/${encodeURIComponent(sessionId)}`, {
       cache: "no-store",
     }),
   );
@@ -141,7 +143,7 @@ export async function getSessionInfo(sessionId: string): Promise<SessionInfo> {
 // --------------------------------------------------- فهرست و مدیریت نشست‌ها
 export async function listSessions(limit = 20, analyzed = false): Promise<SessionListResponse> {
   return handle<SessionListResponse>(
-    await fetch(`${BASE}/api/sessions?limit=${limit}&analyzed=${analyzed}`, {
+    await apiFetch(`${BASE}/api/sessions?limit=${limit}&analyzed=${analyzed}`, {
       cache: "no-store",
     }),
   );
@@ -149,7 +151,7 @@ export async function listSessions(limit = 20, analyzed = false): Promise<Sessio
 
 export async function deleteSession(session_id: string): Promise<{ deleted: boolean }> {
   return handle<{ deleted: boolean }>(
-    await fetch(`${BASE}/api/session/${encodeURIComponent(session_id)}`, {
+    await apiFetch(`${BASE}/api/session/${encodeURIComponent(session_id)}`, {
       method: "DELETE",
     }),
   );
@@ -157,7 +159,7 @@ export async function deleteSession(session_id: string): Promise<{ deleted: bool
 
 export async function renameSession(session_id: string, label: string | null): Promise<unknown> {
   return handle<unknown>(
-    await fetch(`${BASE}/api/session/${encodeURIComponent(session_id)}`, {
+    await apiFetch(`${BASE}/api/session/${encodeURIComponent(session_id)}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ label }),
@@ -171,7 +173,7 @@ export async function getStrategy(
   onProgress?: (pct: number, stage: string) => void,
 ): Promise<StrategyResponse> {
   const { job_id } = await handle<{ job_id: string }>(
-    await fetch(`${BASE}/api/strategy`, {
+    await apiFetch(`${BASE}/api/strategy`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ session_id }),
@@ -185,7 +187,7 @@ export async function getCampaign(
   onProgress?: (pct: number, stage: string) => void,
 ): Promise<CampaignResponse> {
   const { job_id } = await handle<{ job_id: string }>(
-    await fetch(`${BASE}/api/campaign`, {
+    await apiFetch(`${BASE}/api/campaign`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ session_id }),
@@ -196,7 +198,7 @@ export async function getCampaign(
 
 export async function getAudienceKinds(): Promise<{ kinds: AudienceKind[] }> {
   return handle<{ kinds: AudienceKind[] }>(
-    await fetch(`${BASE}/api/audience-kinds`, { cache: "no-store" }),
+    await apiFetch(`${BASE}/api/audience-kinds`, { cache: "no-store" }),
   );
 }
 
@@ -219,7 +221,7 @@ export async function sendSMS(params: {
   confirm?: boolean;
 }): Promise<SMSResult> {
   return handle<SMSResult>(
-    await fetch(`${BASE}/api/sms/send`, {
+    await apiFetch(`${BASE}/api/sms/send`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ dry_run: true, ...params }),
@@ -229,7 +231,7 @@ export async function sendSMS(params: {
 
 export async function getOutbox(limit = 20): Promise<{ items: OutboxItem[] }> {
   return handle<{ items: OutboxItem[] }>(
-    await fetch(`${BASE}/api/outbox?limit=${limit}`, { cache: "no-store" }),
+    await apiFetch(`${BASE}/api/outbox?limit=${limit}`, { cache: "no-store" }),
   );
 }
 

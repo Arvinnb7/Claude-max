@@ -14,6 +14,7 @@ import type {
 import Dashboard from "@/components/Dashboard";
 import RecentSessions from "@/components/RecentSessions";
 import { MappingStep, Stepper, UploadStep } from "@/components/steps";
+import { ApiTokenControl } from "@/components/ApiTokenControl";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { Alert, Button, ProgressBar, Spinner } from "@/components/ui";
 
@@ -238,6 +239,7 @@ export default function Home() {
                 <BrainCircuit size={16} className="text-emerald-500" /> استراتژی AI
               </span>
             </div>
+            <ApiTokenControl tokenRequired={health?.api_token_required} />
             <ThemeToggle />
           </div>
         </div>

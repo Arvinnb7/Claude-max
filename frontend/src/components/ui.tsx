@@ -1,8 +1,9 @@
 "use client";
 
-import { ReactNode } from "react";
+import { ReactNode, useState } from "react";
 
 import { toFa } from "@/lib/format";
+import { UnauthorizedError, downloadWithToken } from "@/lib/token";
 
 export function Card({
   children,
@@ -176,5 +177,77 @@ export function Alert({
   };
   return (
     <div className={`rounded-xl border px-4 py-3 text-sm ${map[tone]}`}>{children}</div>
+  );
+}
+
+/**
+ * لینکِ دانلود که **هدرِ توکن** را هم می‌فرستد.
+ *
+ * `<a href>` ساده نمی‌تواند هدر بفرستد؛ یعنی به‌محضِ بستنِ مسیرهای خروجی، همه‌ی
+ * دکمه‌های دانلود با ۴۰۱ برمی‌گشتند و — چون مرورگر خودش پیمایش می‌کرد — کاربر
+ * فقط یک صفحه‌ی خالی می‌دید بدون هیچ توضیحی. اینجا فایل با `fetch` گرفته
+ * می‌شود و از روی `blob` ذخیره می‌شود، و خطا **دیده** می‌شود.
+ *
+ * `href` سرِ جایش می‌ماند تا «باز کردن در تبِ جدید» و منویِ راست‌کلیک مثل قبل
+ * کار کند.
+ */
+export function DownloadLink({
+  href,
+  filename,
+  className = "",
+  children,
+}: {
+  href: string;
+  /** نامِ جایگزین، اگر سرور `Content-Disposition` نفرستد */
+  filename: string;
+  className?: string;
+  children: ReactNode;
+}) {
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  return (
+    <>
+      <a
+        href={href}
+        className={className}
+        aria-busy={busy}
+        onClick={(event) => {
+          // کلیدهای ترکیبی یعنی «خودم می‌خواهم بازش کنم» — دست نمی‌زنیم
+          if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+          event.preventDefault();
+          setError(null);
+          setBusy(true);
+          downloadWithToken(href, filename)
+            .catch((e: unknown) => {
+              setError(
+                e instanceof UnauthorizedError
+                  ? `${e.message} توکن را در نوار بالای صفحه وارد کنید.`
+                  : e instanceof Error
+                    ? e.message
+                    : "دانلود انجام نشد.",
+              );
+            })
+            .finally(() => setBusy(false));
+        }}
+      >
+        {children}
+      </a>
+      {error && (
+        <div className="fixed inset-x-4 bottom-4 z-50 mx-auto max-w-2xl" role="alert">
+          <div className="flex items-start justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800 shadow-lg dark:border-rose-500/30 dark:bg-ink-900 dark:text-rose-200">
+            <span>{error}</span>
+            <button
+              type="button"
+              onClick={() => setError(null)}
+              className="shrink-0 rounded-lg px-2 hover:bg-rose-100 dark:hover:bg-ink-800"
+              aria-label="بستن"
+            >
+              ×
+            </button>
+          </div>
+        </div>
+      )}
+    </>
   );
 }

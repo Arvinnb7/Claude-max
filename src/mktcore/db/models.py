@@ -992,8 +992,52 @@ class ContactSuppression(Base):
         return self.opted_out_at is not None and self.revoked_at is None
 
 
+class AuditEvent(Base):
+    """ردِ پای کارهای حساس: چه چیزی از سیستم بیرون رفت یا عوض شد، کِی، و از کجا.
+
+    ## چرا این جدول لازم شد
+
+    خروجی اکسل کمپین فهرستِ **کاملِ** شماره‌های تماس را می‌دهد (نه ماسک‌شده).
+    تا امروز تنها ردِ این کار `campaigns.exported_at` بود که فقط **اولین** بار
+    را نگه می‌داشت: دانلودِ دوم، دهم و صدم هیچ اثری نمی‌گذاشتند. یعنی اگر روزی
+    فهرست مشتریان جایی بیرون می‌رفت، هیچ راهی برای فهمیدنِ «چند بار و از کجا»
+    وجود نداشت.
+
+    ## «چه کسی» را صادقانه ثبت می‌کنیم
+
+    این نصب **توکنِ مشترک** دارد نه کاربرِ نام‌دار، پس هویتِ واقعی را
+    نمی‌دانیم و وانمود هم نمی‌کنیم: `actor` فقط می‌گوید درخواست توکن داشت یا نه،
+    و `source_ip` می‌گوید از چه نشانی آمد. اگر روزی احراز هویتِ نام‌دار اضافه
+    شود، همین ستون نامِ کاربر را می‌گیرد و ردیف‌های قدیمی هم بی‌معنا نمی‌شوند.
+    """
+
+    __tablename__ = "audit_events"
+
+    ACTION_CAMPAIGN_EXPORT = "campaign_export"
+    ACTION_SESSION_EXPORT = "session_export"
+
+    ACTOR_TOKEN = "توکن‌دار"
+    ACTOR_ANONYMOUS = "بدون توکن (نصب محافظت‌نشده)"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    business_id: Mapped[int | None] = mapped_column(
+        ForeignKey("businesses.id"), index=True
+    )
+    at: Mapped[float] = mapped_column(Float, default=now_ts, index=True)
+    action: Mapped[str] = mapped_column(String(64), index=True)
+    entity_type: Mapped[str | None] = mapped_column(String(32))
+    entity_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    actor: Mapped[str | None] = mapped_column(String(128))
+    source_ip: Mapped[str | None] = mapped_column(String(64))
+    # چند ردیفِ داده‌ی مشتری در این رویداد جابه‌جا شد. `NULL` یعنی «موضوعیت
+    # ندارد»، نه صفر.
+    row_count: Mapped[int | None] = mapped_column(Integer)
+    detail_fa: Mapped[str | None] = mapped_column(Text)
+
+
 __all__ = [
     "AppSetting",
+    "AuditEvent",
     "Business",
     "Campaign",
     "CampaignMember",

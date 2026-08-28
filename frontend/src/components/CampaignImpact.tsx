@@ -34,7 +34,16 @@ import {
 import { getHealth } from "@/lib/api";
 import { toFa } from "@/lib/format";
 
-import { Alert, Badge, Button, Card, SectionTitle, Spinner, StatCard } from "./ui";
+import {
+  Alert,
+  Badge,
+  Button,
+  Card,
+  DownloadLink,
+  SectionTitle,
+  Spinner,
+  StatCard,
+} from "./ui";
 
 const VERDICT_TONE: Record<CampaignReport["verdict"], "green" | "accent" | "gray"> = {
   proven: "green",
@@ -199,11 +208,15 @@ export default function CampaignImpact() {
                   </div>
                 </div>
                 <div className="flex shrink-0 gap-2">
-                  <a href={campaignExportUrl(c.id)} className="inline-flex">
+                  <DownloadLink
+                    href={campaignExportUrl(c.id)}
+                    filename="فهرست-تماس.xlsx"
+                    className="inline-flex"
+                  >
                     <Button variant="outline">
                       <Download size={14} /> فهرست تماس
                     </Button>
-                  </a>
+                  </DownloadLink>
                   <Button variant="ghost" onClick={() => void open(c.id)}>
                     گزارش اثر
                   </Button>
@@ -663,11 +676,15 @@ function CampaignDetailView({
           <Badge tone={VERDICT_TONE[r.verdict]}>{r.verdict_label}</Badge>
           {data.status === "closed" && <Badge tone="gray">بسته‌شده</Badge>}
           <div className="ms-auto flex gap-2">
-            <a href={campaignExportUrl(data.id)} className="inline-flex">
+            <DownloadLink
+              href={campaignExportUrl(data.id)}
+              filename="فهرست-تماس.xlsx"
+              className="inline-flex"
+            >
               <Button variant="outline">
                 <Download size={14} /> فهرست تماس
               </Button>
-            </a>
+            </DownloadLink>
             <Button variant="ghost" disabled={busy} onClick={onRefresh}>
               <RefreshCw size={14} /> به‌روزرسانی نتیجه
             </Button>

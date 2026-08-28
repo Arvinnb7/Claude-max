@@ -133,3 +133,26 @@ def test_export_next_purchase_value_columns():
     headers = [c.value for c in ws[1]]
     for col in ("ریسک ریزش", "ارزش مورد انتظار ۳۰ روز", "ارزش عمر ۱۲ ماه", "درجه‌ی اتکا"):
         assert col in headers, f"ستون «{col}» نیست"
+
+
+def test_session_export_leaves_an_audit_trail():
+    """این فایل ستون «موبایل» کاملِ مشتری‌ها را دارد؛ رفتنش باید ثبت شود.
+
+    خروجی کمپین ممیزی داشت و این یکی نداشت — در حالی که هر دو همان PII را
+    بیرون می‌دهند. ممیزی‌ای که فقط یکی از دو در را ببیند، ممیزی نیست.
+    """
+    from mktcore.db.engine import session_scope
+    from mktcore.db.models import AuditEvent
+    from mktcore.db.repo_audit import recent_audit_events
+
+    sid = _analyzed_session()
+    _fetch(sid, "segments")
+
+    with session_scope() as session:
+        events = recent_audit_events(
+            session, action=AuditEvent.ACTION_SESSION_EXPORT, entity_id=sid,
+        )
+
+    assert events, "دانلود خروجی نشست هیچ ردی نگذاشت"
+    assert events[0].entity_type == "session"
+    assert events[0].actor

@@ -44,7 +44,16 @@ import {
   SegmentBars,
   WeekdayChart,
 } from "./charts";
-import { Alert, Badge, Button, Card, ProgressBar, SectionTitle, StatCard } from "./ui";
+import {
+  Alert,
+  Badge,
+  Button,
+  Card,
+  DownloadLink,
+  ProgressBar,
+  SectionTitle,
+  StatCard,
+} from "./ui";
 
 type Tab =
   | "kpi"
@@ -217,12 +226,13 @@ export default function Dashboard({
                   <li key={i}>{w}</li>
                 ))}
               </ul>
-              <a
+              <DownloadLink
                 href={exportUrl(sessionId, "audit")}
+                filename="ممیزی.xlsx"
                 className="inline-block text-xs underline underline-offset-2"
               >
                 دانلود اکسل ممیزی (ردیف‌های حذف‌شده و برگشت‌ها با شماره ردیف فایل)
-              </a>
+              </DownloadLink>
             </div>
           </div>
         </Alert>
@@ -321,11 +331,11 @@ function KpiTab({ data, unit, sessionId }: { data: AnalyzeResponse; unit: string
               title="فرصت‌های ارزش‌دار"
               subtitle="همه‌ی فرصت‌های فروش، مرتب بر اساس ارزش ریالی — «ارزش فرصت» یعنی اگر مشتری خرید کند چقدر پول در میان است"
             />
-            <a href={exportUrl(sessionId, "actions")}>
+            <DownloadLink href={exportUrl(sessionId, "actions")} filename="فهرست-اقدام.xlsx">
               <Button variant="primary">
                 <Download size={16} /> دانلود فهرست اقدام (اکسل)
               </Button>
-            </a>
+            </DownloadLink>
           </div>
 
           <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -473,11 +483,11 @@ function SegmentsTab({
           <Card>
             <div className="flex flex-wrap items-center justify-between gap-3">
               <SectionTitle title="جزئیات سگمنت‌ها" />
-              <a href={exportUrl(sessionId, "segments")}>
+              <DownloadLink href={exportUrl(sessionId, "segments")} filename="سگمنت-ها.xlsx">
                 <Button variant="outline">
                   <Download size={16} /> دانلود اکسل مشتریان سگمنت‌ها
                 </Button>
-              </a>
+              </DownloadLink>
             </div>
             <table className="w-full text-right text-sm">
               <thead>

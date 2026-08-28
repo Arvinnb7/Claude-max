@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("mktcore.db.migrations")
 
 # نسخه‌ی جاری طرح‌واره‌ی canonical. با افزودن هر مهاجرت، یک عدد بالا می‌رود.
-CANONICAL_SCHEMA_VERSION = 11
+CANONICAL_SCHEMA_VERSION = 12
 
 _MIGRATION_TABLE = "schema_migrations"
 
@@ -221,6 +221,13 @@ def _migration_0011_create_gross_profit_clv(conn: Connection) -> None:
             conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {column} {ddl_type}")
 
 
+def _migration_0012_create_audit_events(conn: Connection) -> None:
+    """جدولِ ممیزی (§۳۱) — جدولِ تازه است، پس `create_all` کافی است."""
+    from mktcore.db import models  # noqa: F401 - ثبت مدل‌ها در metadata
+
+    Base.metadata.create_all(bind=conn, checkfirst=True)
+
+
 _MIGRATIONS: tuple[tuple[int, str, Callable[[Connection], None]], ...] = (
     (1, "create_canonical_tables", _migration_0001_create_canonical_tables),
     (2, "create_opportunity_tables", _migration_0002_create_opportunity_tables),
@@ -233,6 +240,7 @@ _MIGRATIONS: tuple[tuple[int, str, Callable[[Connection], None]], ...] = (
     (9, "create_app_settings", _migration_0009_create_app_settings),
     (10, "create_model_runs", _migration_0010_create_model_runs),
     (11, "create_gross_profit_clv", _migration_0011_create_gross_profit_clv),
+    (12, "create_audit_events", _migration_0012_create_audit_events),
 )
 
 

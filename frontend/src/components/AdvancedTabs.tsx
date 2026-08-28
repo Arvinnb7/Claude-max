@@ -6,7 +6,7 @@ import { Download, History, Megaphone, MessageSquare, Send } from "lucide-react"
 import { exportUrl, getCampaign, getOutbox, sendSMS, type OutboxItem } from "@/lib/api";
 import { compact, jalali, maskPhone, num, pct, toFa } from "@/lib/format";
 import type { AnalyzeResponse, CampaignResponse, SMSResult } from "@/lib/types";
-import { Alert, Badge, Button, Card, ProgressBar, SectionTitle } from "./ui";
+import { Alert, Badge, Button, Card, DownloadLink, ProgressBar, SectionTitle } from "./ui";
 
 const ABC_TONE: Record<string, "green" | "brand" | "gray"> = { A: "green", B: "brand", C: "gray" };
 const REC_TONE: Record<string, "green" | "brand" | "accent" | "rose"> = {
@@ -32,9 +32,9 @@ export function ProductsTab({
         <Card>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <SectionTitle title="محصولات پرفروش و تحلیل ABC" subtitle="کلاس A پرفروش‌ترین‌ها، C کم‌اهمیت‌ترین‌ها" />
-            <a href={exportUrl(sessionId, "products")}>
+            <DownloadLink href={exportUrl(sessionId, "products")} filename="محصولات.xlsx">
               <Button variant="outline"><Download size={16} /> دانلود اکسل</Button>
-            </a>
+            </DownloadLink>
           </div>
           <table className="w-full text-right text-sm">
             <thead>
@@ -117,9 +117,9 @@ export function ProductsTab({
         <Card>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <SectionTitle title="پیش‌بینی خرید بعدی و سبد بعدی" subtitle="مشتریانِ سررسیدشده برای خرید مجدد، احتمال خرید و سبد پیشنهادی شخصی‌سازی‌شده" />
-            <a href={exportUrl(sessionId, "next_purchase")}>
+            <DownloadLink href={exportUrl(sessionId, "next_purchase")} filename="خرید-بعدی.xlsx">
               <Button variant="outline"><Download size={16} /> دانلود اکسل کامل</Button>
-            </a>
+            </DownloadLink>
           </div>
           {data.basket_eval && (
             <div className="mb-4">
@@ -274,9 +274,9 @@ export function DiagnosticsTab({
   return (
     <div className="space-y-6">
       <div className="flex justify-end">
-        <a href={exportUrl(sessionId, "diagnostics")}>
+        <DownloadLink href={exportUrl(sessionId, "diagnostics")} filename="تشخیص.xlsx">
           <Button variant="outline"><Download size={16} /> دانلود اکسل تشخیص و تأمین</Button>
-        </a>
+        </DownloadLink>
       </div>
       {data.pacing && (
         <Card>

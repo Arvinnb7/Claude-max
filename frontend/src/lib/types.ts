@@ -396,6 +396,8 @@ export interface HealthResponse {
   currency: string;
   sms_enabled: boolean;
   scheduler: boolean;
+  /** آیا سرور برای مسیرهای نوشتنی و پرخرج توکن می‌خواهد؟ */
+  api_token_required?: boolean;
 }
 
 export interface JobStatus {

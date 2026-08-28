@@ -8,6 +8,8 @@
  * عدد ریالی است و ده برابر بزرگ‌تر از واحد نمایش؛ همیشه `display_text` رندر شود.
  */
 
+import { UnauthorizedError, apiFetch } from "./token";
+
 const BASE =
   process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") || "http://localhost:8000";
 
@@ -20,6 +22,7 @@ async function handle<T>(res: Response): Promise<T> {
     } catch {
       /* noop */
     }
+    if (res.status === 401) throw new UnauthorizedError(detail);
     throw new Error(detail);
   }
   return res.json() as Promise<T>;
@@ -264,18 +267,18 @@ export async function listImports(limit = 50): Promise<{
   economics_note_fa?: string;
 }> {
   return handle(
-    await fetch(`${BASE}/api/v1/imports?limit=${limit}`, { cache: "no-store" }),
+    await apiFetch(`${BASE}/api/v1/imports?limit=${limit}`, { cache: "no-store" }),
   );
 }
 
 export async function getImport(
   batchId: number,
 ): Promise<ImportBatch & { checks: ReconcileCheck[]; economics_note_fa: string }> {
-  return handle(await fetch(`${BASE}/api/v1/imports/${batchId}`, { cache: "no-store" }));
+  return handle(await apiFetch(`${BASE}/api/v1/imports/${batchId}`, { cache: "no-store" }));
 }
 
 export async function getDataQuality(): Promise<DataQuality> {
-  return handle(await fetch(`${BASE}/api/v1/data-quality`, { cache: "no-store" }));
+  return handle(await apiFetch(`${BASE}/api/v1/data-quality`, { cache: "no-store" }));
 }
 
 export async function listCustomers(params: {
@@ -290,13 +293,13 @@ export async function listCustomers(params: {
   search.set("offset", String(params.offset ?? 0));
   search.set("order_by", params.orderBy ?? "monetary");
   return handle(
-    await fetch(`${BASE}/api/v1/customers?${search.toString()}`, { cache: "no-store" }),
+    await apiFetch(`${BASE}/api/v1/customers?${search.toString()}`, { cache: "no-store" }),
   );
 }
 
 export async function getCustomer(customerId: number): Promise<CustomerProfile> {
   return handle(
-    await fetch(`${BASE}/api/v1/customers/${customerId}`, { cache: "no-store" }),
+    await apiFetch(`${BASE}/api/v1/customers/${customerId}`, { cache: "no-store" }),
   );
 }
 
@@ -316,12 +319,12 @@ export async function listOpportunities(params: {
   search.set("limit", String(params.limit ?? 50));
   search.set("offset", String(params.offset ?? 0));
   return handle(
-    await fetch(`${BASE}/api/v1/opportunities?${search.toString()}`, { cache: "no-store" }),
+    await apiFetch(`${BASE}/api/v1/opportunities?${search.toString()}`, { cache: "no-store" }),
   );
 }
 
 export async function getOpportunity(id: number): Promise<Opportunity> {
-  return handle(await fetch(`${BASE}/api/v1/opportunities/${id}`, { cache: "no-store" }));
+  return handle(await apiFetch(`${BASE}/api/v1/opportunities/${id}`, { cache: "no-store" }));
 }
 
 export type OpportunityActionName = "accept" | "dismiss" | "snooze" | "done" | "reopen";
@@ -422,7 +425,7 @@ export async function sendCampaignSms(
   body: { template?: string; dry_run?: boolean; confirm?: boolean } = {},
 ): Promise<CampaignDetail & { send: CampaignSendResult }> {
   return handle(
-    await fetch(`${BASE}/api/v1/campaigns/${id}/send`, {
+    await apiFetch(`${BASE}/api/v1/campaigns/${id}/send`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ dry_run: true, ...body }),
@@ -476,7 +479,7 @@ export async function getExperimentPlan(params: {
   if (params.holdoutPct != null) query.set("holdout_pct", String(params.holdoutPct));
   const suffix = query.toString() ? `?${query.toString()}` : "";
   return handle(
-    await fetch(`${BASE}/api/v1/experiment-plan${suffix}`, { cache: "no-store" }),
+    await apiFetch(`${BASE}/api/v1/experiment-plan${suffix}`, { cache: "no-store" }),
   );
 }
 
@@ -506,11 +509,11 @@ export async function listCampaigns(): Promise<{
   items: CampaignSummary[];
   exposure_note_fa?: string;
 }> {
-  return handle(await fetch(`${BASE}/api/v1/campaigns`, { cache: "no-store" }));
+  return handle(await apiFetch(`${BASE}/api/v1/campaigns`, { cache: "no-store" }));
 }
 
 export async function getCampaign(id: number): Promise<CampaignDetail> {
-  return handle(await fetch(`${BASE}/api/v1/campaigns/${id}`, { cache: "no-store" }));
+  return handle(await apiFetch(`${BASE}/api/v1/campaigns/${id}`, { cache: "no-store" }));
 }
 
 export async function createCampaign(body: {
@@ -522,7 +525,7 @@ export async function createCampaign(body: {
   limit?: number;
 }): Promise<CampaignSummary> {
   return handle(
-    await fetch(`${BASE}/api/v1/campaigns`, {
+    await apiFetch(`${BASE}/api/v1/campaigns`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -532,13 +535,13 @@ export async function createCampaign(body: {
 
 export async function refreshCampaign(id: number): Promise<CampaignDetail> {
   return handle(
-    await fetch(`${BASE}/api/v1/campaigns/${id}/refresh`, { method: "POST" }),
+    await apiFetch(`${BASE}/api/v1/campaigns/${id}/refresh`, { method: "POST" }),
   );
 }
 
 export async function closeCampaign(id: number): Promise<CampaignDetail> {
   return handle(
-    await fetch(`${BASE}/api/v1/campaigns/${id}/close`, { method: "POST" }),
+    await apiFetch(`${BASE}/api/v1/campaigns/${id}/close`, { method: "POST" }),
   );
 }
 
@@ -575,7 +578,7 @@ export type UpliftTable = {
 };
 
 export async function getLearnedUplift(): Promise<UpliftTable> {
-  return handle(await fetch(`${BASE}/api/v1/uplift`, { cache: "no-store" }));
+  return handle(await apiFetch(`${BASE}/api/v1/uplift`, { cache: "no-store" }));
 }
 
 export type DismissReason = { code: string; label: string };
@@ -584,7 +587,7 @@ export async function listDismissReasons(): Promise<{
   items: DismissReason[];
   note_fa: string;
 }> {
-  return handle(await fetch(`${BASE}/api/v1/dismiss-reasons`, { cache: "no-store" }));
+  return handle(await apiFetch(`${BASE}/api/v1/dismiss-reasons`, { cache: "no-store" }));
 }
 
 /** یک ردیف از دفترِ «تماس نگیر». */
@@ -607,7 +610,7 @@ export async function listContactSuppressions(activeOnly = true): Promise<{
   note_fa: string;
 }> {
   return handle(
-    await fetch(`${BASE}/api/v1/contact-suppressions?active_only=${activeOnly}`, {
+    await apiFetch(`${BASE}/api/v1/contact-suppressions?active_only=${activeOnly}`, {
       cache: "no-store",
     }),
   );
@@ -620,7 +623,7 @@ export async function optOutCustomer(
   actor?: string,
 ): Promise<{ created: boolean; reactivated: boolean; note_fa: string }> {
   return handle(
-    await fetch(`${BASE}/api/v1/customers/${customerId}/opt-out`, {
+    await apiFetch(`${BASE}/api/v1/customers/${customerId}/opt-out`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ reason_fa: reasonFa, actor }),
@@ -632,7 +635,7 @@ export async function revokeCustomerOptOut(
   customerId: number,
 ): Promise<{ revoked: boolean; note_fa: string }> {
   return handle(
-    await fetch(`${BASE}/api/v1/customers/${customerId}/opt-out`, { method: "DELETE" }),
+    await apiFetch(`${BASE}/api/v1/customers/${customerId}/opt-out`, { method: "DELETE" }),
   );
 }
 
@@ -646,7 +649,7 @@ export type CostCoverage = {
 };
 
 export async function getCostCoverage(): Promise<CostCoverage> {
-  return handle(await fetch(`${BASE}/api/v1/cost-coverage`, { cache: "no-store" }));
+  return handle(await apiFetch(`${BASE}/api/v1/cost-coverage`, { cache: "no-store" }));
 }
 
 /** کف حاشیه — تصمیمِ کاربر، نه حدسِ سیستم. `null` یعنی تعیین‌نشده. */
@@ -659,12 +662,12 @@ export type MarginFloor = {
 };
 
 export async function getMarginFloor(): Promise<MarginFloor> {
-  return handle(await fetch(`${BASE}/api/v1/margin-floor`, { cache: "no-store" }));
+  return handle(await apiFetch(`${BASE}/api/v1/margin-floor`, { cache: "no-store" }));
 }
 
 export async function setMarginFloor(bp: number | null): Promise<MarginFloor> {
   return handle(
-    await fetch(`${BASE}/api/v1/margin-floor`, {
+    await apiFetch(`${BASE}/api/v1/margin-floor`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ margin_floor_bp: bp }),
@@ -721,13 +724,13 @@ export async function listModelRuns(modelKey?: string): Promise<ModelRunList> {
   const search = new URLSearchParams();
   if (modelKey) search.set("model_key", modelKey);
   return handle(
-    await fetch(`${BASE}/api/v1/models?${search.toString()}`, { cache: "no-store" }),
+    await apiFetch(`${BASE}/api/v1/models?${search.toString()}`, { cache: "no-store" }),
   );
 }
 
 export async function trainModel(modelKey: string, params?: Record<string, unknown>) {
   return handle<ModelRun>(
-    await fetch(`${BASE}/api/v1/models/train`, {
+    await apiFetch(`${BASE}/api/v1/models/train`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model_key: modelKey, params: params ?? null }),
@@ -737,19 +740,19 @@ export async function trainModel(modelKey: string, params?: Record<string, unkno
 
 export async function promoteModelRun(id: number): Promise<ModelRun> {
   return handle(
-    await fetch(`${BASE}/api/v1/models/${id}/promote`, { method: "POST" }),
+    await apiFetch(`${BASE}/api/v1/models/${id}/promote`, { method: "POST" }),
   );
 }
 
 export async function rollbackModelRun(id: number): Promise<ModelRun> {
   return handle(
-    await fetch(`${BASE}/api/v1/models/${id}/rollback`, { method: "POST" }),
+    await apiFetch(`${BASE}/api/v1/models/${id}/rollback`, { method: "POST" }),
   );
 }
 
 export async function getModelDrift(id: number): Promise<ModelDrift> {
   return handle(
-    await fetch(`${BASE}/api/v1/models/${id}/drift`, { cache: "no-store" }),
+    await apiFetch(`${BASE}/api/v1/models/${id}/drift`, { cache: "no-store" }),
   );
 }
 
@@ -765,7 +768,7 @@ export async function actOnOpportunity(
   } = {},
 ): Promise<Opportunity> {
   return handle(
-    await fetch(`${BASE}/api/v1/opportunities/${id}/${action}`, {
+    await apiFetch(`${BASE}/api/v1/opportunities/${id}/${action}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),

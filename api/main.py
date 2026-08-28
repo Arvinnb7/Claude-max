@@ -22,7 +22,15 @@ sys.path.insert(0, str(_ROOT / "src"))
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
 logger = logging.getLogger("mktcore.api")
 
-from fastapi import Body, Depends, FastAPI, File, HTTPException, UploadFile  # noqa: E402
+from fastapi import (  # noqa: E402
+    Body,
+    Depends,
+    FastAPI,
+    File,
+    HTTPException,
+    Request,
+    UploadFile,
+)
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import HTMLResponse, Response  # noqa: E402
 from pydantic import BaseModel, Field  # noqa: E402
@@ -54,12 +62,14 @@ from mktcore.security import (  # noqa: E402
     NON_ASCII_NOTE_FA,
     UNPROTECTED_NOTE_FA,
     require_token,
+    require_token_for_writes,
     token_configured,
     token_is_usable,
     warn_if_unprotected,
 )
 from mktcore.synthetic import generate_synthetic_sales  # noqa: E402
 
+from .audit_context import actor_fa, client_ip  # noqa: E402
 from .campaigns_api import router as campaigns_router  # noqa: E402
 from .canonical_hook import canonical_enabled, record_analysis  # noqa: E402
 from .export import EXPORT_FA_NAMES, EXPORT_SECTIONS, EmptySection, build_export  # noqa: E402
@@ -121,7 +131,13 @@ async def lifespan(app: FastAPI):
     stop_scheduler()
 
 
-app = FastAPI(title="Marketing Analytics API", version="0.2.0", lifespan=lifespan)
+# گاردِ **سطحِ برنامه**: هر مسیر نوشتنی بسته است مگر در `OPEN_WRITE_ROUTES`
+# صریحاً استثنا شده باشد. پیش‌تر گارد فقط روی مسیرهای تک‌تک بود و نتیجه‌اش
+# این شد که دو مسیرِ پرخرج ماه‌ها باز ماندند در حالی که سند ادعا می‌کرد بسته‌اند.
+app = FastAPI(
+    title="Marketing Analytics API", version="0.2.0", lifespan=lifespan,
+    dependencies=[Depends(require_token_for_writes)],
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -593,7 +609,7 @@ def _require_publishable(session_id: str) -> None:
         )
 
 
-@app.post("/api/strategy")
+@app.post("/api/strategy", dependencies=[Depends(require_token)])
 def strategy(req: StrategyRequest = Body(...)) -> dict:
     _require_analyzed(req.session_id)
     _require_heavy(req.session_id)
@@ -620,7 +636,7 @@ def strategy(req: StrategyRequest = Body(...)) -> dict:
     return {"job_id": submit_job("strategy", _job, session_id=sid)}
 
 
-@app.post("/api/campaign")
+@app.post("/api/campaign", dependencies=[Depends(require_token)])
 def campaign(req: StrategyRequest = Body(...)) -> dict:
     _require_analyzed(req.session_id)
     if not api_key_available():
@@ -676,9 +692,36 @@ def report(session_id: str, fmt: str = "pdf"):
 
 
 # ------------------------------------------------------------- خروجی اکسل
+def _audit_session_export(session_id: str, section: str, request: Request) -> None:
+    """ردِ ممیزیِ خروجیِ نشست. شکستش نباید دانلود را زمین بزند."""
+    try:
+        from mktcore.db.engine import session_scope
+        from mktcore.db.migrations import ensure_schema
+        from mktcore.db.models import AuditEvent
+        from mktcore.db.repo_audit import record_audit_event
+
+        ensure_schema()
+        with session_scope() as db:
+            record_audit_event(
+                db,
+                action=AuditEvent.ACTION_SESSION_EXPORT,
+                entity_type="session",
+                entity_id=session_id,
+                actor=actor_fa(request),
+                source_ip=client_ip(request),
+                detail_fa=f"خروجی اکسل بخش «{EXPORT_FA_NAMES[section]}».",
+            )
+    except Exception:  # pragma: no cover - ممیزی نباید مانعِ کار شود
+        logger.exception("ثبت ممیزی خروجی نشست شکست خورد")
+
+
 @app.get("/api/export")
-def export_excel(session_id: str, section: str):
-    """خروجی اکسل یک بخش داشبورد (سگمنت‌ها/پیش‌بینی خرید/محصولات/تشخیص و تأمین)."""
+def export_excel(session_id: str, section: str, request: Request):
+    """خروجی اکسل یک بخش داشبورد (سگمنت‌ها/پیش‌بینی خرید/محصولات/تشخیص و تأمین).
+
+    چند بخشِ این خروجی ستون «موبایل» دارند و شماره را **کامل** می‌نویسند. پس
+    مثل خروجی کمپین، هر دانلود یک ردیفِ ممیزی می‌گذارد.
+    """
     if section not in EXPORT_SECTIONS:
         raise HTTPException(status_code=400, detail="بخش نامعتبر برای خروجی اکسل.")
     _require_analyzed(session_id)
@@ -700,6 +743,8 @@ def export_excel(session_id: str, section: str):
         content = build_export(section, bundle, clean, extras)
     except EmptySection as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
+
+    _audit_session_export(session_id, section, request)
 
     fa_name = quote(f"{EXPORT_FA_NAMES[section]}.xlsx")
     return Response(

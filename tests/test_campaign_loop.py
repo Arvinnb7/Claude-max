@@ -121,6 +121,37 @@ def test_second_export_does_not_move_the_measurement_window(analyzed):
     assert first_dates == second_dates
 
 
+def test_every_export_leaves_an_audit_trail(analyzed):
+    """فهرستِ کاملِ شماره‌ها که بیرون می‌رود، باید ردی بگذارد — **هر بار**.
+
+    `exported_at` فقط اولین دانلود را نگه می‌دارد؛ اگر همان فهرست ده بار
+    گرفته شود، آن ستون هیچ‌چیز تازه‌ای نمی‌گوید. ممیزی باید هر بار را ببیند.
+    """
+    from mktcore.db.engine import session_scope
+    from mktcore.db.models import AuditEvent
+    from mktcore.db.repo_audit import recent_audit_events
+
+    campaign = _create("کمپین ممیزی")
+    for _ in range(2):
+        assert client.get(
+            f"/api/v1/campaigns/{campaign['id']}/export"
+        ).status_code == 200
+
+    with session_scope() as session:
+        events = recent_audit_events(
+            session,
+            action=AuditEvent.ACTION_CAMPAIGN_EXPORT,
+            entity_id=campaign["id"],
+        )
+
+    assert len(events) == 2, "دانلود دوم هم باید ثبت شود"
+    for event in events:
+        assert event.row_count and event.row_count > 0
+        assert event.entity_type == "campaign"
+        assert event.actor  # «چه کسی» را صادقانه می‌گوید، حتی وقتی نمی‌داند
+        assert "شماره‌ی کامل" in (event.detail_fa or "")
+
+
 # ------------------------------------------------------------ گزارش اثر
 def test_report_is_present_and_always_carries_a_verdict(analyzed):
     campaign = _create("کمپین گزارش")

@@ -17,7 +17,7 @@ import logging
 from urllib.parse import quote
 
 import pandas as pd
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
@@ -32,6 +32,7 @@ from mktcore.db.engine import session_scope, write_lock
 from mktcore.db.lookup import active_business_id
 from mktcore.db.migrations import ensure_schema
 from mktcore.db.models import (
+    AuditEvent,
     Campaign,
     CampaignMember,
     CampaignOpportunity,
@@ -41,6 +42,7 @@ from mktcore.db.models import (
     CustomerFeature,
     Opportunity,
 )
+from mktcore.db.repo_audit import record_audit_event
 from mktcore.execution import send_campaign
 from mktcore.execution.audience import RenderedMessage, render_template
 from mktcore.execution.cost import cost_note_fa, message_cost_rial, segment_count
@@ -48,6 +50,8 @@ from mktcore.identity import mask_phone, normalize_phone
 from mktcore.lifecycle import STATE_LABELS_FA
 from mktcore.money import money_payload
 from mktcore.security import require_token
+
+from .audit_context import actor_fa, client_ip
 
 logger = logging.getLogger("mktcore.api.campaigns")
 
@@ -293,8 +297,8 @@ def _campaign_detail(session, campaign: Campaign, members_limit: int = 200) -> d
     return payload
 
 
-@router.get("/{campaign_id}/export")
-def export_campaign(campaign_id: int):
+@router.get("/{campaign_id}/export", dependencies=[Depends(require_token)])
+def export_campaign(campaign_id: int, request: Request):
     """خروجی اکسل بازوی آزمایش — و ثبت لحظه‌ی تماس.
 
     گروه کنترل **عمداً** در فایل نیست؛ اگر بود، کاربر ناخواسته با آن‌ها تماس
@@ -345,6 +349,24 @@ def export_campaign(campaign_id: int):
             campaign.exported_at = stamp
         name = campaign.name
         suppressed = screened.suppressed_count
+
+        # این فایل فهرستِ **کاملِ** شماره‌ها را دارد (نه ماسک‌شده). تا پیش از
+        # این، تنها ردِ ماجرا `exported_at` بود که فقط اولین دانلود را نگه
+        # می‌داشت؛ دانلودهای بعدی هیچ اثری نمی‌گذاشتند.
+        record_audit_event(
+            session,
+            action=AuditEvent.ACTION_CAMPAIGN_EXPORT,
+            business_id=campaign.business_id,
+            entity_type="campaign",
+            entity_id=campaign_id,
+            actor=actor_fa(request),
+            source_ip=client_ip(request),
+            row_count=len(rows),
+            detail_fa=(
+                f"خروجی اکسل کمپین «{name}»: {len(rows)} شماره‌ی کامل، "
+                f"{suppressed} مورد با دروازه‌ی مجوز تماس کنار گذاشته شد."
+            ),
+        )
 
     content = _workbook(rows)
     filename = quote(f"کمپین-{name}.xlsx")
