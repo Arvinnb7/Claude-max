@@ -992,6 +992,53 @@ class ContactSuppression(Base):
         return self.opted_out_at is not None and self.revoked_at is None
 
 
+class JobRun(Base):
+    """یک اجرای کارِ زمان‌بندی‌شده: چه شد، چند بار تلاش شد، و کجا مُرد.
+
+    ## چرا لازم است
+
+    §۲۸ سه چیز می‌خواهد که هیچ‌کدام وجود نداشت: **تلاش دوباره با فاصله‌ی
+    فزاینده**، **دیده‌شدنِ شکستِ نهایی (صف مرده)**، و **شناسه‌ی همبستگی**. تا
+    امروز کارِ زمان‌بند فقط یک `logger.exception` بود؛ یعنی اگر بازآموزی مدل سه
+    هفته پشت سر هم شکست می‌خورد، هیچ‌کس نمی‌فهمید مگر آنکه لاگ را می‌خواند.
+
+    ## چرا «مرده» یک وضعیت است، نه حذف
+
+    ردیفِ شکست‌خورده پاک نمی‌شود. «کاری که سه بار شکست خورد» باید در فهرست
+    بماند تا کسی ببیندش و تصمیم بگیرد — شکستی که ناپدید شود، شکستی است که
+    تکرار می‌شود.
+    """
+
+    __tablename__ = "job_runs"
+    __table_args__ = (
+        Index("ix_job_runs_name_status", "job_name", "status"),
+    )
+
+    STATUS_RUNNING = "running"
+    STATUS_SUCCEEDED = "succeeded"
+    STATUS_SKIPPED = "skipped"          # شرطش برقرار نبود — شکست نیست
+    STATUS_RETRY_SCHEDULED = "retry_scheduled"
+    STATUS_DEAD_LETTER = "dead_letter"  # تلاش‌ها تمام شد؛ باید دیده شود
+
+    TERMINAL_STATUSES = (STATUS_SUCCEEDED, STATUS_SKIPPED, STATUS_DEAD_LETTER)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    job_name: Mapped[str] = mapped_column(String(64), index=True)
+    # شناسه‌ی همبستگی: همان رشته در لاگِ درخواست و لاگِ این کار می‌آید
+    correlation_id: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(24), index=True)
+    attempt: Mapped[int] = mapped_column(Integer, default=1)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=3)
+    started_at: Mapped[float] = mapped_column(Float, default=now_ts, index=True)
+    finished_at: Mapped[float | None] = mapped_column(Float)
+    # پرشده یعنی «هنوز تلاشِ دیگری در راه است»
+    next_retry_at: Mapped[float | None] = mapped_column(Float, index=True)
+    error_type: Mapped[str | None] = mapped_column(String(64))
+    error_text: Mapped[str | None] = mapped_column(Text)
+    result_json: Mapped[str | None] = mapped_column(Text)
+    note_fa: Mapped[str | None] = mapped_column(Text)
+
+
 class JobLease(Base):
     """اجاره‌ی اجرا: «این کار برای این دامنه، همین حالا دستِ یک نفر است».
 
@@ -1098,6 +1145,7 @@ __all__ = [
     "ImportBatch",
     "ImportReconciliation",
     "JobLease",
+    "JobRun",
     "ModelRun",
     "Opportunity",
     "OpportunityEvent",

@@ -75,6 +75,11 @@ from .canonical_hook import canonical_enabled, record_analysis  # noqa: E402
 from .export import EXPORT_FA_NAMES, EXPORT_SECTIONS, EmptySection, build_export  # noqa: E402
 from .jobs import JobError, submit_job  # noqa: E402
 from .models_api import router as models_router  # noqa: E402
+from .observability import (  # noqa: E402
+    RequestContextMiddleware,
+    install_log_filter,
+)
+from .ops_api import router as ops_router  # noqa: E402
 from .persistence import store  # noqa: E402
 from .scheduler import (  # noqa: E402
     catch_up_missed_scan,
@@ -99,6 +104,7 @@ def _catch_up_scheduler() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    install_log_filter()
     warn_if_unprotected()
     recovered = store.recover_stale_jobs()
     if recovered:
@@ -139,6 +145,10 @@ app = FastAPI(
     dependencies=[Depends(require_token_for_writes)],
 )
 
+# ترتیب مهم است: این middleware **بیرونی‌ترین** باشد تا شناسه‌ی درخواست حتی
+# روی پاسخِ خطای CORS و ۴۰۱ هم بنشیند.
+app.add_middleware(RequestContextMiddleware)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_settings().cors_origin_list,
@@ -150,6 +160,7 @@ app.add_middleware(
 app.include_router(v1_router)
 app.include_router(campaigns_router)
 app.include_router(models_router)
+app.include_router(ops_router)
 
 
 def _columns_payload(df) -> dict:
@@ -194,17 +205,54 @@ def _columns_payload(df) -> dict:
     return payload
 
 
+def _safely(probe):
+    """اجرای یک بررسیِ فرعی؛ خطایش `None` می‌شود، نه ۵۰۰."""
+    try:
+        return probe()
+    except Exception:  # noqa: BLE001 - health باید همیشه جواب بدهد
+        logger.exception("یکی از بررسی‌های health شکست خورد")
+        return None
+
+
+def _database_health() -> dict:
+    """آیا دیتابیس واقعاً جواب می‌دهد؟
+
+    نسخه‌ی قبلی بی‌قید و شرط `"ok"` برمی‌گرداند — یعنی با دیتابیسِ خراب هم
+    «سالم» می‌گفت. سنجه‌ای که همیشه سبز باشد، سنجه نیست.
+    """
+    started = time.perf_counter()
+    try:
+        with store._conn() as conn:  # noqa: SLF001 - همان اتصالِ لایه‌ی نشست
+            conn.execute("SELECT 1").fetchone()
+    except Exception as exc:  # noqa: BLE001 - هر خطایی یعنی ناسالم
+        return {
+            "ok": False,
+            "error": f"{type(exc).__name__}: {exc}",
+            "note_fa": "دیتابیس پاسخ نداد؛ تحلیل و ذخیره‌سازی کار نمی‌کنند.",
+        }
+    return {"ok": True, "latency_ms": round((time.perf_counter() - started) * 1000, 1)}
+
+
 @app.get("/api/health")
-def health() -> dict:
+def health(response: Response) -> dict:
     s = get_settings()
+    database = _database_health()
+    if not database["ok"]:
+        # ۵۰۳ تا load balancer و مانیتورینگ **بفهمند**، نه اینکه ۲۰۰ بگیرند و
+        # ناسالمی را در بدنه‌ی JSON از دست بدهند.
+        response.status_code = 503
     return {
-        "status": "ok",
+        "status": "ok" if database["ok"] else "unhealthy",
+        "database": database,
         "ai_available": api_key_available(),
         "model": s.mkt_model,
         "currency": s.mkt_currency,
         "sms_enabled": s.sms_configured,
-        "scheduler": scheduler_status()["running"],
-        "data_dir": str(store.data_dir.resolve()),
+        # وضعیت زمان‌بند خودش دیتابیس را می‌خواند؛ اگر دیتابیس خراب باشد این
+        # هم می‌افتد و **کلِ** health با ۵۰۰ می‌ترکد — یعنی دقیقاً وقتی به
+        # health نیاز داریم، بی‌جواب می‌ماند. `None` یعنی «نمی‌دانم»، نه «خاموش».
+        "scheduler": _safely(lambda: scheduler_status()["running"]),
+        "data_dir": _safely(lambda: str(store.data_dir.resolve())),
         "retention": s.retention_policy,
         # وضعیت گاردِ دسترسی — سکوت در برابر «هیچ گاردی نیست» پذیرفتنی نیست
         "api_token_required": token_configured(),

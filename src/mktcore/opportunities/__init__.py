@@ -15,7 +15,12 @@ from .contract import (
     OpportunityCandidate,
     OpportunityFactorNote,
 )
-from .engine import ENGINE_VERSION, OpportunityRunResult, run_opportunity_engine
+from .engine import (
+    ENGINE_VERSION,
+    OpportunityRunResult,
+    expire_overdue_opportunities,
+    run_opportunity_engine,
+)
 
 __all__ = [
     "ENGINE_VERSION",
@@ -23,5 +28,6 @@ __all__ = [
     "OpportunityCandidate",
     "OpportunityFactorNote",
     "OpportunityRunResult",
+    "expire_overdue_opportunities",
     "run_opportunity_engine",
 ]

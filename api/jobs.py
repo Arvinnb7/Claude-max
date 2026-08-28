@@ -14,6 +14,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
+from .observability import current_request_id, set_request_id
 from .persistence import store
 
 logger = logging.getLogger("mktcore.jobs")
@@ -33,7 +34,13 @@ def submit_job(kind: str, fn: Callable[[ProgressFn], Any],
         store.update_job(jid, status="running",
                          progress=max(0.0, min(100.0, pct)), stage=stage)
 
+    # شناسه‌ی درخواست **در همین لحظه** برداشته می‌شود: داخل thread استخر،
+    # متنِ درخواست دیگر وجود ندارد و بدون این، لاگِ jobهای طولانی به درخواستی
+    # که راه‌اندازشان بود وصل نمی‌شد.
+    request_id = current_request_id()
+
     def _run() -> None:
+        set_request_id(request_id)
         try:
             store.update_job(jid, status="running", progress=1, stage="شروع پردازش")
             try:

@@ -17,6 +17,7 @@ from mktcore.config import get_settings
 from mktcore.contact.register import load_gate
 from mktcore.execution import render_messages, send_campaign
 from mktcore.execution.audience import build_audience
+from mktcore.jobs import SCHEDULED_JOBS, run_job
 
 from .persistence import store
 
@@ -159,10 +160,43 @@ def start_scheduler() -> bool:
     )
     sched.add_job(store.run_retention, "interval", hours=6, id="session-cleanup",
                   replace_existing=True)
+    _register_pipeline_jobs(sched)
     sched.start()
     _scheduler = sched
-    logger.info("scheduler started (cycle scan @ %02d:00 Tehran)", settings.mkt_schedule_hour)
+    logger.info(
+        "scheduler started (cycle scan @ %02d:00 Tehran, %s کار خط لوله)",
+        settings.mkt_schedule_hour, len(SCHEDULED_JOBS),
+    )
     return True
+
+
+def _register_pipeline_jobs(sched: Any) -> None:
+    """ثبتِ شش کارِ §۲۸ روی زمان‌بند.
+
+    هر کار از راهِ `run_job` صدا زده می‌شود، نه مستقیم — یعنی همان‌جا ردیفِ
+    اجرا، تلاشِ دوباره و صف مرده را می‌گیرد. صدا زدنِ مستقیمِ تابع یعنی شکستش
+    فقط یک خط لاگ باشد، که دقیقاً مشکلِ امروز است.
+
+    دقیقه‌ها عمداً پخش شده‌اند: پنج کار سرِ دقیقه‌ی صفر یعنی پنج تراکنشِ سنگین
+    روی یک فایل SQLite در یک لحظه.
+    """
+    for index, job in enumerate(SCHEDULED_JOBS):
+        name = job.name
+        if job.interval_hours is not None:
+            sched.add_job(
+                _make_runner(name), "interval", hours=job.interval_hours,
+                id=f"job-{name}", replace_existing=True,
+            )
+            continue
+        sched.add_job(
+            _make_runner(name), "cron", hour=job.hour, minute=(index * 7) % 60,
+            id=f"job-{name}", replace_existing=True,
+        )
+
+
+def _make_runner(name: str):
+    """بستنِ نامِ کار در یک closure. بدون این، همه‌ی jobها آخرین نام را می‌گیرند."""
+    return lambda: run_job(name)
 
 
 def stop_scheduler() -> None:
@@ -187,7 +221,25 @@ def scheduler_status() -> dict:
         "auto_sms": settings.mkt_auto_sms,
         "sms_configured": settings.sms_configured,
         "last_run_date": store.get_meta(LAST_SCAN_KEY),
+        "pipeline_jobs": [
+            {
+                "name": job.name,
+                "title_fa": job.title_fa,
+                "hour": job.hour,
+                "interval_hours": job.interval_hours,
+                "max_attempts": job.max_attempts,
+                "next_run": _next_run(f"job-{job.name}"),
+            }
+            for job in SCHEDULED_JOBS
+        ],
     }
+
+
+def _next_run(job_id: str) -> str | None:
+    if _scheduler is None:
+        return None
+    job = _scheduler.get_job(job_id)
+    return job.next_run_time.isoformat() if job and job.next_run_time else None
 
 
 __all__ = [

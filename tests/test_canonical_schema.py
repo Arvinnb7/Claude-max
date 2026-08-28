@@ -149,6 +149,9 @@ def test_every_canonical_table_carries_business_id():
         # اجاره‌ی اجرا داده‌ی کسب‌وکار نیست؛ ردیفِ هماهنگیِ زمانِ اجراست و
         # دامنه‌اش در `scope_key` است — که برای jobهای غیرکسب‌وکاری هم کار کند.
         "job_leases",
+        # دفترِ اجرای کارها هم داده‌ی کسب‌وکار نیست؛ کارهای سراسری (مثل
+        # جاروکشِ تلاش‌ها) اصلاً کسب‌وکاری ندارند که به آن نسبت داده شوند.
+        "job_runs",
     }
     missing = [
         name for name, table in Base.metadata.tables.items()

@@ -184,7 +184,7 @@ def _margin_policy(
     """کفِ حاشیه‌ی تعیین‌شده‌ی کاربر + حاشیه‌ی هر کالا از دفتر کل.
 
     مثل بقیه‌ی خواندن‌های کمکی، شکست اینجا موتور را نمی‌خواباند: خالی برمی‌گردد
-    و `filter_margin_floor` همان «بررسی نشد» صادقانه را ثبت می‌کند.
+    و فیلترها همان «بررسی نشد» صادقانه را ثبت می‌کنند.
     """
     try:
         from mktcore.costs.register import margin_lookup
@@ -666,6 +666,30 @@ def _supersede_missing(
     return count
 
 
+def expire_overdue_opportunities(
+    *,
+    business_slug: str = "default",
+    as_of: str | None = None,
+    db_path: Path | None = None,
+) -> dict:
+    """انقضای فرصت‌های از تاریخ‌گذشته، **بدون** اجرای کاملِ موتور (§۲۸ بند ۷).
+
+    تا امروز انقضا فقط به‌عنوان یک گامِ فرعیِ اجرای موتور اتفاق می‌افتاد. یعنی
+    اگر یک هفته فایلِ تازه‌ای وارد نمی‌شد، فرصت‌های منقضی همچنان «باز» نشان داده
+    می‌شدند — و کاربر روی چیزی وقت می‌گذاشت که دیگر مصداق نداشت.
+
+    idempotent است: اجرای دوباره چیزی برای انقضا پیدا نمی‌کند و صفر برمی‌گرداند.
+    """
+    ensure_schema(db_path)
+    today = as_of or pd.Timestamp.now().date().isoformat()
+    with write_lock, session_scope(db_path) as session:
+        business_id = resolve_business_id(session, business_slug)
+        if business_id is None:
+            return {"expired": 0, "note_fa": "کسب‌وکاری با این نام وجود ندارد."}
+        expired = _expire_overdue(session, business_id, today)
+    return {"expired": expired, "as_of": today}
+
+
 def _expire_overdue(session: Session, business_id: int, as_of: str) -> int:
     overdue = session.scalars(
         select(Opportunity).where(
@@ -719,5 +743,6 @@ __all__ = [
     "STATUS_SUPERSEDED",
     "OpportunityRunResult",
     "build_context",
+    "expire_overdue_opportunities",
     "run_opportunity_engine",
 ]
