@@ -47,7 +47,9 @@ BACKOFF_BASE_SECONDS = 60.0
 __all__ = [
     "BACKOFF_BASE_SECONDS",
     "backoff_seconds",
+    "COMPLETED_RUN_RETENTION_DAYS",
     "dead_letter_runs",
+    "prune_completed_runs",
     "recent_runs",
     "retry_run",
     "run_job",
@@ -112,10 +114,17 @@ def run_job(
     )
 
 
-def sweep_due_retries(*, now: float | None = None, db_path: Path | None = None) -> dict:
-    """تلاش‌های سررسیدشده را دوباره اجرا می‌کند.
+# دفترِ اجرا خودش نباید بی‌کران رشد کند: جاروکش هر ربع ساعت یک ردیف می‌سازد،
+# یعنی ~۹۶ ردیف در روز. ردیف‌های **تمام‌شده‌ی موفق** بعد از این مدت هرس می‌شوند.
+COMPLETED_RUN_RETENTION_DAYS = 30.0
 
-    خودش یک کارِ زمان‌بندی‌شده است. اگر خالی باشد، هیچ ردیفی نمی‌نویسد.
+
+def sweep_due_retries(*, now: float | None = None, db_path: Path | None = None) -> dict:
+    """تلاش‌های سررسیدشده را دوباره اجرا می‌کند، و دفتر را هرس می‌کند.
+
+    خودش یک کارِ زمان‌بندی‌شده است و **هر بار یک ردیف می‌سازد** — برای همین
+    همین‌جا ردیف‌های قدیمیِ موفق را هم پاک می‌کند. ردیف‌های **صف مرده** هرگز
+    هرس نمی‌شوند: همان‌ها تنها چیزی‌اند که باید دیده شوند.
     """
     ensure_schema(db_path)
     moment = now_ts() if now is None else now
@@ -140,7 +149,28 @@ def sweep_due_retries(*, now: float | None = None, db_path: Path | None = None) 
                 run_id=row_id, db_path=db_path,
             )
         )
-    return {"retried": len(outcomes), "outcomes": outcomes}
+    pruned = prune_completed_runs(now=moment, db_path=db_path)
+    return {"retried": len(outcomes), "pruned": pruned, "outcomes": outcomes}
+
+
+def prune_completed_runs(
+    *,
+    now: float | None = None,
+    older_than_days: float = COMPLETED_RUN_RETENTION_DAYS,
+    db_path: Path | None = None,
+) -> int:
+    """پاک‌کردنِ ردیف‌های تمام‌شده‌ی قدیمی. **صف مرده دست‌نخورده می‌ماند.**"""
+    cutoff = (now_ts() if now is None else now) - older_than_days * 86_400
+    with write_lock, session_scope(db_path) as session:
+        stale = session.scalars(
+            select(JobRun).where(
+                JobRun.status.in_([JobRun.STATUS_SUCCEEDED, JobRun.STATUS_SKIPPED]),
+                JobRun.started_at < cutoff,
+            )
+        ).all()
+        for row in stale:
+            session.delete(row)
+        return len(stale)
 
 
 def retry_run(run_id: int, *, db_path: Path | None = None) -> dict:

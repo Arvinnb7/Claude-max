@@ -259,3 +259,34 @@ def test_the_api_shows_the_dead_letter_queue(db, failing_job, monkeypatch):
 
     listing = client.get("/api/v1/ops/jobs").json()
     assert {job["name"] for job in listing["jobs"]} >= {"drift_monitoring"}
+
+
+# ══════════════════════════════════════ دفترِ اجرا خودش بی‌کران رشد نکند
+def test_the_sweeper_prunes_old_successful_runs_but_never_the_dead(db, failing_job):
+    """جاروکش هر ربع ساعت یک ردیف می‌سازد؛ بدون هرس، دفتر بی‌کران رشد می‌کند.
+
+    ولی صف مرده هرگز هرس نمی‌شود: همان‌ها تنها چیزی‌اند که باید دیده شوند.
+    """
+    from mktcore.jobs.runner import prune_completed_runs
+
+    # یک ردیفِ مرده بساز
+    run_job("_test_failing", db_path=db)
+    sweep_due_retries(now=now_ts() + 3_600, db_path=db)
+    sweep_due_retries(now=now_ts() + 7_200, db_path=db)
+
+    # و یک ردیفِ موفق
+    register_job(ScheduledJob(
+        name="_test_ok", title_fa="موفق", run=lambda *, correlation_id=None: {"ok": 1},
+    ))
+    try:
+        run_job("_test_ok", db_path=db)
+    finally:
+        unregister_job("_test_ok")
+
+    # زمان را جلو ببر: هر دو «قدیمی» می‌شوند
+    pruned = prune_completed_runs(now=now_ts() + 40 * 86_400, db_path=db)
+
+    assert pruned == 1, "فقط ردیفِ موفق باید هرس شود"
+    remaining = {r["job_name"] for r in recent_runs(db_path=db)}
+    assert remaining == {"_test_failing"}
+    assert len(dead_letter_runs(db_path=db)) == 1

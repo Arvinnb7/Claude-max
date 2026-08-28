@@ -215,7 +215,7 @@ def _job_drift_monitoring(*, correlation_id: str | None = None) -> dict:
 
 
 def _job_retry_sweep(*, correlation_id: str | None = None) -> dict:
-    """جاروکشِ تلاش‌های سررسیدشده. خودش تلاشِ دوباره نمی‌گیرد."""
+    """جاروکشِ تلاش‌های سررسیدشده + هرسِ دفترِ اجرا. خودش تلاشِ دوباره نمی‌گیرد."""
     from mktcore.jobs.runner import sweep_due_retries
 
     return sweep_due_retries()
@@ -262,7 +262,7 @@ SCHEDULED_JOBS: tuple[ScheduledJob, ...] = (
     ),
     ScheduledJob(
         name="retry_sweep",
-        title_fa="جاروکشِ تلاش‌های سررسیدشده",
+        title_fa="جاروکشِ تلاش‌ها و هرسِ دفترِ اجرا",
         run=_job_retry_sweep,
         interval_hours=0.25,
         max_attempts=1,
