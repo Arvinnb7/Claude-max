@@ -281,6 +281,53 @@ def filter_offer_policy(candidate: OpportunityCandidate, ctx: dict) -> Opportuni
 
 
 # ترتیب مهم است: ارزان‌ترین و قطعی‌ترین ردها اول، تداخل آخر (چون حالت دارد).
+def filter_operator_capacity(
+    candidate: OpportunityCandidate, ctx: dict,
+) -> OpportunityFactorNote:
+    """ظرفیت پیگیری تیم (§۲۵).
+
+    ## چرا این فیلتر لازم است
+
+    صندوقی با ۳۰۰ فرصت وقتی تیم روزی ۲۰ تماس می‌گیرد، عملاً یک صندوقِ ۲۰تایی
+    است به‌اضافه‌ی ۲۸۰ ردیفِ نویز. بدترش این است که کاربر نمی‌داند کدام ۲۰تا،
+    پس از بالای فهرست شروع می‌کند و بقیه بی‌صدا کهنه می‌شوند.
+
+    ## چرا بدون تنظیم، «قبول» ثبت نمی‌شود
+
+    اگر کاربر ظرفیت را نگفته باشد، هیچ عددی حدس زده نمی‌شود — ولی «بررسی نشد»
+    هم ثبت می‌شود تا کسی گمان نکند ظرفیت لحاظ شده است. همان قاعده‌ی
+    `filter_margin_floor`.
+
+    ⚠️ **این فیلتر باید آخرِ زنجیره باشد.** شمارشش فقط وقتی درست است که همه‌ی
+    فیلترهای قبلی پاس شده باشند؛ وگرنه ظرفیت را با نامزدهایی پر می‌کند که
+    اصلاً پذیرفته نمی‌شوند.
+    """
+    capacity = ctx.get("daily_capacity")
+    if capacity is None:
+        return OpportunityFactorNote(
+            "operator_capacity", FILTER_CODES["operator_capacity"], OUTCOME_SKIP,
+            "ظرفیت پیگیری تیم بررسی نشد — عددش تنظیم نشده است. "
+            "با تنظیمش، فرصت‌های بیش از توانِ پیگیری کنار گذاشته می‌شوند.",
+        )
+    # اقدامِ رابطه‌ای سهمیه‌ی جدا دارد و نباید جای تماس‌های فروش را بگیرد؛
+    # شمارشِ مشترک یعنی هر اقدام رابطه‌ای یک فرصتِ ریالی را بیرون می‌اندازد.
+    bucket = "relationship" if candidate.value_kind == VALUE_RELATIONSHIP else "money"
+    used: dict[str, int] = ctx.setdefault("_capacity_used", {})
+    taken = used.get(bucket, 0)
+    if taken >= capacity:
+        return OpportunityFactorNote(
+            "operator_capacity", FILTER_CODES["operator_capacity"], OUTCOME_BLOCK,
+            f"ظرفیت پیگیری تیم ({capacity} مورد) پر شد؛ این فرصت کم‌ارزش‌تر از "
+            "مواردی است که جا گرفتند.",
+            value_text=str(capacity),
+        )
+    used[bucket] = taken + 1
+    return OpportunityFactorNote(
+        "operator_capacity", FILTER_CODES["operator_capacity"], OUTCOME_PASS,
+        f"در ظرفیت پیگیری تیم جا دارد ({taken + 1} از {capacity}).",
+    )
+
+
 FILTER_CHAIN: tuple[Callable[[OpportunityCandidate, dict], OpportunityFactorNote], ...] = (
     filter_eligibility,
     filter_consent,
@@ -291,6 +338,8 @@ FILTER_CHAIN: tuple[Callable[[OpportunityCandidate, dict], OpportunityFactorNote
     filter_offer_policy,
     filter_uplift,
     filter_conflict,
+    # ⚠️ ظرفیت **آخر** می‌آید: شمارشش فقط وقتی معنا دارد که بقیه پاس شده باشند.
+    filter_operator_capacity,
 )
 
 
@@ -317,6 +366,7 @@ def apply_filters(
 
 __all__ = [
     "FILTER_CHAIN",
+    "filter_operator_capacity",
     "MIN_VALUE_DISPLAY",
     "RELATIONSHIP_CAP",
     "apply_filters",

@@ -39,6 +39,7 @@ FILTER_CODES = {
     "conflict": "تداخل با فرصت باز دیگر",
     "offer_policy": "سیاست آفر و تخفیف",
     "uplift": "اثر اندازه‌گیری‌شده‌ی تماس",
+    "operator_capacity": "ظرفیت پیگیری تیم",
 }
 
 

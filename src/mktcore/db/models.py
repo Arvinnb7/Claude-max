@@ -937,6 +937,11 @@ class AppSetting(Base):
     # نکرده» و آن‌وقت `filter_margin_floor` صادقانه «بررسی نشد» ثبت می‌کند.
     KEY_MARGIN_FLOOR_BP = "margin_floor_bp"
 
+    # ظرفیت روزانه‌ی تیم فروش: چند فرصت در یک اجرا واقعاً قابل پیگیری است.
+    # نبودنش یعنی «کاربر نگفته» و `filter_operator_capacity` آن را «بررسی نشد»
+    # ثبت می‌کند — نه یک سقفِ حدسی که فرصت‌های واقعی را قیچی کند.
+    KEY_DAILY_CAPACITY = "operator_daily_capacity"
+
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     business_id: Mapped[int] = mapped_column(ForeignKey("businesses.id"), index=True)
     key: Mapped[str] = mapped_column(String(64), index=True)

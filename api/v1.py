@@ -25,6 +25,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 
+from mktcore.analysis.branch import likely_branch
 from mktcore.config import get_settings
 from mktcore.db.engine import session_scope
 from mktcore.db.lookup import active_business_id
@@ -45,6 +46,7 @@ from mktcore.db.models import (
     Product,
 )
 from mktcore.identity import mask_phone
+from mktcore.ingest.quality import build_quality_dimensions, overall_quality
 from mktcore.lifecycle import STATE_LABELS_FA
 from mktcore.money import money_payload
 from mktcore.opportunities.contract import VALUE_RELATIONSHIP
@@ -180,6 +182,17 @@ def get_import(batch_id: int) -> dict:
     return payload
 
 
+def _batch_notes(batch: ImportBatch | None) -> dict:
+    """یادداشت‌های بارگذاری. JSONِ خراب یعنی «نمی‌دانیم»، نه خطای ۵۰۰."""
+    if batch is None or not batch.notes_json:
+        return {}
+    try:
+        parsed = json.loads(batch.notes_json)
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def _batch_summary(batch: ImportBatch) -> dict:
     return {
         "id": batch.id,
@@ -235,9 +248,44 @@ def data_quality() -> dict:
                 func.count(OrderLine.customer_id),
                 func.count(OrderLine.product_id),
                 func.count(OrderLine.cost_rial),
+                func.count(OrderLine.line_date),
             ).where(OrderLine.business_id == business_id)
         ).one()
-        n_lines, with_customer, with_product, with_cost = (int(x or 0) for x in totals)
+        n_lines, with_customer, with_product, with_cost, with_date = (
+            int(x or 0) for x in totals
+        )
+
+        # ابعادِ §۸.۵ — شمارش‌های تازه‌ای که تا امروز محاسبه نمی‌شدند
+        orders_with_branch = int(session.scalar(
+            select(func.count(Order.id)).where(
+                Order.business_id == business_id,
+                Order.branch.isnot(None),
+                Order.branch != "",
+            )
+        ) or 0)
+        n_returns = int(session.scalar(
+            select(func.count(OrderLine.id)).where(
+                OrderLine.business_id == business_id,
+                OrderLine.is_return.is_(True),
+            )
+        ) or 0)
+        # سازگاریِ تاریخ فقط نسبت به بازه‌ی **اعلام‌شده‌ی همان بارگذاری** معنا
+        # دارد؛ مقایسه با کلِ دفتر کل همیشه ۱۰۰٪ می‌دهد و هیچ‌چیز نمی‌گوید.
+        in_range = None
+        if latest is not None and latest.date_min and latest.date_max:
+            in_range = int(session.scalar(
+                select(func.count(OrderLine.id)).where(
+                    OrderLine.batch_id == latest.id,
+                    OrderLine.line_date >= latest.date_min,
+                    OrderLine.line_date <= latest.date_max,
+                )
+            ) or 0)
+            batch_lines = int(session.scalar(
+                select(func.count(OrderLine.id)).where(OrderLine.batch_id == latest.id)
+            ) or 0)
+        else:
+            batch_lines = 0
+        batch_notes = _batch_notes(latest)
 
         counts = {
             "customers": session.scalar(
@@ -312,9 +360,31 @@ def data_quality() -> dict:
         },
     ]
 
+    # نُه بُعدِ §۸.۵ — کنارِ `gaps` می‌نشیند، نه به‌جایش: `gaps` قرارداد فعلیِ
+    # UI است و شکستنش یعنی پنل کیفیت خالی شود.
+    dimensions = build_quality_dimensions(
+        n_lines=n_lines,
+        lines_with_customer=with_customer,
+        lines_with_product=with_product,
+        lines_with_cost=with_cost,
+        lines_with_date=with_date,
+        lines_in_declared_range=in_range,
+        n_orders=int(counts["orders"] or 0),
+        orders_with_branch=orders_with_branch,
+        rows_total=latest.rows_total if latest else None,
+        rows_clean=latest.rows_clean if latest else None,
+        rows_duplicate=latest.rows_duplicate if latest else None,
+        has_doc_type_column=bool(batch_notes.get("has_doc_type_column")),
+        n_returns=n_returns,
+    )
+    if in_range is not None and batch_lines and in_range > batch_lines:
+        in_range = batch_lines
+
     return {
         "available": True,
         "counts": counts,
+        "dimensions": [d.to_dict() for d in dimensions],
+        "quality_summary": overall_quality(dimensions),
         "latest_batch": _batch_summary(latest) if latest else None,
         "mismatches": [
             {"id": m.check_id, "label": m.label_fa, "expected": m.expected_text,
@@ -425,9 +495,17 @@ def get_customer(customer_id: int, history_limit: int = Query(200, ge=1, le=2000
             )
         )
 
+        # شعبه‌ی محتمل (§۲۴.۵): از خودِ سفارش‌ها، نه از یک حدس. بدون ستون
+        # شعبه، `None` با دلیل برمی‌گردد — نه «نامشخص» که مثل یک شعبه به‌نظر
+        # برسد.
+        order_branches = list(session.scalars(
+            select(Order.branch).where(Order.customer_id == customer_id)
+        ).all())
+
         payload = {
             "available": True,
             "customer": _customer_row(customer, snapshots[0] if snapshots else None),
+            "likely_branch": likely_branch(order_branches).to_dict(),
             "contact_opt_out": None if suppression is None else {
                 "reason_fa": suppression.reason_fa,
                 "scope": suppression.scope,
@@ -983,6 +1061,61 @@ def write_margin_floor(payload: MarginFloorRequest) -> dict:
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return read_margin_floor()
+
+
+class CapacityRequest(BaseModel):
+    """ظرفیت روزانه‌ی پیگیری تیم. `None` یعنی برداشتنش."""
+
+    daily_capacity: int | None = Field(default=None, ge=1, le=100_000)
+
+
+@router.get("/operator-capacity")
+def read_operator_capacity() -> dict:
+    """ظرفیت پیگیری تیم + اینکه با این عدد چه چیزی کنار می‌ماند (§۲۵).
+
+    مثل کف حاشیه، عددِ تنها کافی نیست: کاربر باید ببیند این ظرفیت چند فرصتِ
+    باز را بیرون می‌گذارد، وگرنه عددِ محافظه‌کارانه بی‌صدا صندوق را می‌بُرد.
+    """
+    ensure_schema()
+    from mktcore.settings_store import daily_capacity
+
+    with session_scope() as session:
+        business_id = _business_id(session)
+        if business_id is None:
+            return {**_no_ledger_yet(), "daily_capacity": None}
+        capacity = daily_capacity(session, business_id)
+        open_count = session.scalar(
+            select(func.count(Opportunity.id)).where(
+                Opportunity.business_id == business_id,
+                Opportunity.status == "open",
+            )
+        ) or 0
+
+    return {
+        "available": True,
+        "daily_capacity": capacity,
+        "open_opportunities": open_count,
+        "note_fa": (
+            "ظرفیت پیگیری تیم تعیین نشده است؛ فیلترِ ظرفیت هیچ فرصتی را کنار "
+            "نمی‌گذارد و در گزارش «بررسی نشد» ثبت می‌شود."
+            if capacity is None else
+            f"با ظرفیت {capacity} مورد، از {open_count} فرصتِ باز "
+            f"{max(0, open_count - capacity)} مورد بیرون از ظرفیت می‌مانند."
+        ),
+    }
+
+
+@router.put("/operator-capacity", dependencies=[Depends(require_token)])
+def write_operator_capacity(payload: CapacityRequest) -> dict:
+    """ثبت ظرفیت — تصمیمِ کاربر است، نه حدسِ سیستم."""
+    ensure_schema()
+    from mktcore.settings_store import set_daily_capacity
+
+    try:
+        set_daily_capacity(payload.daily_capacity)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return read_operator_capacity()
 
 
 @router.get("/experiment-plan")

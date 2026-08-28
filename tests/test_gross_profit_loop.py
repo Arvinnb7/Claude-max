@@ -325,7 +325,7 @@ def test_margin_floor_is_reported_as_unset_before_the_user_decides(analyzed):
 
 def test_setting_a_margin_floor_reaches_the_opportunity_engine(analyzed):
     """تنظیمِ کاربر باید واقعاً به زمینه‌ی فیلترها برسد، نه فقط ذخیره شود."""
-    from mktcore.opportunities.engine import _margin_policy
+    from mktcore.opportunities.engine import _policy_settings
 
     try:
         r = client.put("/api/v1/margin-floor", json={"margin_floor_bp": 2_000})
@@ -335,7 +335,7 @@ def test_setting_a_margin_floor_reaches_the_opportunity_engine(analyzed):
         assert isinstance(body["products_below_floor"], list)
         assert "کف" in body["note_fa"]
 
-        floor, margins = _margin_policy("default", None)
+        floor, margins, _capacity = _policy_settings("default", None)
         assert floor == 2_000
         assert margins, "حاشیه‌ی کالاها باید به موتور برسد"
     finally:

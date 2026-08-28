@@ -29,6 +29,10 @@ if TYPE_CHECKING:
 # بیشترین مقدار معنادار: ۱۰۰٪. حاشیه‌ی بیش از صد درصد یعنی بها منفی است.
 MAX_MARGIN_FLOOR_BP = 10_000
 
+# سقفِ عددِ ظرفیت. بزرگ‌تر از این یعنی کاربر عملاً ظرفیت نگذاشته و بهتر است
+# همان «تنظیم‌نشده» بماند تا عددی که هیچ‌وقت نمی‌خورد.
+MAX_DAILY_CAPACITY = 100_000
+
 
 def get_setting(session: Session, business_id: int, key: str) -> str | None:
     return session.scalar(
@@ -101,8 +105,57 @@ def set_margin_floor_bp(
         return value
 
 
+def daily_capacity(session: Session, business_id: int) -> int | None:
+    """ظرفیت روزانه‌ی تیم، یا `None` اگر تعیین نشده باشد."""
+    raw = get_setting(session, business_id, AppSetting.KEY_DAILY_CAPACITY)
+    if raw is None:
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    # صفر یعنی «هیچ‌کس نمی‌تواند پیگیری کند» و آن ادعای عجیبی است؛ اگر کسی
+    # ظرفیت را صفر گذاشت، احتمالاً منظورش «تنظیم نکردن» بوده.
+    return value if value > 0 else None
+
+
+def set_daily_capacity(
+    value: int | None, *, business_slug: str = "default",
+    db_path: Path | None = None, note_fa: str | None = None,
+) -> int | None:
+    """ثبت ظرفیت روزانه. `None` یعنی برداشتنش (بازگشت به «بررسی نشد»)."""
+    ensure_schema(db_path)
+    with write_lock, session_scope(db_path) as session:
+        business_id = resolve_business_id(session, business_slug)
+        if business_id is None:
+            raise ValueError("کسب‌وکاری ثبت نشده است؛ اول یک فایل فروش تحلیل کنید.")
+        if value is None:
+            row = session.scalar(
+                select(AppSetting).where(
+                    AppSetting.business_id == business_id,
+                    AppSetting.key == AppSetting.KEY_DAILY_CAPACITY,
+                )
+            )
+            if row is not None:
+                session.delete(row)
+            return None
+        number = int(value)
+        if not 1 <= number <= MAX_DAILY_CAPACITY:
+            raise ValueError(
+                f"ظرفیت روزانه باید بین ۱ و {MAX_DAILY_CAPACITY} باشد."
+            )
+        set_setting(
+            session, business_id, AppSetting.KEY_DAILY_CAPACITY, str(number),
+            note_fa=note_fa,
+        )
+        return number
+
+
 __all__ = [
+    "MAX_DAILY_CAPACITY",
     "MAX_MARGIN_FLOOR_BP",
+    "daily_capacity",
+    "set_daily_capacity",
     "get_setting",
     "margin_floor_bp",
     "set_margin_floor_bp",

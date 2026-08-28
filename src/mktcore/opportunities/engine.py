@@ -178,10 +178,10 @@ def _opted_out_keys(business_slug: str, db_path: Path | None) -> set[str]:
         return set()
 
 
-def _margin_policy(
+def _policy_settings(
     business_slug: str, db_path: Path | None,
-) -> tuple[int | None, dict[str, int]]:
-    """کفِ حاشیه‌ی تعیین‌شده‌ی کاربر + حاشیه‌ی هر کالا از دفتر کل.
+) -> tuple[int | None, dict[str, int], int | None]:
+    """سیاست‌هایی که **کاربر** تعیین می‌کند: کف حاشیه، حاشیه‌ی کالاها، ظرفیت.
 
     مثل بقیه‌ی خواندن‌های کمکی، شکست اینجا موتور را نمی‌خواباند: خالی برمی‌گردد
     و فیلترها همان «بررسی نشد» صادقانه را ثبت می‌کنند.
@@ -190,19 +190,20 @@ def _margin_policy(
         from mktcore.costs.register import margin_lookup
         from mktcore.db.engine import session_scope
         from mktcore.db.lookup import resolve_business_id
-        from mktcore.settings_store import margin_floor_bp
+        from mktcore.settings_store import daily_capacity, margin_floor_bp
 
         with session_scope(db_path) as session:
             business_id = resolve_business_id(session, business_slug)
             if business_id is None:
-                return None, {}
+                return None, {}, None
             return (
                 margin_floor_bp(session, business_id),
                 margin_lookup(session, business_id),
+                daily_capacity(session, business_id),
             )
     except Exception:  # noqa: BLE001 - نبودِ سیاست نباید موتور را بخواباند
-        logger.debug("سیاست حاشیه در دسترس نبود؛ فیلتر حاشیه رد شد", exc_info=True)
-        return None, {}
+        logger.debug("سیاستِ کاربر در دسترس نبود؛ فیلترهایش رد شدند", exc_info=True)
+        return None, {}, None
 
 
 def build_context(
@@ -213,6 +214,7 @@ def build_context(
     consent_denied: set[str] | None = None,
     margin_floor_bp: int | None = None,
     margin_by_product: dict[str, int] | None = None,
+    daily_capacity: int | None = None,
 ) -> dict:
     """ساخت زمینه‌ی فیلترها از آنچه **واقعاً** در دست است.
 
@@ -232,6 +234,10 @@ def build_context(
         # فیلتر «بررسی نشد» ثبت می‌کند، نه «قبول».
         "margin_floor_bp": margin_floor_bp,
         "margin_by_product": margins,
+        # ظرفیت پیگیری تیم؛ `None` یعنی کاربر نگفته و فیلتر «بررسی نشد» ثبت
+        # می‌کند. حدس‌زدنِ یک سقفِ پیش‌فرض یعنی قیچی‌کردنِ فرصت‌های واقعی با
+        # عددی که هیچ‌کس نگفته است.
+        "daily_capacity": daily_capacity,
         "has_inventory_data": False,   # هیچ مسیر ورودِ موجودی وجود ندارد
         # ⚠️ عمداً `False` می‌ماند، حتی حالا که دفترِ انصراف وجود دارد.
         # دفترِ انصراف می‌گوید **چه کسی «نه» گفته**، نه اینکه چه کسی «بله» گفته.
@@ -292,12 +298,13 @@ def _run_engine_locked(
         business_slug=business_slug, db_path=db_path,
     )
     uplift_table = _load_uplift_table(db_path)
-    floor_bp, margins = _margin_policy(business_slug, db_path)
+    floor_bp, margins, capacity = _policy_settings(business_slug, db_path)
     ctx = build_context(
         clean,
         consent_denied=_opted_out_keys(business_slug, db_path),
         margin_floor_bp=floor_bp,
         margin_by_product=margins,
+        daily_capacity=capacity,
     )
     ctx["uplift_table"] = uplift_table
     # حالت چرخه‌ی عمر پیش از فیلتر لازم است، چون فیلترِ اثر بر پایه‌ی سلولِ

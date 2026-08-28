@@ -850,7 +850,16 @@ def write_import(
             # خطوط برگشتی از قبل منفی ذخیره شده‌اند، پس جمع ساده = فروش خالص
             batch.net_sales_rial = sum(p["revenue_rial"] for p in payloads)
         batch.notes_json = json.dumps(
-            {"customers_created": customers_created, "products_created": products_created},
+            {
+                "customers_created": customers_created,
+                "products_created": products_created,
+                # ستون‌هایی که واقعاً در فایل بودند — لازمِ سنجه‌های §۸.۵.
+                # بدون این، «شفافیتِ برگشتی» بعداً قابل بازسازی نیست: فریمِ خام
+                # دیگر در دسترس نخواهد بود.
+                "has_doc_type_column": "doc_type" in clean.columns,
+                "has_branch_column": "branch" in clean.columns,
+                "n_returns": int(clean.attrs.get("n_returns") or 0),
+            },
             ensure_ascii=False,
         )
 
