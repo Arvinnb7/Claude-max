@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import {
+  Activity,
   AlertTriangle,
   Boxes,
   BrainCircuit,
@@ -30,6 +31,7 @@ import { CampaignTab, CycleTab, DiagnosticsTab, PerformanceTab, ProductsTab } fr
 import CampaignImpact from "./CampaignImpact";
 import CustomerDirectory from "./CustomerDirectory";
 import ModelHealth from "./ModelHealth";
+import OpsHealth from "./OpsHealth";
 import DataQualityPanel from "./DataQualityPanel";
 import OpportunityInbox from "./OpportunityInbox";
 
@@ -70,7 +72,8 @@ type Tab =
   | "campaigns"
   | "customers"
   | "ledger"
-  | "models";
+  | "models"
+  | "ops";
 
 const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
   { id: "kpi", label: "شاخص‌ها", icon: <TrendingUp size={16} /> },
@@ -90,6 +93,7 @@ const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
   { id: "customers", label: "پرونده مشتریان", icon: <IdCard size={16} /> },
   { id: "ledger", label: "دفتر کل و کیفیت", icon: <Database size={16} /> },
   { id: "models", label: "سلامت مدل", icon: <Gauge size={16} /> },
+  { id: "ops", label: "کارها و عملیات", icon: <Activity size={16} /> },
 ];
 
 const DIM_LABELS: Record<string, string> = {
@@ -269,6 +273,7 @@ export default function Dashboard({
       {tab === "campaigns" && <CampaignImpact />}
       {tab === "customers" && <CustomerDirectory />}
       {tab === "models" && <ModelHealth />}
+      {tab === "ops" && <OpsHealth />}
       {tab === "ledger" && <DataQualityPanel />}
       {tab === "ai" && (
         <AiTab sessionId={sessionId} aiAvailable={aiAvailable} initial={initialStrategy} />

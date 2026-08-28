@@ -6,9 +6,12 @@ import { ChevronDown, ChevronUp } from "lucide-react";
 import {
   getDataQuality,
   getImport,
+  getQuarantine,
   listImports,
+  resolveQuarantineRow,
   type DataQuality,
   type ImportBatch,
+  type QuarantineResponse,
   type ReconcileCheck,
 } from "@/lib/apiV1";
 import { toFa } from "@/lib/format";
@@ -27,8 +30,18 @@ const SEVERITY_LABEL: Record<string, string> = {
   ok: "کامل",
   partial: "ناقص",
   warning: "هشدار",
+  blocking: "جدی",
   blocking_for_profit_metrics: "مانع محاسبه‌ی سود",
   known_limitation: "محدودیت شناخته‌شده",
+  not_measured: "سنجیده نشد",
+};
+
+const DIMENSION_TONE: Record<string, "green" | "accent" | "rose" | "gray"> = {
+  ok: "green",
+  warning: "accent",
+  blocking: "rose",
+  not_measured: "gray",
+  known_limitation: "gray",
 };
 
 const CHECK_TONE: Record<ReconcileCheck["status"], "green" | "accent" | "rose"> = {
@@ -45,6 +58,7 @@ const CHECK_LABEL: Record<ReconcileCheck["status"], string> = {
 
 export default function DataQualityPanel() {
   const [quality, setQuality] = useState<DataQuality | null>(null);
+  const [quarantine, setQuarantine] = useState<QuarantineResponse | null>(null);
   const [batches, setBatches] = useState<ImportBatch[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [openId, setOpenId] = useState<number | null>(null);
@@ -52,9 +66,16 @@ export default function DataQualityPanel() {
 
   const load = useCallback(async () => {
     try {
-      const [q, list] = await Promise.all([getDataQuality(), listImports(30)]);
+      const [q, list, quarantined] = await Promise.all([
+        getDataQuality(),
+        listImports(30),
+        // قرنطینه نباید بقیه‌ی پنل را زمین بزند: نصبِ قدیمی هنوز این مسیر را
+        // ندارد و آن‌وقت کلِ صفحه‌ی کیفیت خالی می‌شد.
+        getQuarantine(50).catch(() => null),
+      ]);
       setQuality(q);
       setBatches(list.items ?? []);
+      setQuarantine(quarantined);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "خطا در خواندن وضعیت کیفیت داده");
@@ -126,6 +147,92 @@ export default function DataQualityPanel() {
           <StatCard label="بارگذاری" value={toFa(String(counts.batches ?? 0))} />
         </div>
       </Card>
+
+      {!!quality.dimensions?.length && (
+        <Card>
+          <SectionTitle
+            title="ابعاد کیفیت داده"
+            subtitle="نُه بُعدِ استاندارد. «سنجیده نشد» یعنی مبنایش وجود ندارد — نه اینکه صفر است."
+          />
+          {quality.quality_summary && (
+            <p className="mb-3 text-xs" style={{ color: "var(--muted)" }}>
+              {quality.quality_summary.note_fa}
+            </p>
+          )}
+          <ul className="grid gap-2 md:grid-cols-2">
+            {quality.dimensions.map((d) => (
+              <li
+                key={d.id}
+                className="rounded-xl border border-ink-200 p-3 text-sm dark:border-ink-700"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <b>{d.label_fa}</b>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs tnum" style={{ color: "var(--muted)" }}>
+                      {d.value === null
+                        ? "—"
+                        : `${toFa(String(Math.round(d.value * 100)))}٪`}
+                    </span>
+                    <Badge tone={DIMENSION_TONE[d.severity] ?? "gray"}>
+                      {SEVERITY_LABEL[d.severity] ?? d.severity}
+                    </Badge>
+                  </div>
+                </div>
+                <p className="mt-1 text-xs" style={{ color: "var(--muted)" }}>
+                  {d.note_fa}
+                </p>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
+
+      {!!quarantine?.total && (
+        <Card>
+          <SectionTitle
+            title={`ردیف‌های واردنشده (${toFa(String(quarantine.total))})`}
+            subtitle="این ردیف‌ها در فایل بودند و وارد دفتر کل نشدند. تا اصلاح نشوند، در هیچ عددی شمرده نمی‌شوند."
+          />
+          <p className="mb-3 text-xs" style={{ color: "var(--muted)" }}>
+            {quarantine.note_fa}
+          </p>
+          <ul className="space-y-2">
+            {quarantine.rows.map((row) => (
+              <li
+                key={row.id}
+                className="rounded-xl border border-ink-200 p-3 text-sm dark:border-ink-700"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <b>
+                    ردیف {row.row_number === null ? "—" : toFa(String(row.row_number))}
+                    {" · "}
+                    {row.reason_fa}
+                  </b>
+                  <Button
+                    variant="ghost"
+                    onClick={() => {
+                      void resolveQuarantineRow(row.id)
+                        .then(load)
+                        .catch((e: unknown) =>
+                          setError(
+                            e instanceof Error ? e.message : "ثبت رسیدگی انجام نشد",
+                          ),
+                        );
+                    }}
+                  >
+                    رسیدگی شد
+                  </Button>
+                </div>
+                {row.suggested_resolution_fa && (
+                  <p className="mt-1 text-xs" style={{ color: "var(--muted)" }}>
+                    {row.suggested_resolution_fa}
+                  </p>
+                )}
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
 
       <Card>
         <SectionTitle

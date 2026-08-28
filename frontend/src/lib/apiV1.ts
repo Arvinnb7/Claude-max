@@ -79,6 +79,24 @@ export type DataQualityGap = {
   severity: string;
 };
 
+/** یک بُعد از نُه بُعدِ §۸.۵. `value === null` یعنی **سنجیده نشد**، نه صفر. */
+export type QualityDimension = {
+  id: string;
+  label_fa: string;
+  value: number | null;
+  severity: string;
+  note_fa: string;
+};
+
+export type QualitySummary = {
+  dimensions_total: number;
+  dimensions_measured: number;
+  blocking: string[];
+  warning: string[];
+  score: number | null;
+  note_fa: string;
+};
+
 export type DataQuality = {
   available: boolean;
   note_fa?: string;
@@ -86,8 +104,51 @@ export type DataQuality = {
   latest_batch?: ImportBatch | null;
   mismatches?: { id: string; label: string; expected: string | null; actual: string | null; detail: string | null }[];
   gaps?: DataQualityGap[];
+  dimensions?: QualityDimension[];
+  quality_summary?: QualitySummary;
   economics_note_fa?: string;
 };
+
+// ------------------------------------------------------------- قرنطینه
+export type QuarantineRow = {
+  id: number;
+  batch_id: number;
+  row_number: number | null;
+  reason_code: string;
+  reason_fa: string;
+  suggested_resolution_fa: string | null;
+  raw: Record<string, unknown> | null;
+  resolved_at: number | null;
+  resolved_by: string | null;
+  resolution_note_fa: string | null;
+};
+
+export type QuarantineResponse = {
+  available: boolean;
+  total: number;
+  by_reason?: Record<string, number>;
+  rows: QuarantineRow[];
+  note_fa: string;
+};
+
+export async function getQuarantine(limit = 50): Promise<QuarantineResponse> {
+  return handle<QuarantineResponse>(
+    await apiFetch(`${BASE}/api/v1/quarantine?limit=${limit}`, { cache: "no-store" }),
+  );
+}
+
+export async function resolveQuarantineRow(
+  id: number,
+  note_fa?: string,
+): Promise<{ id: number; note_fa: string }> {
+  return handle(
+    await apiFetch(`${BASE}/api/v1/quarantine/${id}/resolve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ note_fa: note_fa ?? null }),
+    }),
+  );
+}
 
 export type CustomerFeatures = {
   as_of: string;
@@ -773,5 +834,60 @@ export async function actOnOpportunity(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }),
+  );
+}
+
+
+// ------------------------------------------------------ عملیات (§۲۸ و §۳۲)
+export type JobRun = {
+  id: number;
+  job_name: string;
+  correlation_id: string;
+  status: string;
+  attempt: number;
+  max_attempts: number;
+  started_at: number;
+  finished_at: number | null;
+  next_retry_at: number | null;
+  error_type: string | null;
+  error_first_line: string | null;
+  note_fa: string | null;
+  result: unknown;
+};
+
+export type ScheduledJob = {
+  name: string;
+  title_fa: string;
+  hour: number | null;
+  interval_hours: number | null;
+  max_attempts: number;
+  last_run: JobRun | null;
+};
+
+export async function listJobs(): Promise<{ jobs: ScheduledJob[]; recent_runs: JobRun[] }> {
+  return handle(await apiFetch(`${BASE}/api/v1/ops/jobs`, { cache: "no-store" }));
+}
+
+export async function listDeadLetter(): Promise<{
+  count: number;
+  runs: JobRun[];
+  note_fa: string;
+}> {
+  return handle(
+    await apiFetch(`${BASE}/api/v1/ops/jobs/dead-letter`, { cache: "no-store" }),
+  );
+}
+
+export async function runJobNow(name: string): Promise<JobRun> {
+  return handle(
+    await apiFetch(`${BASE}/api/v1/ops/jobs/${encodeURIComponent(name)}/run`, {
+      method: "POST",
+    }),
+  );
+}
+
+export async function retryJobRun(runId: number): Promise<JobRun> {
+  return handle(
+    await apiFetch(`${BASE}/api/v1/ops/jobs/runs/${runId}/retry`, { method: "POST" }),
   );
 }
