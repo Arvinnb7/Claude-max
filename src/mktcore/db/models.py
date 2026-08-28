@@ -992,6 +992,52 @@ class ContactSuppression(Base):
         return self.opted_out_at is not None and self.revoked_at is None
 
 
+class JobLease(Base):
+    """اجاره‌ی اجرا: «این کار برای این دامنه، همین حالا دستِ یک نفر است».
+
+    ## چرا `write_lock` کافی نبود
+
+    `write_lock` یک `threading.RLock` است، یعنی فقط درونِ **یک پروسه** معنا
+    دارد. ولی امروز دو مسیرِ کاملاً جدا می‌توانند هم‌زمان موتور فرصت‌ها را
+    بزنند: زمان‌بندِ داخلی و درخواستِ کاربر — و در استقرارِ چند-worker، دو
+    پروسه‌ی مستقل. نتیجه‌اش دو `OpportunityRun` برای یک `(کسب‌وکار، تاریخ)` است
+    که هرکدام نیمی از فرصت‌ها را «ناپدید» اعلام می‌کنند و دیگری دوباره
+    می‌سازدشان. §۲۸ صریحاً یکتاییِ اجرا را می‌خواهد.
+
+    ## چرا قید یکتایی، نه فقط یک ستون وضعیت
+
+    یکتایی روی `(job_name, scope_key)` را **خودِ دیتابیس** تضمین می‌کند. اگر
+    اجاره را با `SELECT` و بعد `INSERT` می‌گرفتیم، بینِ آن دو یک پنجره‌ی مسابقه
+    می‌ماند؛ با قید یکتایی، بازنده در همان `INSERT` خطا می‌گیرد و صریحاً رد
+    می‌شود.
+
+    ## چرا انقضا دارد
+
+    پروسه‌ای که وسط کار کشته شود، ردیفِ اجاره را آزاد نمی‌کند. بدون `expires_at`
+    آن `(کسب‌وکار، تاریخ)` **برای همیشه** قفل می‌ماند — یعنی درمانِ ما از خودِ
+    درد بدتر می‌شد. اجاره‌ی منقضی قابلِ تصاحب است و تصاحبش لاگ می‌شود.
+    """
+
+    __tablename__ = "job_leases"
+    __table_args__ = (UniqueConstraint("job_name", "scope_key"),)
+
+    JOB_OPPORTUNITY_ENGINE = "opportunity_engine"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    job_name: Mapped[str] = mapped_column(String(64), index=True)
+    # دامنه‌ی یکتایی، مثلاً «۳|۱۴۰۵-۰۶-۰۶» یعنی کسب‌وکار ۳ در آن تاریخ
+    scope_key: Mapped[str] = mapped_column(String(128), index=True)
+    holder: Mapped[str] = mapped_column(String(128))
+    acquired_at: Mapped[float] = mapped_column(Float, default=now_ts)
+    expires_at: Mapped[float] = mapped_column(Float)
+    released_at: Mapped[float | None] = mapped_column(Float)
+    # چند بار این اجاره از یک دارنده‌ی منقضی گرفته شده — نشانه‌ی سقوطِ تکراری
+    takeovers: Mapped[int] = mapped_column(Integer, default=0)
+
+    def is_held(self, *, now: float) -> bool:
+        return self.released_at is None and self.expires_at > now
+
+
 class AuditEvent(Base):
     """ردِ پای کارهای حساس: چه چیزی از سیستم بیرون رفت یا عوض شد، کِی، و از کجا.
 
@@ -1051,6 +1097,7 @@ __all__ = [
     "CustomerLifecycleEvent",
     "ImportBatch",
     "ImportReconciliation",
+    "JobLease",
     "ModelRun",
     "Opportunity",
     "OpportunityEvent",

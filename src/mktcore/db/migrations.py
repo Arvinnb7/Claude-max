@@ -222,7 +222,7 @@ def _migration_0011_create_gross_profit_clv(conn: Connection) -> None:
 
 
 def _migration_0012_create_audit_events(conn: Connection) -> None:
-    """جدولِ ممیزی (§۳۱) — جدولِ تازه است، پس `create_all` کافی است."""
+    """جدولِ ممیزی (§۳۱) و اجاره‌ی اجرا (§۲۸) — هر دو تازه‌اند."""
     from mktcore.db import models  # noqa: F401 - ثبت مدل‌ها در metadata
 
     Base.metadata.create_all(bind=conn, checkfirst=True)
@@ -240,7 +240,7 @@ _MIGRATIONS: tuple[tuple[int, str, Callable[[Connection], None]], ...] = (
     (9, "create_app_settings", _migration_0009_create_app_settings),
     (10, "create_model_runs", _migration_0010_create_model_runs),
     (11, "create_gross_profit_clv", _migration_0011_create_gross_profit_clv),
-    (12, "create_audit_events", _migration_0012_create_audit_events),
+    (12, "create_audit_events_and_leases", _migration_0012_create_audit_events),
 )
 
 

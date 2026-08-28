@@ -146,6 +146,9 @@ def test_every_canonical_table_carries_business_id():
         "campaign_members",          # از راه campaigns
         "campaign_opportunities",    # از راه campaigns
         "campaign_outcomes",         # از راه campaigns
+        # اجاره‌ی اجرا داده‌ی کسب‌وکار نیست؛ ردیفِ هماهنگیِ زمانِ اجراست و
+        # دامنه‌اش در `scope_key` است — که برای jobهای غیرکسب‌وکاری هم کار کند.
+        "job_leases",
     }
     missing = [
         name for name, table in Base.metadata.tables.items()

@@ -24,6 +24,7 @@ from sqlalchemy import func, select
 
 from mktcore.db.base import now_ts
 from mktcore.db.engine import session_scope, write_lock
+from mktcore.db.leases import job_lease
 from mktcore.db.lookup import (
     customer_ids_by_raw_key,
     product_ids_by_raw_name,
@@ -33,6 +34,7 @@ from mktcore.db.migrations import ensure_schema
 from mktcore.db.models import (
     Business,
     CustomerFeature,
+    JobLease,
     Opportunity,
     OpportunityEvent,
     OpportunityFactor,
@@ -254,9 +256,35 @@ def run_opportunity_engine(
     business_slug: str = "default",
     db_path: Path | None = None,
 ) -> OpportunityRunResult | None:
-    """یک اجرای کامل: تولید → فیلتر → ماندگارسازی → چرخه‌ی حیات."""
+    """یک اجرای کامل: تولید → فیلتر → ماندگارسازی → چرخه‌ی حیات.
+
+    §۲۸: برای هر `(کسب‌وکار، تاریخ)` **یک** اجرا. اگر اجرای دیگری در جریان
+    باشد، این یکی `LeaseBusyError` می‌اندازد — نه اینکه هر دو بنویسند و
+    فرصت‌های همدیگر را «ناپدید» اعلام کنند.
+    """
     ensure_schema(db_path)
     as_of = _as_of(clean)
+    with job_lease(
+        JobLease.JOB_OPPORTUNITY_ENGINE, f"{business_slug}|{as_of}", db_path=db_path,
+    ):
+        return _run_engine_locked(
+            bundle, clean, as_of=as_of, session_id=session_id,
+            display_currency=display_currency, business_slug=business_slug,
+            db_path=db_path,
+        )
+
+
+def _run_engine_locked(
+    bundle: Any,
+    clean: pd.DataFrame,
+    *,
+    as_of: str,
+    session_id: str | None,
+    display_currency: str,
+    business_slug: str,
+    db_path: Path | None,
+) -> OpportunityRunResult | None:
+    """بدنه‌ی اجرا، با این فرض که اجاره گرفته شده است."""
     candidates = generate_candidates(bundle, clean)
     # این مولد برخلاف بقیه به دفتر کل نگاه می‌کند (امتیازِ مدلِ فعال)، پس اینجا
     # صدا زده می‌شود که `business_slug` و مسیر دیتابیس در دست است.

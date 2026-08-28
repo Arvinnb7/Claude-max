@@ -140,12 +140,19 @@ def _run_opportunities(
 ) -> dict | None:
     """اجرای موتور فرصت‌ها. مثل بقیه‌ی این پل، شکستش کسی را نمی‌کُشد."""
     try:
+        from mktcore.db.leases import LeaseBusyError
         from mktcore.opportunities import run_opportunity_engine
 
-        result = run_opportunity_engine(
-            bundle, clean, session_id=session_id, display_currency=display_currency,
-            business_slug=business_slug,
-        )
+        try:
+            result = run_opportunity_engine(
+                bundle, clean, session_id=session_id,
+                display_currency=display_currency, business_slug=business_slug,
+            )
+        except LeaseBusyError as busy:
+            # این «خطا» نیست، «رد شدن» است: یک اجرای دیگر همین حالا در جریان
+            # است. لاگِ با stack trace اینجا فقط ترس ایجاد می‌کند.
+            logger.info("موتور فرصت‌ها رد شد: %s", busy.reason_fa)
+            return {"skipped": "concurrent_run", "note_fa": busy.reason_fa}
         return result.to_dict() if result else None
     except Exception:  # noqa: BLE001 - همان جداسازی
         logger.exception("اجرای موتور فرصت‌ها ناموفق بود")

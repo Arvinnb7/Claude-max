@@ -37,7 +37,7 @@ rm -rf data/sessions && mv data/sessions.bak data/sessions
 
 ⚠️ **نسخه‌ی قبلی این سند می‌گفت «حذفشان با `DROP TABLE` بی‌خطر است».** آن جمله
 برای جداول فاز ۱ درست بود (از تحلیل بازساخته می‌شوند) ولی حالا **خطرناک** است:
-دوازده جدول بعداً اضافه شده‌اند و هفت‌تایشان از هیچ تحلیلی بازساخته نمی‌شوند.
+سیزده جدول بعداً اضافه شده‌اند و هفت‌تایشان از هیچ تحلیلی بازساخته نمی‌شوند.
 
 ### بازساختنی — حذفشان بی‌خطر است
 
@@ -47,8 +47,12 @@ rm -rf data/sessions && mv data/sessions.bak data/sessions
 businesses · import_batches · import_reconciliation · customers · customer_keys
 products · product_aliases · orders · order_lines · customer_features
 opportunities · opportunity_factors · opportunity_events · opportunity_runs
-customer_lifecycle_events · schema_migrations
+customer_lifecycle_events · schema_migrations · job_leases
 ```
+
+`job_leases` داده نیست، **هماهنگیِ زمانِ اجرا** است: می‌گوید «همین حالا چه کسی
+مشغولِ چه کاری است». حذفش وقتی هیچ اجرایی در جریان نیست بی‌خطر است؛ حذفش وسطِ
+یک اجرا یعنی اجرای دومِ هم‌زمان دیگر رد نمی‌شود.
 
 ### بازساختنی — ولی **نه از تحلیل**
 
