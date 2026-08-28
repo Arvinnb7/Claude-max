@@ -27,7 +27,8 @@ from sqlalchemy import func, or_, select
 
 from mktcore.analysis.branch import likely_branch
 from mktcore.config import get_settings
-from mktcore.db.engine import session_scope
+from mktcore.db.base import now_ts
+from mktcore.db.engine import session_scope, write_lock
 from mktcore.db.lookup import active_business_id
 from mktcore.db.migrations import ensure_schema
 from mktcore.db.models import (
@@ -37,6 +38,7 @@ from mktcore.db.models import (
     CustomerFeature,
     CustomerLifecycleEvent,
     ImportBatch,
+    ImportQuarantine,
     ImportReconciliation,
     Opportunity,
     OpportunityEvent,
@@ -394,6 +396,117 @@ def data_quality() -> dict:
         "gaps": gaps,
         "economics_note_fa": ECONOMICS_NOTE_FA,
     }
+
+
+# ---------------------------------------------------------------- قرنطینه
+class ResolveQuarantineRequest(BaseModel):
+    """بستنِ یک ردیفِ قرنطینه — ردیف **پاک نمی‌شود**، فقط رسیدگی‌شده می‌شود."""
+
+    note_fa: str | None = Field(default=None, max_length=2_000)
+    resolved_by: str | None = Field(default=None, max_length=128)
+
+
+@router.get("/quarantine")
+def list_quarantine(
+    batch_id: int | None = Query(None, description="فقط یک بارگذاری"),
+    reason_code: str | None = Query(None),
+    include_resolved: bool = Query(False),
+    limit: int = Query(100, ge=1, le=1_000),
+    offset: int = Query(0, ge=0),
+) -> dict:
+    """ردیف‌هایی که وارد دفتر کل نشدند و **چرا** (§۷.۱).
+
+    تا پیش از این، این ردیف‌ها فقط در یک فایلِ کنارِ نشست بودند و سیاست
+    نگه‌داری بعد از ۱۸۰ روز پاکشان می‌کرد.
+    """
+    ensure_schema()
+    with session_scope() as session:
+        business_id = _business_id(session)
+        if business_id is None:
+            return {**_no_ledger_yet(), "rows": [], "total": 0}
+
+        conditions = [ImportQuarantine.business_id == business_id]
+        if batch_id is not None:
+            conditions.append(ImportQuarantine.batch_id == batch_id)
+        if reason_code:
+            conditions.append(ImportQuarantine.reason_code == reason_code)
+        if not include_resolved:
+            conditions.append(ImportQuarantine.resolved_at.is_(None))
+
+        total = int(session.scalar(
+            select(func.count(ImportQuarantine.id)).where(*conditions)
+        ) or 0)
+        rows = session.scalars(
+            select(ImportQuarantine)
+            .where(*conditions)
+            .order_by(ImportQuarantine.batch_id.desc(), ImportQuarantine.row_number)
+            .limit(limit).offset(offset)
+        ).all()
+        by_reason = dict(session.execute(
+            select(ImportQuarantine.reason_code, func.count(ImportQuarantine.id))
+            .where(ImportQuarantine.business_id == business_id)
+            .group_by(ImportQuarantine.reason_code)
+        ).all())
+
+        payload = [
+            {
+                "id": row.id,
+                "batch_id": row.batch_id,
+                "row_number": row.row_number,
+                "reason_code": row.reason_code,
+                "reason_fa": row.reason_detail_fa,
+                "suggested_resolution_fa": row.suggested_resolution_fa,
+                "raw": _safe_json(row.raw_payload_json),
+                "resolved_at": row.resolved_at,
+                "resolved_by": row.resolved_by,
+                "resolution_note_fa": row.resolution_note_fa,
+            }
+            for row in rows
+        ]
+
+    return {
+        "available": True,
+        "total": total,
+        "by_reason": by_reason,
+        "rows": payload,
+        "note_fa": (
+            "این ردیف‌ها در فایل بودند ولی وارد دفتر کل نشدند. تا وقتی اصلاح "
+            "نشوند، در هیچ عددی — نه فروش، نه سود، نه فرصت — شمرده نمی‌شوند."
+            if total else
+            "هیچ ردیفی در قرنطینه نیست؛ همه‌ی ردیف‌های فایل وارد دفتر کل شدند."
+        ),
+    }
+
+
+@router.post("/quarantine/{row_id}/resolve", dependencies=[Depends(require_token)])
+def resolve_quarantine(row_id: int, payload: ResolveQuarantineRequest) -> dict:
+    """رسیدگی‌شده علامت‌زدنِ یک ردیف. ردیف پاک نمی‌شود تا تاریخ بماند."""
+    ensure_schema()
+    with write_lock, session_scope() as session:
+        row = session.get(ImportQuarantine, row_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="این ردیف قرنطینه یافت نشد.")
+        row.resolved_at = now_ts()
+        row.resolved_by = payload.resolved_by or "کاربر"
+        row.resolution_note_fa = payload.note_fa
+        return {
+            "id": row.id,
+            "resolved_at": row.resolved_at,
+            "note_fa": (
+                "این ردیف رسیدگی‌شده علامت خورد. داده‌اش هنوز در دفتر کل نیست — "
+                "برای واردکردنش، فایل اصلاح‌شده را دوباره بارگذاری کنید."
+            ),
+        }
+
+
+def _safe_json(raw: str | None) -> dict | None:
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 # -------------------------------------------------------------------- مشتری

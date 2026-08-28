@@ -31,6 +31,7 @@ from sqlalchemy import func, insert, select, update
 from mktcore.catalog import normalize_product_name, parse_pack_size
 from mktcore.identity import normalize_phone
 from mktcore.ingest.currency import rial_per_unit
+from mktcore.ingest.schema import SOURCE_ROW
 from mktcore.money import to_basis_points, to_quantity_milli, to_rial_int
 
 from .base import now_ts
@@ -41,7 +42,9 @@ from .models import (
     Customer,
     CustomerKey,
     ImportBatch,
+    ImportQuarantine,
     ImportReconciliation,
+    ImportRowRaw,
     Order,
     OrderLine,
     Product,
@@ -849,8 +852,24 @@ def write_import(
             batch.date_max = max(dates)
             # خطوط برگشتی از قبل منفی ذخیره شده‌اند، پس جمع ساده = فروش خالص
             batch.net_sales_rial = sum(p["revenue_rial"] for p in payloads)
+        # §۷.۱ — پیش از هر چیز، ردیف‌هایی که وارد دفتر کل نشدند نگه داشته
+        # می‌شوند. این تنها جایی بود که داده فعالانه از بین می‌رفت.
+        from mktcore.config import get_settings
+        from mktcore.ingest.cleaning import get_exclusions
+
+        exclusions = get_exclusions(clean)
+        quarantined = _write_quarantine(session, business.id, batch.id, exclusions)
+        raw_capture = _write_raw_rows(
+            session, business.id, batch.id, clean, exclusions,
+            cap=get_settings().mkt_raw_rows_cap,
+        )
+
         batch.notes_json = json.dumps(
             {
+                "quarantined_rows": quarantined,
+                "raw_rows_captured": raw_capture["captured"],
+                "raw_rows_skipped": raw_capture["skipped"],
+                "raw_capture_note_fa": raw_capture["note_fa"],
                 "customers_created": customers_created,
                 "products_created": products_created,
                 # ستون‌هایی که واقعاً در فایل بودند — لازمِ سنجه‌های §۸.۵.
@@ -893,3 +912,113 @@ __all__ = [
     "line_uid",
     "write_import",
 ]
+
+
+# ------------------------------------------------------ ردیف خام و قرنطینه
+def _json_row(row: pd.Series) -> str:
+    """یک ردیف به JSON، با مقادیرِ غیرِ JSONی به رشته.
+
+    `default=str` عمدی است: تاریخ‌های pandas و `Decimal` وگرنه کلِ نوشتن را
+    می‌شکنند — و شکستنِ نوشتن به‌خاطر **ثبتِ ممیزی** یعنی همان داده‌ای که
+    می‌خواستیم نگه داریم از دست برود.
+    """
+    payload = {
+        str(key): (None if pd.isna(value) else value)
+        for key, value in row.items()
+    }
+    return json.dumps(payload, ensure_ascii=False, default=str)
+
+
+def _write_quarantine(
+    session: Session, business_id: int, batch_id: int, exclusions: pd.DataFrame,
+) -> int:
+    """ردیف‌های ردشده را در دفتر کل می‌نویسد.
+
+    تا پیش از این، این ردیف‌ها فقط در `exclusions.parquet` کنارِ نشست بودند و
+    سیاست نگه‌داری بعد از ۱۸۰ روز پاکشان می‌کرد — تنها جایی که داده فعالانه از
+    بین می‌رفت.
+    """
+    if exclusions is None or exclusions.empty:
+        return 0
+
+    from mktcore.ingest.cleaning import (
+        EXCLUSION_REASONS_FA,
+        EXCLUSION_RESOLUTIONS_FA,
+    )
+
+    written = 0
+    for _, row in exclusions.iterrows():
+        code = str(row.get("کد دلیل") or "unknown")
+        detail = str(row.get("دلیل") or EXCLUSION_REASONS_FA.get(code, "دلیل ثبت نشده"))
+        raw_row_number = row.get(SOURCE_ROW)
+        row_number = (
+            None if raw_row_number is None or pd.isna(raw_row_number)
+            else int(raw_row_number)
+        )
+        session.add(ImportQuarantine(
+            business_id=business_id,
+            batch_id=batch_id,
+            row_number=row_number,
+            raw_payload_json=_json_row(row),
+            reason_code=code,
+            reason_detail_fa=detail,
+            suggested_resolution_fa=EXCLUSION_RESOLUTIONS_FA.get(code),
+        ))
+        written += 1
+    session.flush()
+    return written
+
+
+def _write_raw_rows(
+    session: Session,
+    business_id: int,
+    batch_id: int,
+    clean: pd.DataFrame,
+    exclusions: pd.DataFrame,
+    *,
+    cap: int,
+) -> dict:
+    """نگه‌داشتنِ نمایشِ خامِ ردیف‌ها، تا سقفِ تعیین‌شده.
+
+    بالاتر از سقف، ردیف‌های **پذیرفته‌شده** ذخیره نمی‌شوند و همین در یادداشتِ
+    بارگذاری ثبت می‌شود — «ذخیره نشد» باید گفته شود، وگرنه کاربر گمان می‌کند
+    ممیزیِ کامل دارد.
+    """
+    rejected = 0 if exclusions is None or exclusions.empty else len(exclusions)
+    total = len(clean) + rejected
+    if total > cap:
+        return {
+            "captured": 0,
+            "skipped": total,
+            "note_fa": (
+                f"{total} ردیف بیشتر از سقفِ {cap} ردیف است، پس نمایشِ خامِ "
+                "ردیف‌های پذیرفته‌شده ذخیره نشد. ردیف‌های ردشده مثل همیشه در "
+                "قرنطینه هستند."
+            ),
+        }
+
+    seen: set[int] = set()
+    captured = 0
+    for _, row in clean.iterrows():
+        raw_row_number = row.get(SOURCE_ROW)
+        row_number = (
+            None if raw_row_number is None or pd.isna(raw_row_number)
+            else int(raw_row_number)
+        )
+        # قیدِ یکتاییِ (batch, row_number) اجازه‌ی ردیفِ تکراری نمی‌دهد؛ ردیفِ
+        # بی‌شماره هم فقط یک‌بار جا دارد.
+        if row_number in seen:
+            continue
+        seen.add(row_number)
+        payload = _json_row(row)
+        session.add(ImportRowRaw(
+            business_id=business_id,
+            batch_id=batch_id,
+            row_number=row_number,
+            raw_payload_json=payload,
+            row_hash=hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32],
+            parse_status=ImportRowRaw.PARSE_OK,
+        ))
+        captured += 1
+    session.flush()
+    return {"captured": captured, "skipped": 0, "note_fa": None}

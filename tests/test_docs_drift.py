@@ -109,3 +109,70 @@ def test_feature_catalog_states_the_nan_rule():
     text = _FEATURE_CATALOG.read_text(encoding="utf-8")
     assert "NaN" in text
     assert "نه صفر" in text
+
+
+# ════════════════════════════════════════ تنظیم‌ها در برابر `.env.example`
+_ENV_EXAMPLE = _ROOT / ".env.example"
+
+# تنظیم‌هایی که عمداً مستند نمی‌شوند، با دلیل
+_UNDOCUMENTED_SETTINGS: dict[str, str] = {}
+
+
+def _env_names() -> set[str]:
+    from mktcore.config import Settings
+
+    return {name.upper() for name in Settings.model_fields}
+
+
+def test_every_setting_appears_in_env_example():
+    """تنظیمی که در `.env.example` نباشد، عملاً وجود ندارد.
+
+    هفت کلید ماه‌ها فقط در کد بودند: کسی که سرور را بالا می‌آورد راهی نداشت
+    بفهمد `MKT_UPLIFT_RANKING` یا `MKT_CANONICAL_ENABLE` وجود دارند.
+    """
+    text = _ENV_EXAMPLE.read_text(encoding="utf-8")
+    missing = sorted(
+        name for name in _env_names()
+        if name not in text and name not in _UNDOCUMENTED_SETTINGS
+    )
+
+    assert not missing, (
+        "این تنظیم‌ها در `.env.example` نیستند، پس کسی از وجودشان خبر ندارد: "
+        + "، ".join(missing)
+    )
+
+
+def test_no_stale_exemptions_in_the_settings_allow_list():
+    stale = sorted(set(_UNDOCUMENTED_SETTINGS) - _env_names())
+    assert not stale, f"این استثناها دیگر تنظیمی ندارند: {stale}"
+
+
+# ════════════════════════════════════════════════ اسنادِ عملیاتی §۳۶
+_OPERATIONS = _ROOT / "docs" / "revenue-intelligence" / "OPERATIONS_RUNBOOK.md"
+_SECURITY = _ROOT / "docs" / "revenue-intelligence" / "SECURITY_AND_PRIVACY.md"
+
+
+def test_the_operations_runbook_covers_backup_and_restore():
+    """راهنمایی که پشتیبان‌گیری نداشته باشد، در روز حادثه بی‌فایده است."""
+    text = _OPERATIONS.read_text(encoding="utf-8")
+
+    for topic in ("پشتیبان", "بازیابی", "docker compose", "مهاجرت"):
+        assert topic in text, f"«{topic}» در راهنمای عملیات نیست"
+
+
+def test_the_security_doc_names_what_leaves_the_machine():
+    """سندی که نگوید چه چیزی از این سرور بیرون می‌رود، سند امنیتی نیست."""
+    text = _SECURITY.read_text(encoding="utf-8")
+
+    for topic in ("Anthropic", "پیامک", "MKT_API_TOKEN", "شماره تماس"):
+        assert topic in text, f"«{topic}» در سند امنیت و حریم خصوصی نیست"
+
+
+def test_the_security_doc_lists_the_guarded_routes_from_code():
+    """فهرستِ مسیرها باید از کد بیاید، نه از حافظه‌ی نویسنده."""
+    from mktcore.security import EXTRA_GUARDED_ROUTES
+
+    text = _SECURITY.read_text(encoding="utf-8")
+    for key in EXTRA_GUARDED_ROUTES:
+        path = key.split(" ", 1)[1]
+        assert path in text, f"{path} در سند امنیت نیامده است"

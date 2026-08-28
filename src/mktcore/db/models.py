@@ -997,6 +997,88 @@ class ContactSuppression(Base):
         return self.opted_out_at is not None and self.revoked_at is None
 
 
+class ImportRowRaw(Base):
+    """نمایشِ تغییرناپذیرِ ردیف‌های فایل ورودی — §۷.۱.
+
+    ## چرا فقط بخشی از ردیف‌ها
+
+    سند می‌گوید «هر ردیف باید حسابرسی‌پذیر بماند، حتی بعد از تغییرِ قواعدِ
+    نرمال‌سازی». ذخیره‌ی JSONِ خامِ هر ردیف برای فایلِ ۴۰۰ هزار ردیفی یعنی
+    صدها مگابایت در یک SQLite روی VPS شخصی — که خودش خرابیِ دیگری است.
+
+    پس قاعده صریح است و **گفته می‌شود**: تا سقفِ `MKT_RAW_ROWS_CAP` ردیف،
+    همه‌ی ردیف‌ها ذخیره می‌شوند. بالاتر از آن، ردیف‌های **پذیرفته‌شده** ذخیره
+    نمی‌شوند و همین در `ImportBatch.notes_json` ثبت می‌شود تا کسی گمان نکند
+    ذخیره شده‌اند. ردیف‌های **ردشده** همیشه ذخیره می‌شوند (در `import_quarantine`)
+    چون تنها جایی‌اند که داده واقعاً از بین می‌رفت.
+    """
+
+    __tablename__ = "import_rows_raw"
+    __table_args__ = (
+        UniqueConstraint("batch_id", "row_number"),
+        Index("ix_import_rows_raw_hash", "row_hash"),
+    )
+
+    PARSE_OK = "ok"
+    PARSE_REJECTED = "rejected"
+    PARSE_RETURN = "return"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    business_id: Mapped[int] = mapped_column(ForeignKey("businesses.id"), index=True)
+    batch_id: Mapped[int] = mapped_column(
+        ForeignKey("import_batches.id", ondelete="CASCADE"), index=True
+    )
+    # شماره‌ی ردیف در **خودِ فایل**، تا کاربر بتواند همان‌جا پیدایش کند
+    row_number: Mapped[int | None] = mapped_column(Integer, index=True)
+    raw_payload_json: Mapped[str] = mapped_column(Text)
+    row_hash: Mapped[str] = mapped_column(String(64))
+    parse_status: Mapped[str] = mapped_column(String(16), index=True)
+    error_codes_json: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[float] = mapped_column(Float, default=now_ts, index=True)
+
+
+class ImportQuarantine(Base):
+    """ردیف‌هایی که وارد دفتر کل نشدند — §۷.۱.
+
+    ## چرا این جدول از همه‌ی جدول‌های این فاز مهم‌تر است
+
+    این **تنها جایی بود که داده فعالانه از بین می‌رفت**. ردیف‌های حذف‌شده‌ی
+    فایل فقط در `exclusions.parquet` کنارِ نشست می‌ماندند، آن فایل در فهرست
+    `_HEAVY_FILES` است، و سیاست نگه‌داری بعد از ۱۸۰ روز پاکش می‌کند. یعنی
+    پاسخِ «چرا فروشِ خردادِ پارسال کمتر از فاکتورها بود؟» بعد از شش ماه برای
+    همیشه از بین می‌رفت.
+
+    اینجا در **دفتر کل** می‌نشیند، پس هرسِ فایل‌های نشست به آن نمی‌رسد.
+
+    ## چرا «راهِ اصلاح» ستون دارد
+
+    ردیفِ ردشده بدون «حالا چه کار کنم؟» عملاً یک شکایت است، نه یک گزارش.
+    کاربر نگاهش می‌کند، نمی‌داند چه کند، و رهایش می‌کند.
+    """
+
+    __tablename__ = "import_quarantine"
+    __table_args__ = (
+        UniqueConstraint("batch_id", "row_number", "reason_code"),
+        Index("ix_import_quarantine_business_reason", "business_id", "reason_code"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    business_id: Mapped[int] = mapped_column(ForeignKey("businesses.id"), index=True)
+    batch_id: Mapped[int] = mapped_column(
+        ForeignKey("import_batches.id", ondelete="CASCADE"), index=True
+    )
+    row_number: Mapped[int | None] = mapped_column(Integer, index=True)
+    raw_payload_json: Mapped[str] = mapped_column(Text)
+    reason_code: Mapped[str] = mapped_column(String(64), index=True)
+    reason_detail_fa: Mapped[str] = mapped_column(Text)
+    suggested_resolution_fa: Mapped[str | None] = mapped_column(Text)
+    # پرشده یعنی کاربر رسیدگی کرده — ردیف **پاک نمی‌شود**، فقط بسته می‌شود
+    resolved_at: Mapped[float | None] = mapped_column(Float)
+    resolved_by: Mapped[str | None] = mapped_column(String(128))
+    resolution_note_fa: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[float] = mapped_column(Float, default=now_ts, index=True)
+
+
 class JobRun(Base):
     """یک اجرای کارِ زمان‌بندی‌شده: چه شد، چند بار تلاش شد، و کجا مُرد.
 
@@ -1148,7 +1230,9 @@ __all__ = [
     "CustomerKey",
     "CustomerLifecycleEvent",
     "ImportBatch",
+    "ImportQuarantine",
     "ImportReconciliation",
+    "ImportRowRaw",
     "JobLease",
     "JobRun",
     "ModelRun",

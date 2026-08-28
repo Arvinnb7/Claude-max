@@ -53,6 +53,40 @@ class SideFrame:
         return id(self)
 
 
+# ---------------------------------------------------------- کدهای حذف
+#
+# چرا کد و نه فقط متن: متنِ فارسی برای خواندنِ انسان است و ممکن است فردا
+# بازنویسی شود. قرنطینه و گزارش‌ها باید بتوانند «همه‌ی ردیف‌های تاریخ‌نامعتبر»
+# را پیدا کنند بدون آنکه به شکلِ نوشتاری یک جمله وابسته باشند.
+
+REASON_INVALID_DATE = "invalid_date"
+REASON_INVALID_AMOUNT = "invalid_amount"
+REASON_DUPLICATE = "duplicate_row"
+
+EXCLUSION_REASONS_FA = {
+    REASON_INVALID_DATE: "تاریخ نامعتبر",
+    REASON_INVALID_AMOUNT: "مبلغ نامعتبر",
+    REASON_DUPLICATE: "ردیف تکراری",
+}
+
+# «چه کار کنم؟» — بدون این، کاربر ردیفِ حذف‌شده را می‌بیند و نمی‌داند با آن
+# چه کند، و عملاً همان‌جا رهایش می‌کند.
+EXCLUSION_RESOLUTIONS_FA = {
+    REASON_INVALID_DATE: (
+        "ستون تاریخ این ردیف خوانده نشد. قالبِ تاریخ را در فایل یکدست کنید "
+        "(مثلاً ۱۴۰۳/۰۵/۱۲ یا 2024-08-02) و دوباره بارگذاری کنید."
+    ),
+    REASON_INVALID_AMOUNT: (
+        "مبلغ این ردیف عدد خوانده نشد. متن یا علامتِ اضافه در ستون مبلغ را "
+        "بردارید و دوباره بارگذاری کنید."
+    ),
+    REASON_DUPLICATE: (
+        "این ردیف با ردیفِ دیگری در همین فایل کاملاً یکسان است و یک‌بار شمرده "
+        "شد. اگر واقعاً دو فروش جدا بوده‌اند، شماره‌ی سفارشِ متفاوت بگذارید."
+    ),
+}
+
+
 def get_exclusions(df: pd.DataFrame) -> pd.DataFrame:
     """ردیف‌های حذف‌شده در پاک‌سازی (با ستون «دلیل»)؛ خالی اگر موجود نباشد."""
     side = df.attrs.get("exclusions_df")
@@ -259,19 +293,24 @@ def clean_frame(df: pd.DataFrame) -> pd.DataFrame:
     # حذف ردیف‌های بدون تاریخ یا درآمد معتبر — با ثبت ممیزی (شماره ردیف + دلیل)
     exclusions: list[pd.DataFrame] = []
 
-    def _exclude(mask: pd.Series, reason: str) -> None:
+    def _exclude(mask: pd.Series, code: str) -> None:
         if mask.any():
             part = out.loc[mask].copy()
-            part["دلیل"] = reason
+            # متنِ فارسی برای انسان می‌ماند (خروجی اکسل ممیزی همین را نشان
+            # می‌دهد) و **کد** کنارش می‌آید: رشته‌ی آزاد با هر ویرایشِ متن
+            # می‌شکند، و قرنطینه باید بتواند «همه‌ی ردیف‌های تاریخ‌نامعتبر» را
+            # پیدا کند بدون تطبیقِ رشته.
+            part["دلیل"] = EXCLUSION_REASONS_FA[code]
+            part["کد دلیل"] = code
             exclusions.append(part)
 
     before = len(out)
     if _DATE in out.columns:
-        _exclude(out[_DATE].isna(), "تاریخ نامعتبر")
+        _exclude(out[_DATE].isna(), REASON_INVALID_DATE)
         out = out[out[_DATE].notna()]
     returns = pd.DataFrame(columns=out.columns)
     if _REVENUE in out.columns:
-        _exclude(out[_REVENUE].isna(), "مبلغ نامعتبر")
+        _exclude(out[_REVENUE].isna(), REASON_INVALID_AMOUNT)
         out = out[out[_REVENUE].notna()]
         # ردیف‌های منفی = برگشت از فروش؛ حذف نمی‌شوند بلکه جدا نگه داشته می‌شوند
         # تا در فروش خالص لحاظ شوند (پیش‌تر بی‌صدا حذف می‌شدند = بیش‌برآورد فروش)
@@ -289,14 +328,14 @@ def clean_frame(df: pd.DataFrame) -> pd.DataFrame:
     dup_before = len(out)
     dup_subset = [c for c in out.columns if c != SOURCE_ROW]
     dup_mask = out.duplicated(subset=dup_subset) if SOURCE_ROW in out.columns else out.duplicated()
-    _exclude(dup_mask, "ردیف تکراری")
+    _exclude(dup_mask, REASON_DUPLICATE)
     out = out[~dup_mask]
     out.attrs["dropped_duplicate_rows"] = dup_before - len(out)
 
     if exclusions:
         excl = pd.concat(exclusions, ignore_index=True)
     else:
-        excl = pd.DataFrame(columns=[*out.columns, "دلیل"])
+        excl = pd.DataFrame(columns=[*out.columns, "دلیل", "کد دلیل"])
     out.attrs["exclusions_df"] = SideFrame(excl)
     out.attrs["returns_df"] = SideFrame(returns.reset_index(drop=True))
     out.attrs["n_returns"] = int(len(returns))
@@ -307,4 +346,14 @@ def clean_frame(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-__all__ = ["clean_frame", "get_exclusions", "get_returns", "SideFrame"]
+__all__ = [
+    "EXCLUSION_REASONS_FA",
+    "EXCLUSION_RESOLUTIONS_FA",
+    "REASON_DUPLICATE",
+    "REASON_INVALID_AMOUNT",
+    "REASON_INVALID_DATE",
+    "SideFrame",
+    "clean_frame",
+    "get_exclusions",
+    "get_returns",
+]
