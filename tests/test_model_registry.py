@@ -104,7 +104,9 @@ def test_migration_ten_is_applied_and_idempotent(tmp_path):
     ensure_schema(db)
     ensure_schema(db, force=True)
 
-    assert CANONICAL_SCHEMA_VERSION == 10
+    # نسخه‌ی canonical با هر مهاجرت بالا می‌رود؛ آنچه اینجا مهم است این است که
+    # مهاجرت ۱۰ اعمال شده باشد، نه اینکه آخرین نسخه دقیقاً ۱۰ بماند.
+    assert CANONICAL_SCHEMA_VERSION >= 10
     assert 10 in applied_versions(get_engine(db))
 
 

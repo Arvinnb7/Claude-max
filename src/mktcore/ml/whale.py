@@ -30,7 +30,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import math
 from dataclasses import asdict, dataclass, replace
@@ -38,9 +37,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
-from sqlalchemy import func
 
-from mktcore.db.base import now_ts
 from mktcore.db.engine import session_scope
 from mktcore.db.lookup import resolve_business_id
 from mktcore.db.migrations import ensure_schema
@@ -60,13 +57,16 @@ from mktcore.features.point_in_time import (
     compute_outcome_window,
     compute_point_in_time_features,
 )
-from mktcore.ml.registry import compute_data_hash, record_run
-from mktcore.ml.scoring import apply_calibration
-from mktcore.ml.serialize import (
-    calibration_to_json,
-    linear_model_to_json,
-    sigmoid_calibration_to_json,
+from mktcore.ml.linear_fit import (
+    FitConfig,
+    bootstrap_advantage,
+    captured,
+    drift_baseline,
+    explain_coefficients,
+    fit_calibrated_linear,
+    reliability_bins,
 )
+from mktcore.ml.registry import compute_data_hash, record_run
 from mktcore.ml.train import register_trainer
 
 if TYPE_CHECKING:
@@ -250,119 +250,45 @@ def feature_columns() -> list[str]:
 
 # ───────────────────────────────────────────────── برازش و اعتبارسنجی
 def fit_whale(table: TrainingTable, spec: WhaleSpec) -> dict[str, Any]:
-    """برازشِ لجستیکِ کالیبره + سنجش در برابر دو خطِ پایه.
+    """برازش + سنجش در برابر دو خطِ پایه.
 
-    مدل عمداً خطی است: با ۳۰ نمونه‌ی مثبت در هر بازو، درختِ تقویت‌شده بیش‌برازش
-    می‌کند و بهبودش از holdout زمانی جان سالم به‌در نمی‌برد. ضمناً ضریبِ خطی
-    مستقیماً به توضیحِ فارسی تبدیل می‌شود — چیزی که §۲۷.۷ می‌خواهد.
+    خودِ برازش در `ml/linear_fit.py` است تا قواعدی که سخت درست شدند (برشِ زمانیِ
+    کالیبراسیون، پرچمِ «نامعلوم»، انتخابِ سیگموئید در نمونه‌ی کم) در هر مدلِ
+    تازه دوباره نوشته نشوند.
     """
-    from sklearn.linear_model import LogisticRegression
-
     frame, split_date = table.frame, table.split_date
     train = frame[frame["anchor"] < split_date]
     validate = frame[frame["anchor"] >= split_date]
-
-    # برشِ کالیبراسیون: تازه‌ترین بخشِ **دوره‌ی آموزش**، نه نمونه‌ی تصادفی
-    calibration_split = chronological_split(
-        train["anchor"], replace(spec.maturity, train_fraction=1.0 - spec.calibration_fraction),
-    )
-    fit_part = train[train["anchor"] < calibration_split]
-    calib_part = train[train["anchor"] >= calibration_split]
-    if fit_part["label"].nunique() < 2 or calib_part.empty:
-        fit_part, calib_part = train, train
-
     columns = feature_columns()
-    medians = fit_part[columns].median(numeric_only=True)
-    medians = medians.reindex(columns).fillna(0.0)
-    indicator_columns = [
-        name for name in columns if fit_part[name].isna().any()
-    ]
 
-    def design(part: pd.DataFrame) -> np.ndarray:
-        base = part[columns].astype(float)
-        missing = base.isna()
-        filled = base.fillna(medians)
-        if not indicator_columns:
-            return filled.to_numpy(dtype=float)
-        flags = missing[indicator_columns].astype(float)
-        return np.hstack([filled.to_numpy(dtype=float), flags.to_numpy(dtype=float)])
-
-    x_fit, y_fit = design(fit_part), fit_part["label"].to_numpy(dtype=int)
-    center = x_fit.mean(axis=0)
-    scale = x_fit.std(axis=0)
-    scale[scale == 0.0] = 1.0
-
-    # `penalty="l2"` پیش‌فرض است و در نسخه‌های تازه‌ی scikit-learn منسوخ شده؛
-    # `class_weight="balanced"` می‌ماند چون نسبت مثبت‌ها حدود یک‌دهم است.
-    model = LogisticRegression(
-        C=spec.l2_c, class_weight="balanced", solver="lbfgs", max_iter=2_000,
+    fitted = fit_calibrated_linear(
+        train, validate,
+        columns=columns, label_col="label", order_col="anchor",
+        config=FitConfig(
+            calibration_fraction=spec.calibration_fraction,
+            l2_c=spec.l2_c,
+            isotonic_min_rows=spec.isotonic_min_rows,
+            isotonic_min_positives=spec.isotonic_min_positives,
+        ),
     )
-    model.fit((x_fit - center) / scale, y_fit)
-
-    raw_calib = model.predict_proba((design(calib_part) - center) / scale)[:, 1]
-    calibrator, calibration_seed = _fit_calibrator(
-        raw_calib, calib_part["label"].to_numpy(dtype=int), spec,
-    )
-
-    coefficients = linear_model_to_json(
-        features=columns,
-        indicator_features=indicator_columns,
-        impute_median=[float(medians[name]) for name in columns],
-        center=list(center), scale=list(scale),
-        coef=list(model.coef_[0]), intercept=float(model.intercept_[0]),
-    )
-    raw_validate = model.predict_proba((design(validate) - center) / scale)[:, 1]
-    predicted = np.clip(apply_calibration(calibration_seed, raw_validate), 0.0, 1.0)
+    predicted = fitted.predicted
     bins = reliability_bins(predicted, validate["label"].to_numpy(dtype=int))
-    calibration = {**calibration_seed, "reliability_bins": bins}
+    calibration = {**fitted.calibration, "reliability_bins": bins}
 
-    metrics = evaluate_whale(
-        validate, predicted, spec=spec, bins=bins, train=train,
-    )
+    metrics = evaluate_whale(validate, predicted, spec=spec, bins=bins, train=train)
+    metrics["n_fit_rows"] = fitted.n_fit
+    metrics["n_calibration_rows"] = fitted.n_calibration
     return {
-        "coefficients": coefficients,
+        "coefficients": fitted.coefficients,
         "calibration": calibration,
         "metrics": metrics,
         "train": train,
         "validate": validate,
-        "drift_baseline": drift_baseline(fit_part, columns, y_fit),
-        "explanation_fa": explain_coefficients(coefficients),
+        "drift_baseline": drift_baseline(
+            train, columns, train["label"].to_numpy(dtype=int),
+        ),
+        "explanation_fa": explain_coefficients(fitted.coefficients),
     }
-
-
-def _fit_calibrator(
-    raw: np.ndarray, labels: np.ndarray, spec: WhaleSpec,
-) -> tuple[dict, dict]:
-    """کالیبراتور را از **داده** انتخاب می‌کند، نه از سلیقه.
-
-    isotonic درجه‌آزادیِ بالایی دارد و با چندصد نمونه خودش را به نوفه برازش
-    می‌دهد؛ در همین پروژه هم روی برشِ کالیبراسیونِ کوچک، خطای بین‌ها را بدتر
-    کرد. پس تا وقتی نمونه کوچک است سیگموئید (دو پارامتر) به‌کار می‌رود.
-    """
-    from sklearn.linear_model import LogisticRegression
-
-    big_enough = (
-        len(raw) >= spec.isotonic_min_rows
-        and int(labels.sum()) >= spec.isotonic_min_positives
-    )
-    if big_enough:
-        from sklearn.isotonic import IsotonicRegression
-
-        isotonic = IsotonicRegression(out_of_bounds="clip").fit(raw, labels)
-        artifact = calibration_to_json(
-            x=list(isotonic.X_thresholds_), y=list(isotonic.y_thresholds_),
-        )
-        return artifact, artifact
-
-    eps = 1e-9
-    clipped = np.clip(raw, eps, 1.0 - eps)
-    logit = np.log(clipped / (1.0 - clipped)).reshape(-1, 1)
-    platt = LogisticRegression(C=1e6, max_iter=1_000).fit(logit, labels)
-    artifact = sigmoid_calibration_to_json(
-        slope=float(platt.coef_[0][0]), intercept=float(platt.intercept_[0]),
-        n_calibration=int(len(raw)),
-    )
-    return artifact, artifact
 
 
 def evaluate_whale(
@@ -385,8 +311,8 @@ def evaluate_whale(
 
     top_k = max(1, math.ceil(spec.top_fraction * len(validate)))
     profit = validate["future_gross_profit_rial"].to_numpy(dtype=float)
-    model_top = _captured(profit, predicted, top_k)
-    baseline_top = _captured(
+    model_top = captured(profit, predicted, top_k)
+    baseline_top = captured(
         profit, validate["baseline_score"].to_numpy(dtype=float), top_k,
     )
     perfect_top = float(np.sort(profit)[::-1][:top_k].sum())
@@ -396,8 +322,10 @@ def evaluate_whale(
         if baseline_top > 0 else None
     )
     max_bin_error = max((abs(b["خطا"]) for b in bins if b["تعداد"] >= 20), default=0.0)
-    lower_bound = _bootstrap_lower_bound(
-        profit, predicted, validate["baseline_score"].to_numpy(dtype=float), spec=spec,
+    lower_bound = bootstrap_advantage(
+        profit, predicted, validate["baseline_score"].to_numpy(dtype=float),
+        top_fraction=spec.top_fraction, samples=spec.bootstrap_samples,
+        quantile=spec.bootstrap_quantile,
     )
 
     beats_brier = bool(brier is not None and brier_baseline is not None and brier < brier_baseline)
@@ -436,92 +364,13 @@ def evaluate_whale(
     }
 
 
-def _bootstrap_lower_bound(
-    profit: np.ndarray, model_score: np.ndarray, baseline_score: np.ndarray,
-    *, spec: WhaleSpec,
-) -> float | None:
-    """پایین‌ترین صدکِ اختلافِ «سودِ K تای اول» بین مدل و خط پایه.
-
-    چرا لازم است: با ۵۰ نمونه‌ی مثبت، اختلافِ ۵٪ می‌تواند کاملاً تصادفی باشد.
-    نمونه‌گیری مجدد از همان مشتریانِ اعتبارسنجی می‌گوید این اختلاف چقدر پایدار
-    است. اگر صدکِ پایین منفی باشد، ادعای برتری اثبات نشده — همان قاعده‌ای که
-    گزارش کمپین‌ها دارد.
-    """
-    n = len(profit)
-    if n < 20 or spec.bootstrap_samples <= 0:
-        return None
-    rng = np.random.default_rng(20240918)
-    share = max(1, math.ceil(spec.top_fraction * n))
-    diffs = np.empty(spec.bootstrap_samples, dtype=float)
-    for index in range(spec.bootstrap_samples):
-        picks = rng.integers(0, n, n)
-        sample_profit = profit[picks]
-        diffs[index] = (
-            _captured(sample_profit, model_score[picks], share)
-            - _captured(sample_profit, baseline_score[picks], share)
-        )
-    return float(np.quantile(diffs, spec.bootstrap_quantile))
 
 
-def _captured(profit: np.ndarray, score: np.ndarray, top_k: int) -> float:
-    if not len(profit):
-        return 0.0
-    order = np.argsort(-score, kind="stable")[:top_k]
-    return float(profit[order].sum())
 
 
-def reliability_bins(predicted: np.ndarray, labels: np.ndarray) -> list[dict]:
-    """جدولِ «۸۰٪ گفتیم، چند درصد شد؟» — §۲۹.۴."""
-    out: list[dict] = []
-    for low, high in zip(_RELIABILITY_BINS[:-1], _RELIABILITY_BINS[1:], strict=False):
-        mask = (predicted >= low) & (predicted < high)
-        count = int(mask.sum())
-        if not count:
-            continue
-        mean_predicted = float(predicted[mask].mean())
-        actual = float(labels[mask].mean())
-        out.append({
-            "از": round(low, 3), "تا": round(min(high, 1.0), 3), "تعداد": count,
-            "پیش‌بینی": round(mean_predicted, 4), "واقعی": round(actual, 4),
-            "خطا": round(mean_predicted - actual, 4),
-        })
-    return out
 
 
-def drift_baseline(frame: pd.DataFrame, columns: list[str], labels: np.ndarray) -> dict:
-    """دهک‌های ویژگی در لحظه‌ی آموزش — خط‌پایه‌ی §۲۹.۷.
 
-    دهک به‌جای میانگین/انحراف: این ویژگی‌ها به‌شدت چوله‌اند و جابه‌جاییِ میانگین
-    سیگنالِ ضعیفی است.
-    """
-    deciles = {}
-    for name in columns:
-        series = frame[name].dropna()
-        if series.empty:
-            continue
-        deciles[name] = [
-            round(float(series.quantile(q / 10)), 4) for q in range(11)
-        ]
-    return {
-        "feature_deciles": deciles,
-        "target_rate": round(float(labels.mean()), 4) if len(labels) else None,
-        "n_rows": int(len(frame)),
-    }
-
-
-def explain_coefficients(coefficients: dict, *, top: int = 5) -> list[str]:
-    """توضیحِ فارسیِ ضرایب — §۲۷.۷: «بدون تفسیر کسب‌وکاری نمایش نده»."""
-    names = list(coefficients["features"]) + [
-        f"نامعلوم‌بودنِ {name}" for name in coefficients.get("indicator_features") or []
-    ]
-    pairs = sorted(
-        zip(names, coefficients["coef"], strict=False),
-        key=lambda pair: abs(pair[1]), reverse=True,
-    )[:top]
-    return [
-        f"{name}: {'افزایش' if weight > 0 else 'کاهش'} احتمال (وزن {round(weight, 3)})"
-        for name, weight in pairs
-    ]
 
 
 # ───────────────────────────────────────────────── آموزش‌دهنده
@@ -639,95 +488,18 @@ def _rejection_reason(metrics: dict, spec: WhaleSpec) -> str:
 def score_whale_customers(
     *, business_slug: str = "default", db_path: Path | None = None,
 ) -> dict:
-    """نوشتنِ احتمالِ نهنگ روی تازه‌ترین عکسِ ویژگی — فقط با مدلِ **فعال**.
+    """نوشتنِ احتمالِ نهنگ روی تازه‌ترین عکسِ ویژگی — فقط با مدلِ **فعال**."""
+    from mktcore.ml.score_job import write_customer_scores
 
-    بدون مدلِ فعال هیچ ستونی نوشته نمی‌شود و ستون‌ها `NULL` می‌مانند؛ `NULL`
-    یعنی «مدلی نداریم»، نه «احتمال صفر».
-    """
-    from sqlalchemy import select
-
-    from mktcore.db.engine import write_lock
-    from mktcore.db.models import CustomerFeature
-    from mktcore.ml.registry import mark_scored, promoted_run
-    from mktcore.ml.scoring import score_from_json, to_basis_points
-
-    ensure_schema(db_path)
-    with write_lock, session_scope(db_path) as session:
-        business_id = resolve_business_id(session, business_slug)
-        if business_id is None:
-            return {"scored": 0, "note_fa": "کسب‌وکاری ثبت نشده است."}
-        run = promoted_run(session, business_id, MODEL_KEY)
-        if run is None or not run.coefficients_json:
-            return {
-                "scored": 0,
-                "note_fa": (
-                    "هیچ مدلِ نهنگی فعال نیست؛ امتیازی نوشته نشد و ستون‌ها "
-                    "خالی ماندند."
-                ),
-            }
-
-        spec = WhaleSpec().with_params(json.loads(run.params_json or "{}"))
-        lines = load_line_frame(session, business_id)
-        if lines.empty:
-            return {"scored": 0, "note_fa": "دفتر کل خالی است."}
-
-        exclusive_end = _day_after(str(lines["line_date"].max()))
-        features = compute_point_in_time_features(
-            lines[lines["line_date"] < exclusive_end],
-            PointInTimeSpec(
-                as_of=exclusive_end, observation_days=spec.observation_days,
-                require_complete_window=True,
-            ),
-        )
-        if features.empty:
-            return {
-                "scored": 0,
-                "note_fa": (
-                    "هیچ مشتری‌ای پنجره‌ی مشاهده‌اش کامل نشده؛ امتیاز معنا ندارد."
-                ),
-            }
-
-        probabilities = score_from_json(
-            json.loads(run.coefficients_json),
-            json.loads(run.calibration_json) if run.calibration_json else None,
-            features,
-        )
-        by_customer = dict(zip(features.index, to_basis_points(probabilities), strict=False))
-
-        latest_as_of = session.scalar(
-            select(func.max(CustomerFeature.as_of_date)).where(
-                CustomerFeature.business_id == business_id
-            )
-        )
-        if not latest_as_of:
-            return {"scored": 0, "note_fa": "هنوز عکسِ ویژگی‌ای ثبت نشده است."}
-
-        rows = session.scalars(
-            select(CustomerFeature).where(
-                CustomerFeature.business_id == business_id,
-                CustomerFeature.as_of_date == latest_as_of,
-            )
-        ).all()
-        stamp = now_ts()
-        written = 0
-        for row in rows:
-            value = by_customer.get(row.customer_id)
-            if value is None:
-                continue
-            row.whale_probability_bp = int(value)
-            row.whale_model_run_id = run.id
-            row.scored_at = stamp
-            written += 1
-        mark_scored(session, run.id, n_scored=written)
-        session.flush()
-
-    logger.info("امتیاز نهنگ روی %s مشتری نوشته شد (اجرای %s)", written, run.id)
-    return {
-        "scored": written,
-        "model_run_id": run.id,
-        "as_of": latest_as_of,
-        "note_fa": f"احتمالِ نهنگ برای {written} مشتری به‌روز شد.",
-    }
+    spec = WhaleSpec()
+    return write_customer_scores(
+        model_key=MODEL_KEY,
+        probability_column="whale_probability_bp",
+        run_column="whale_model_run_id",
+        observation_days=spec.observation_days,
+        business_slug=business_slug,
+        db_path=db_path,
+    )
 
 
 register_trainer(MODEL_KEY, train_whale)

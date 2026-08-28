@@ -122,9 +122,13 @@ def _score_models(*, business_slug: str = "default") -> dict | None:
     کامل می‌مانند. و بدون مدلِ **فعال**، این گام هیچ ستونی را لمس نمی‌کند.
     """
     try:
+        from mktcore.ml.churn import score_churn_customers
         from mktcore.ml.whale import score_whale_customers
 
-        return {"whale": score_whale_customers(business_slug=business_slug)}
+        return {
+            "whale": score_whale_customers(business_slug=business_slug),
+            "churn": score_churn_customers(business_slug=business_slug),
+        }
     except Exception:  # noqa: BLE001 - همان جداسازی عمدی
         logger.exception("امتیازدهی مدل‌ها ناموفق بود")
         return None

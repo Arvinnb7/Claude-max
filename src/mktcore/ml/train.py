@@ -61,10 +61,11 @@ def train_model(
 
 def _load_builtin_trainers() -> None:
     """ثبتِ آموزش‌دهنده‌های داخلی. نبودِ یکی نباید بقیه را از کار بیندازد."""
-    try:
-        from mktcore.ml import whale  # noqa: F401 - ثبت با import
-    except Exception:  # noqa: BLE001 - مثلاً نبودِ scikit-learn
-        logger.debug("آموزش‌دهنده‌ی نهنگ در دسترس نبود", exc_info=True)
+    for module in ("whale", "churn"):
+        try:
+            __import__(f"mktcore.ml.{module}")
+        except Exception:  # noqa: BLE001 - مثلاً نبودِ scikit-learn
+            logger.debug("آموزش‌دهنده‌ی %s در دسترس نبود", module, exc_info=True)
 
 
 _load_builtin_trainers()
