@@ -534,6 +534,18 @@ def _customer_row(customer: Customer, feature: Any | None) -> dict:
             else round(feature.whale_probability_bp / 10_000, 4)
         ),
         "whale_model_run_id": feature.whale_model_run_id,
+        "churn_probability_model": (
+            None if feature.churn_probability_bp is None
+            else round(feature.churn_probability_bp / 10_000, 4)
+        ),
+        # §۱۳.۵ «مدل پیشرفته‌ی تکرار خرید» و §۱۶.۳ «مدل ریزش» دو نمای یک چیزند:
+        # احتمالِ خرید در افق = ۱ − احتمالِ ریزش در همان افق. ستونِ دومی ذخیره
+        # نمی‌شود تا دو عددِ همیشه‌مکمل در دیتابیس از هم جدا نیفتند.
+        "replenish_probability_model": (
+            None if feature.churn_probability_bp is None
+            else round(1 - feature.churn_probability_bp / 10_000, 4)
+        ),
+        "churn_model_run_id": feature.churn_model_run_id,
         "scored_at": feature.scored_at,
     }
     return row

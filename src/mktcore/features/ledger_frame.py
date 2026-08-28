@@ -30,7 +30,8 @@ if TYPE_CHECKING:
 LINE_COLUMNS: tuple[str, ...] = (
     "customer_id", "order_id", "line_date", "revenue_rial", "gross_profit_rial",
     "cost_rial", "quantity_milli", "unit_price_rial", "discount_rial",
-    "discount_rate_bp", "product_id", "category", "branch", "channel", "is_return",
+    "discount_rate_bp", "product_id", "category", "pack_size_milli", "branch",
+    "channel", "is_return",
 )
 
 # ستون‌هایی که ممکن است NULL باشند و «نامعلوم» معنا می‌دهند، نه صفر. `Int64`
@@ -38,6 +39,7 @@ LINE_COLUMNS: tuple[str, ...] = (
 _NULLABLE_INT = (
     "gross_profit_rial", "cost_rial", "quantity_milli", "unit_price_rial",
     "discount_rial", "discount_rate_bp", "order_id", "product_id",
+    "pack_size_milli",
 )
 
 
@@ -67,6 +69,9 @@ def load_line_frame(
             OrderLine.discount_rate_bp,
             OrderLine.product_id,
             Product.category,
+            # اندازه‌ی بسته از قبل ذخیره می‌شد ولی هیچ‌جا خوانده نمی‌شد؛ §۱۳.۴
+            # برای تعدیلِ آهنگ خرید به آن نیاز دارد.
+            Product.pack_size_milli,
             Order.branch,
             Order.channel,
             OrderLine.is_return,

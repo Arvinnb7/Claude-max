@@ -27,7 +27,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-PIT_SCHEMA_VERSION = 1
+PIT_SCHEMA_VERSION = 2
 
 # ترتیب این چندتایی بخشی از قرارداد است: بردار ضرایبِ ذخیره‌شده‌ی مدل با همین
 # ترتیب معنا پیدا می‌کند. افزودن ستون یعنی بالا بردن `PIT_SCHEMA_VERSION`.
@@ -46,8 +46,11 @@ PIT_FEATURE_SCHEMA: tuple[str, ...] = (
     "revenue_first_30d_rial",
     "revenue_first_60d_rial",
     "median_gap_days",
+    "weighted_median_gap_days",
     "mad_gap_days",
     "cv_gap",
+    "units_per_order_milli",
+    "pack_adjusted_gap_days",
     "category_breadth",
     "product_breadth",
     "branch_breadth",
@@ -142,6 +145,7 @@ def compute_point_in_time_features(
 
     _attach_profit(out, frame, grouped)
     _attach_gaps(out, frame)
+    _attach_pack_adjusted(out, frame, grouped)
     _attach_early_window(out, frame, first_date)
     _attach_breadth(out, frame, grouped)
     _attach_premium(out, frame, grouped)
@@ -256,6 +260,11 @@ def _attach_gaps(out: pd.DataFrame, frame: pd.DataFrame) -> None:
 
     median = gaps.median()
     out["median_gap_days"] = median.reindex(out.index).astype(float)
+    # میانه‌ی وزنی (§۱۳.۳): فاصله‌ی تازه‌تر وزنِ بیشتری می‌گیرد، ولی چون میانه
+    # است نه میانگین، یک فاصله‌ی پرت خرابش نمی‌کند.
+    out["weighted_median_gap_days"] = _weighted_median_gaps(dates).reindex(
+        out.index
+    ).astype(float)
     # MAD: انحرافِ مطلقِ میانه — برخلاف انحراف معیار، یک فاصله‌ی پرت آن را
     # منفجر نمی‌کند (§۱۳.۳).
     mad = gaps.apply(lambda g: float(np.median(np.abs(g - np.median(g)))))
@@ -269,6 +278,61 @@ def _attach_gaps(out: pd.DataFrame, frame: pd.DataFrame) -> None:
         dates.groupby("customer_id")["_gap"].first().reindex(out.index).astype(float)
     )
     out["days_to_second_order"] = first_two
+
+
+def _weighted_median_gaps(dates: pd.DataFrame) -> pd.Series:
+    """میانه‌ی وزنیِ فاصله‌ها، با وزنِ نمایی برای تازگی."""
+    from mktcore.analysis.cadence_robust import weighted_median
+
+    out: dict[int, float] = {}
+    for customer_id, group in dates.dropna(subset=["_gap"]).groupby("customer_id"):
+        values = group["_gap"].astype(float).tolist()
+        # همان قرارداد `next_purchase`: هر فاصله‌ی قدیمی‌تر ۰٫۷۵ وزنِ بعدی
+        weights = [0.75 ** index for index in range(len(values) - 1, -1, -1)]
+        value = weighted_median(values, weights)
+        if value is not None:
+            out[customer_id] = value
+    return pd.Series(out, dtype=float)
+
+
+def _attach_pack_adjusted(out: pd.DataFrame, frame: pd.DataFrame, grouped) -> None:
+    """مقدارِ سرانه‌ی هر سفارش و فاصله‌ی تعدیل‌شده با اندازه‌ی بسته (§۱۳.۴).
+
+    نبودِ ستون مقدار ⇒ هر دو `NaN`. تعدیلِ حدسی بدترین حالت است: عددی می‌سازد
+    که شبیه دانستن است ولی نیست.
+    """
+    from mktcore.analysis.cadence_robust import pack_adjusted_gap
+
+    if "quantity_milli" not in frame.columns or frame["quantity_milli"].notna().sum() == 0:
+        out["units_per_order_milli"] = np.nan
+        out["pack_adjusted_gap_days"] = out["median_gap_days"]
+        return
+
+    quantity = frame["quantity_milli"].astype("Float64")
+    packs = (
+        frame["pack_size_milli"].astype("Float64")
+        if "pack_size_milli" in frame.columns else None
+    )
+    per_customer = quantity.groupby(frame["customer_id"]).sum()
+    orders = out["n_orders"].replace(0, np.nan)
+    units = (per_customer.reindex(out.index).astype(float) / orders).astype(float)
+    out["units_per_order_milli"] = units
+
+    pack_median = (
+        packs.groupby(frame["customer_id"]).median().reindex(out.index).astype(float)
+        if packs is not None else pd.Series(np.nan, index=out.index)
+    )
+    baseline = float(units.median()) if units.notna().any() else None
+    adjusted = []
+    for customer_id in out.index:
+        value, _reason = pack_adjusted_gap(
+            out.loc[customer_id, "median_gap_days"],
+            quantity_milli=units.get(customer_id),
+            baseline_quantity_milli=baseline,
+            pack_size_milli=pack_median.get(customer_id),
+        )
+        adjusted.append(value)
+    out["pack_adjusted_gap_days"] = pd.Series(adjusted, index=out.index, dtype=float)
 
 
 def _attach_early_window(out: pd.DataFrame, frame: pd.DataFrame, first_date) -> None:
