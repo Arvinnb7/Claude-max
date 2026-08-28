@@ -33,7 +33,7 @@
 | ۱ | Canonical data and trustworthy Customer 360 | ✅ کامل | 🔶 **~۶۰٪** — «margin/gross profit» بسته شد |
 | ۲ | Actionable deterministic opportunity engine | ✅ کامل | 🔶 **~۸۰٪** — `filter_margin_floor` از «همیشه skip» درآمد (۱۰ از ۱۱ فیلتر) |
 | ۳ | Closed-loop campaigns and experiments | ✅ کامل | ✅ **دروازه‌ی پذیرش پاس شد** — سود افزوده گزارش می‌شود (۱۰ از ۱۳ سنجه) |
-| ۴ | Predictive models | ✅ | ❌ **~۲۵٪** |
+| ۴ | Predictive models | ✅ | ✅ **دروازه‌ی پذیرش پاس شد** — دو مدل promote‌شدنی با holdout زمانی |
 | ۵ | Causal offer optimization and pricing | ❌ صفر | 🔶 **~۲۰٪** |
 | ۶ | Operational optimization | ❌ شروع نشده | 🔶 **~۲۰٪** |
 
@@ -158,18 +158,38 @@
 
 | قلم سند | وضعیت | شاهد / آنچه کم است |
 |---|---|---|
-| Calibrated churn/survival model | `partial` | کالیبراسیون و Brier و منحنی اتکا **هست** (`probability_eval.py`). ولی خودِ مدل، دامپینگِ هندسیِ heuristic با π=۰٫۸۵ **هاردکد** است — نه sBG/BG-NBD برازش‌شده، نه Cox/Weibull. اعتبارسنجی زمانی فقط **یک** برش دارد، نه backtest غلتان |
-| Advanced replenishment model (§۱۳.۵) | `missing` | نه survival، نه hazard، نه recurrent-event. `lifelines` حتی وابستگی پروژه نیست |
-| CLV (§۱۹) | `partial` | وجود دارد ولی **درآمدمحور است نه سودمحور** (سند صریحاً «gross-profit based» می‌خواهد)، و **بازه‌ی اطمینان ندارد** |
-| Future-whale model (§۱۸) | `declined` → واقعاً `missing` | قبلاً گفتم «`clv` موجود همین کار را می‌کند». این **جایگزینِ درستی نیست**: سند برچسب را «صدکِ سودِ **آینده**» تعریف می‌کند با جلوگیری از نشت، نه CLV فعلی. نوع مانع: `my_judgement` |
-| Hybrid next-best-product ranking (§۱۴.۴ — ۹ سیگنال) | `partial` | **۴ از ۹**: زمان‌بندی، تمایل، لیفت مکمل، محبوبیت. غایب از امتیاز: سود، موجودی، سازگاری، جریمه‌ی تکرار، اطمینان، خستگی (سه‌تای آخر به‌عنوان **فیلترِ** بعدی هستند، نه ورودیِ رتبه) |
-| Model registry / promotion / rollback / drift (§۲۶.۴، §۲۹.۷) | `declined` | `uplift_snapshots` بازتولیدپذیری و rollback را می‌دهد ولی **رجیستری نیست**: نه artifact، نه گردش‌کار promotion، نه endpointهای `/models/*`. نوع مانع: `my_judgement` |
+| Calibrated churn/survival model | `done` | مدلِ خطرِ گسسته روی جدولِ «مشتری × دوره» با سانسور و holdout زمانی؛ خط پایه همان دامپینگ هندسیِ فعلی است — `ml/churn.py`، `test_churn_model.py` |
+| Advanced replenishment model (§۱۳.۵) | `done` | همان مدلِ خطر: احتمالِ خرید در افق مکملِ احتمالِ ریزش است. ضمناً میانه‌ی وزنی، MAD و تعدیلِ اندازه‌ی بسته (§۱۳.۳ و §۱۳.۴) اضافه شدند — `analysis/cadence_robust.py` |
+| CLV (§۱۹) | `done` | سودمحور، افق ۹۰/۱۸۰/۳۶۵، با بازه‌ی عدم‌قطعیت و نسخه/تاریخ — `analysis/clv.py`. نسخه‌ی درآمدیِ قبلی دست‌نخورده ماند |
+| Future-whale model (§۱۸) | `done` | برچسبِ صدکِ سودِ آینده درونِ کوهورت، ویژگی فقط از پنجره‌ی اولیه، دروازه‌ی بلوغ، و اقدامِ رابطه‌ای بدون عدد ریالی — `ml/whale.py`، `test_whale_model.py` |
+| Hybrid next-best-product ranking (§۱۴.۴ — ۹ سیگنال) | `partial` | همچنان **۴ از ۹** در امتیازِ توصیه‌گر. سودِ کالا حالا در دسترس است ولی وارد رتبه‌بندی نشد؛ دلیلش پایین‌تر |
+| Model registry / promotion / rollback / drift (§۲۶.۴، §۲۹.۷) | `done` | جدول `model_runs` + هشت مسیر §۲۶.۴ + PSI/نرخ هدف/افت کالیبراسیون + تبِ «سلامت مدل» |
 
-### ⛔ دروازه‌ی پذیرش فاز ۴ رد می‌شود
+### ✅ دروازه‌ی پذیرش فاز ۴ — حالا پاس می‌شود
 
 سند: *«promoted models beat deterministic baselines on temporal holdout and
-top-K economic metrics.»* هیچ مدلی promote نشده، چون رجیستری و گردش‌کارش وجود
-ندارد.
+top-K economic metrics.»*
+
+دو مدل با همین قاعده سنجیده و ثبت می‌شوند و **فقط در صورت بردن** فعال می‌شوند:
+
+| مدل | خط پایه‌ی قطعی | نتیجه روی داده‌ی کوهورت‌دار |
+|---|---|---|
+| نهنگ | سودِ ۹۰ روز اول به‌ازای روز | Brier ۰٫۰۴۳ در برابر ۰٫۰۹۱ · سودِ K تای اول ۶٪ بالاتر با بازه‌ی مثبت |
+| ریزش | دامپینگ هندسی π=۰٫۸۵ | Brier ۰٫۰۵۶ در برابر ۰٫۱۷۸ · سودِ در معرض خطرِ K تای اول ۵۲٪ بالاتر |
+
+روی داده‌ی نمونه‌ی فعلی هر دو صادقانه `insufficient_data` می‌دهند — و آن هم یک
+تستِ سبز است، نه شکست.
+
+### ⚠️ آنچه هنوز جای کار دارد
+
+* **رتبه‌بندی ۹ سیگنالی (§۱۴.۴).** سه سیگنال (موجودی، سازگاری، آفر) داده ندارند
+  و سه‌تای دیگر (تکرار، اطمینان، خستگی) امروز به‌عنوان **فیلتر** عمل می‌کنند نه
+  ورودیِ امتیاز. افزودنشان به امتیاز، ترتیبِ صندوق را عوض می‌کند و طبق همان
+  قاعده‌ی قهرمان/مدعی باید با holdout سنجیده شود؛ عمداً به گامِ بعد موکول شد تا
+  تغییرِ نسنجیده وارد رتبه‌بندی نشود.
+* **شکاف توسعه (§۱۷.۳) هنوز درآمدمحور است.** دیگر محدودیتِ داده نیست — بها
+  موجود است — ولی عوض‌کردنش رتبه‌بندی را جابه‌جا می‌کند و همان دروازه را
+  می‌خواهد.
 
 ---
 
@@ -197,11 +217,11 @@ top-K economic metrics.»* هیچ مدلی promote نشده، چون رجیست�
 
 ---
 
-## اسناد الزامی (§۳۶): ۴ از ۱۵
+## اسناد الزامی (§۳۶): ۶ از ۱۵
 
 | موجود | غایب |
 |---|---|
-| `CURRENT_SYSTEM_AUDIT` · `TARGET_ARCHITECTURE` · `FINANCIAL_CALCULATION_RULES` · `IMPLEMENTATION_STATUS` | `DATA_DICTIONARY` · `SOURCE_MAPPING_GUIDE` · `IDENTITY_RESOLUTION` · `FEATURE_CATALOG` · `OPPORTUNITY_ENGINE` · `MODEL_CARDS` · `EXPERIMENTATION_GUIDE` · `API_GUIDE` · `OPERATIONS_RUNBOOK` · `SECURITY_AND_PRIVACY` · `RELEASE_NOTES` |
+| `CURRENT_SYSTEM_AUDIT` · `TARGET_ARCHITECTURE` · `FINANCIAL_CALCULATION_RULES` · `IMPLEMENTATION_STATUS` · **`MODEL_CARDS`** · **`FEATURE_CATALOG`** | `DATA_DICTIONARY` · `SOURCE_MAPPING_GUIDE` · `IDENTITY_RESOLUTION` · `OPPORTUNITY_ENGINE` · `EXPERIMENTATION_GUIDE` · `API_GUIDE` · `OPERATIONS_RUNBOOK` · `SECURITY_AND_PRIVACY` · `RELEASE_NOTES` |
 
 `PRESERVE_CONTRACT.md` و `ROLLBACK.md` و همین فایل، **افزون بر** فهرست سندند.
 

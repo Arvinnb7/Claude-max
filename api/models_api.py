@@ -25,6 +25,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
@@ -197,23 +198,48 @@ def metrics(run_id: int) -> dict:
 def drift(run_id: int) -> dict:
     """انحرافِ توزیع نسبت به لحظه‌ی آموزش (§۲۹.۷).
 
-    تا وقتی سنجش drift پیاده نشده، این مسیر **صریح می‌گوید نسنجیده**؛ برگرداندن
-    «پایدار» بدون سنجش، دقیقاً همان دروغی است که این پروژه ممنوع کرده.
+    بدون خط‌پایه یا بدون جمعیتِ امروز، صریح می‌گوید **نسنجیده** — «نسنجیده» را
+    «پایدار» نامیدن، همان دروغی است که سنجه را بی‌اعتبار می‌کند.
     """
     ensure_schema()
+    from mktcore.features.ledger_frame import load_line_frame
+    from mktcore.features.point_in_time import (
+        PointInTimeSpec,
+        compute_point_in_time_features,
+    )
+    from mktcore.ml.drift import measure_drift
+
     with session_scope() as session:
         run = _run_or_404(session, run_id)
         payload = run_to_dict(run, with_model=True)
+        business_id = run.business_id
+        lines = load_line_frame(session, business_id)
+
+    observation_days = (payload.get("params") or {}).get("observation_days")
+    features = pd.DataFrame()
+    if not lines.empty:
+        exclusive_end = (
+            pd.Timestamp(str(lines["line_date"].max())) + pd.Timedelta(days=1)
+        ).date().isoformat()
+        features = compute_point_in_time_features(
+            lines[lines["line_date"] < exclusive_end],
+            PointInTimeSpec(as_of=exclusive_end, observation_days=observation_days),
+        )
+
+    metrics = payload.get("metrics") or {}
+    report = measure_drift(
+        baseline=payload.get("drift_baseline"),
+        current_features=features,
+        current_target_rate=None,
+        calibration_bins=(payload.get("calibration") or {}).get("reliability_bins"),
+    )
     return {
         "id": payload["id"],
         "model_key": payload["model_key"],
-        "measured": False,
-        "baseline_recorded": payload.get("drift_baseline") is not None,
-        "note_fa": (
-            "خط‌پایه‌ی انحراف در لحظه‌ی آموزش ثبت شده، ولی سنجشِ انحراف هنوز "
-            "اجرا نمی‌شود. تا آن زمان این مسیر «پایدار» گزارش نمی‌کند — نسنجیده "
-            "را پایدار نامیدن، همان اشتباهی است که سنجه را بی‌اعتبار می‌کند."
-        ),
+        "model_version": payload["model_version"],
+        "trained_at": payload["created_at"],
+        "validation_bins": metrics.get("reliability_bins"),
+        **report,
     }
 
 

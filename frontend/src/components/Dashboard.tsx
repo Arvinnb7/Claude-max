@@ -6,6 +6,7 @@ import {
   Boxes,
   BrainCircuit,
   Database,
+  Gauge,
   Download,
   FileText,
   FlaskConical,
@@ -28,6 +29,7 @@ import { exportUrl, reportUrl } from "@/lib/api";
 import { CampaignTab, CycleTab, DiagnosticsTab, PerformanceTab, ProductsTab } from "./AdvancedTabs";
 import CampaignImpact from "./CampaignImpact";
 import CustomerDirectory from "./CustomerDirectory";
+import ModelHealth from "./ModelHealth";
 import DataQualityPanel from "./DataQualityPanel";
 import OpportunityInbox from "./OpportunityInbox";
 
@@ -58,7 +60,8 @@ type Tab =
   | "opportunities"
   | "campaigns"
   | "customers"
-  | "ledger";
+  | "ledger"
+  | "models";
 
 const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
   { id: "kpi", label: "شاخص‌ها", icon: <TrendingUp size={16} /> },
@@ -77,6 +80,7 @@ const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
   { id: "campaigns", label: "اثر کمپین‌ها", icon: <FlaskConical size={16} /> },
   { id: "customers", label: "پرونده مشتریان", icon: <IdCard size={16} /> },
   { id: "ledger", label: "دفتر کل و کیفیت", icon: <Database size={16} /> },
+  { id: "models", label: "سلامت مدل", icon: <Gauge size={16} /> },
 ];
 
 const DIM_LABELS: Record<string, string> = {
@@ -254,6 +258,7 @@ export default function Dashboard({
       {tab === "opportunities" && <OpportunityInbox />}
       {tab === "campaigns" && <CampaignImpact />}
       {tab === "customers" && <CustomerDirectory />}
+      {tab === "models" && <ModelHealth />}
       {tab === "ledger" && <DataQualityPanel />}
       {tab === "ai" && (
         <AiTab sessionId={sessionId} aiAvailable={aiAvailable} initial={initialStrategy} />

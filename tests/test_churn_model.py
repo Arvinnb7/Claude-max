@@ -62,9 +62,19 @@ def _lines(db: Path) -> pd.DataFrame:
 
 @pytest.fixture(scope="module")
 def trained(tmp_path_factory) -> dict:
+    """آموزش + یک بار تحلیل و عکس ویژگی.
+
+    تحلیل گران‌ترین بخشِ این فایل است، پس **یک بار** انجام می‌شود و تست‌های
+    بعدی همان نتیجه را به‌کار می‌برند.
+    """
     db = tmp_path_factory.mktemp("churn") / "app.db"
-    clean = _ingest(db, generate_cohort_sales())
-    return {"db": db, "clean": clean, "run": train_model("churn", db_path=db)}
+    # مدلِ ریزش به دروازه‌ی بلوغِ کوهورتِ نهنگ نیاز ندارد، پس داده‌ی کوچک‌تر
+    # کافی است و اجرای تست را کوتاه می‌کند.
+    clean = _ingest(db, generate_cohort_sales(days=1_250, arrivals_per_day=1.4))
+    run = train_model("churn", db_path=db)
+    bundle = run_analysis(clean, with_forecast=False)
+    write_customer_features(clean, bundle, db_path=db)
+    return {"db": db, "clean": clean, "bundle": bundle, "run": run}
 
 
 def test_churn_trainer_is_registered():
@@ -149,13 +159,11 @@ def test_thin_data_is_refused_with_a_reason(tmp_path):
 
 
 def test_scores_are_written_only_after_promotion(trained):
-    db, clean, run = trained["db"], trained["clean"], trained["run"]
+    db, run = trained["db"], trained["run"]
 
     assert score_churn_customers(db_path=db)["scored"] == 0
 
     promote_run(run["id"], actor="آزمون", db_path=db)
-    bundle = run_analysis(clean, with_forecast=False)
-    write_customer_features(clean, bundle, db_path=db)
     result = score_churn_customers(db_path=db)
 
     assert result["scored"] > 0
@@ -173,9 +181,7 @@ def test_scores_are_written_only_after_promotion(trained):
 
 def test_the_existing_alive_probability_column_is_untouched(trained):
     """قهرمانِ فعلی باید همان عدد را نگه دارد؛ مدل کنارش می‌نشیند، نه جایش."""
-    db, clean = trained["db"], trained["clean"]
-    bundle = run_analysis(clean, with_forecast=False)
-    write_customer_features(clean, bundle, db_path=db)
+    db, bundle = trained["db"], trained["bundle"]
 
     expected = {
         str(c.customer_id): c.alive_probability for c in bundle.next_purchase.customers

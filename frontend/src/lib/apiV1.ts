@@ -672,6 +672,87 @@ export async function setMarginFloor(bp: number | null): Promise<MarginFloor> {
   );
 }
 
+
+/** یک اجرای آموزشِ مدل — و خودِ مدل (§۷.۶). */
+export type ModelRun = {
+  id: number;
+  model_key: string;
+  model_label_fa: string;
+  model_kind: string;
+  model_version: number;
+  code_version: string | null;
+  status: string;
+  status_label_fa: string;
+  blocked_reason_code: string | null;
+  blocked_reason_fa: string | null;
+  label_basis: string | null;
+  train_window: [string | null, string | null];
+  validate_window: [string | null, string | null];
+  n_train: number | null;
+  n_validate: number | null;
+  /** سنجه‌های ثبت‌شده — شکلش به نوع مدل بستگی دارد، پس بازِ عمدی است. */
+  metrics: Record<string, unknown> | null;
+  promoted: boolean;
+  promoted_at: number | null;
+  last_scored_at: number | null;
+  n_scored: number | null;
+  note_fa: string | null;
+  created_at: number;
+};
+
+export type ModelRunList = {
+  available: boolean;
+  note_fa?: string;
+  items: ModelRun[];
+  active: Record<string, ModelRun | null>;
+  trainable?: string[];
+};
+
+/** گزارش انحراف (§۲۹.۷). `measured: false` یعنی نسنجیده — نه «پایدار». */
+export type ModelDrift = {
+  measured: boolean;
+  level: string | null;
+  note_fa: string;
+  worst_psi?: number;
+  features?: { ویژگی: string; PSI: number; وضعیت: string }[];
+};
+
+export async function listModelRuns(modelKey?: string): Promise<ModelRunList> {
+  const search = new URLSearchParams();
+  if (modelKey) search.set("model_key", modelKey);
+  return handle(
+    await fetch(`${BASE}/api/v1/models?${search.toString()}`, { cache: "no-store" }),
+  );
+}
+
+export async function trainModel(modelKey: string, params?: Record<string, unknown>) {
+  return handle<ModelRun>(
+    await fetch(`${BASE}/api/v1/models/train`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model_key: modelKey, params: params ?? null }),
+    }),
+  );
+}
+
+export async function promoteModelRun(id: number): Promise<ModelRun> {
+  return handle(
+    await fetch(`${BASE}/api/v1/models/${id}/promote`, { method: "POST" }),
+  );
+}
+
+export async function rollbackModelRun(id: number): Promise<ModelRun> {
+  return handle(
+    await fetch(`${BASE}/api/v1/models/${id}/rollback`, { method: "POST" }),
+  );
+}
+
+export async function getModelDrift(id: number): Promise<ModelDrift> {
+  return handle(
+    await fetch(`${BASE}/api/v1/models/${id}/drift`, { cache: "no-store" }),
+  );
+}
+
 export async function actOnOpportunity(
   id: number,
   action: OpportunityActionName,

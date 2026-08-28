@@ -74,11 +74,16 @@ def cohort_frame() -> pd.DataFrame:
 
 @pytest.fixture(scope="module")
 def trained(tmp_path_factory, cohort_frame) -> dict:
-    """یک آموزشِ کامل روی داده‌ی بالغ — پایه‌ی چند تست."""
+    """یک آموزشِ کامل روی داده‌ی بالغ + یک تحلیل — پایه‌ی چند تست.
+
+    تحلیل و عکسِ ویژگی گران‌اند، پس یک بار انجام می‌شوند.
+    """
     db = tmp_path_factory.mktemp("whale") / "app.db"
     clean = _ingest(db, cohort_frame)
     result = train_model("whale", db_path=db)
-    return {"db": db, "clean": clean, "run": result}
+    bundle = run_analysis(clean, with_forecast=False)
+    write_customer_features(clean, bundle, db_path=db)
+    return {"db": db, "clean": clean, "bundle": bundle, "run": result}
 
 
 # ═══════════════════════════════════════ نشت
@@ -265,15 +270,13 @@ def test_explanation_is_persian_and_names_features(trained):
 
 def test_scoring_writes_probabilities_only_after_promotion(trained):
     """قاعده‌ی قهرمان/مدعی: تا فعال‌سازی، هیچ ستونی لمس نمی‌شود."""
-    db, clean, run = trained["db"], trained["clean"], trained["run"]
+    db, run = trained["db"], trained["run"]
 
     before = score_whale_customers(db_path=db)
     assert before["scored"] == 0
     assert "فعال" in before["note_fa"]
 
     promote_run(run["id"], actor="آزمون", db_path=db)
-    bundle = run_analysis(clean, with_forecast=False)
-    write_customer_features(clean, bundle, db_path=db)
     after = score_whale_customers(db_path=db)
 
     assert after["scored"] > 0

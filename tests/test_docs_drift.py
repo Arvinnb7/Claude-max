@@ -72,3 +72,40 @@ def test_doc_no_longer_claims_dropping_is_always_safe():
     """جمله‌ی قدیمی («حذفشان بی‌خطر است») حالا مشروط است، نه مطلق."""
     text = _ROLLBACK.read_text(encoding="utf-8")
     assert "حذف نکنید" in text
+
+
+# ═══════════════════════════════════ اسناد مدل‌ها (فاز ۴)
+_MODEL_CARDS = _ROOT / "docs" / "revenue-intelligence" / "MODEL_CARDS.md"
+_FEATURE_CATALOG = _ROOT / "docs" / "revenue-intelligence" / "FEATURE_CATALOG.md"
+
+
+def test_model_cards_document_every_trainable_model():
+    """مدلی که آموزش‌دهنده دارد ولی کارت ندارد، جعبه‌ی سیاه است."""
+    from mktcore.ml.train import available_trainers
+
+    text = _MODEL_CARDS.read_text(encoding="utf-8")
+    missing = [key for key in available_trainers() if f"`{key}`" not in text]
+    assert not missing, f"این مدل‌ها کارت ندارند: {missing}"
+
+
+def test_model_cards_state_the_champion_challenger_rule():
+    """قاعده‌ای که کلِ ایمنیِ این لایه رویش بنا شده باید نوشته باشد."""
+    text = _MODEL_CARDS.read_text(encoding="utf-8")
+    assert "قهرمان" in text and "مدعی" in text
+    assert "promote" in text or "فعال‌سازی" in text
+
+
+def test_feature_catalog_covers_every_column_in_the_schema():
+    """ستونی که در طرح‌واره هست ولی در سند نیست، بعداً بی‌معنا تفسیر می‌شود."""
+    from mktcore.features.point_in_time import PIT_FEATURE_SCHEMA
+
+    text = _FEATURE_CATALOG.read_text(encoding="utf-8")
+    missing = [name for name in PIT_FEATURE_SCHEMA if name not in text]
+    assert not missing, f"این ستون‌ها در فهرست ویژگی‌ها نیستند: {missing}"
+
+
+def test_feature_catalog_states_the_nan_rule():
+    """قاعده‌ی «NaN یعنی نمی‌دانیم، نه صفر» باید صریح نوشته باشد."""
+    text = _FEATURE_CATALOG.read_text(encoding="utf-8")
+    assert "NaN" in text
+    assert "نه صفر" in text
