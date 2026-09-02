@@ -51,7 +51,27 @@ def _upload_and_analyze() -> str:
 
 @pytest.fixture(scope="module")
 def session_id() -> str:
-    return _upload_and_analyze()
+    sid = _upload_and_analyze()
+    _close_open_campaigns()
+    return sid
+
+
+def _close_open_campaigns() -> None:
+    """کمپین‌های بازِ ماژول‌های قبلی روی همین دفتر کل بسته می‌شوند.
+
+    دروازه‌ی تماس عضوِ کنترلِ هر کمپینِ باز را کنار می‌گذارد؛ در سوئیتِ کامل
+    آن‌قدر کمپینِ باز از تست‌های قبلی می‌ماند که مخاطبِ مجازِ این کمپین به چند
+    نفر — هر کدام تنها در طبقه‌ی خودش — می‌رسد و گروه کنترل خالی می‌شود. این
+    آزمون درباره‌ی نشتِ ارسال است، نه درباره‌ی هم‌پوشانیِ کمپین‌ها، پس از یک
+    وضعیتِ آزمایشیِ تمیز شروع می‌کند.
+    """
+    from mktcore.db.base import now_ts
+    from mktcore.db.models import Campaign
+
+    with session_scope() as session:
+        for campaign in session.scalars(select(Campaign).where(Campaign.status != "closed")):
+            campaign.status = "closed"
+            campaign.closed_at = now_ts()
 
 
 def _control_and_treatment(campaign_id: int) -> tuple[list[str], list[str]]:
