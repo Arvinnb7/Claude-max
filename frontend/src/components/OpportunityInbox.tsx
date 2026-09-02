@@ -16,14 +16,18 @@ import {
   actOnOpportunity,
   createCampaign,
   getCostCoverage,
+  decideOffer,
   getMarginFloor,
+  getOfferPolicy,
   getOpportunity,
   listDismissReasons,
   listOpportunities,
   setMarginFloor,
+  setOfferPolicy,
   type CostCoverage,
   type DismissReason,
   type MarginFloor,
+  type OfferPolicy,
   type Opportunity,
   type OpportunityActionName,
   type OpportunityFactor,
@@ -138,6 +142,20 @@ export default function OpportunityInbox() {
       cancelled = true;
     };
   }, []);
+
+  async function decide(id: number, decision: "approve" | "reject") {
+    setBusyId(id);
+    setError(null);
+    try {
+      await decideOffer(id, decision, {});
+      await load();
+      if (openId === id) setDetail(await getOpportunity(id));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "ثبت تصمیم درباره‌ی تخفیف انجام نشد");
+    } finally {
+      setBusyId(null);
+    }
+  }
 
   async function act(id: number, action: OpportunityActionName, reasonCode?: string) {
     setBusyId(id);
@@ -288,6 +306,7 @@ export default function OpportunityInbox() {
                         {o.value_kind}
                       </Badge>
                       {o.confidence && <Badge tone="gray">اطمینان: {o.confidence}</Badge>}
+                      {o.offer && <OfferBadge offer={o.offer} />}
                     </div>
                     <p className="mt-1">{o.action}</p>
                     <p className="mt-1 text-xs" style={{ color: "var(--muted)" }}>
@@ -325,6 +344,24 @@ export default function OpportunityInbox() {
                       </div>
                     )}
                     <div className="mt-2 flex flex-wrap justify-end gap-1.5">
+                      {o.offer && (o.offer.status === "suggested" || o.offer.status === "stale") && (
+                        <>
+                          <Button
+                            variant="outline"
+                            disabled={busyId === o.id}
+                            onClick={() => void decide(o.id, "approve")}
+                          >
+                            <Check size={14} /> تأیید تخفیف {toFa(o.offer.suggested_discount_text)}
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            disabled={busyId === o.id}
+                            onClick={() => void decide(o.id, "reject")}
+                          >
+                            رد تخفیف
+                          </Button>
+                        </>
+                      )}
                       {o.status !== "accepted" && (
                         <Button
                           variant="primary"
@@ -601,9 +638,42 @@ function Evidence({ opportunity }: { opportunity: Opportunity }) {
  * تعیین نشده، فیلترِ حاشیه در گزارشِ هر فرصت «بررسی نشد» ثبت می‌شود. نشان‌دادن
  * یکی بدون دیگری، کاربر را به این گمان می‌اندازد که حاشیه کنترل شده است.
  */
+const OFFER_STATUS_LABEL: Record<string, string> = {
+  suggested: "در انتظار تأیید",
+  approved: "مصوب — قابل ارسال",
+  rejected: "رد شده",
+  stale: "کهنه — تأیید دوباره لازم است",
+  withdrawn: "برداشته شد",
+};
+
+const OFFER_STATUS_TONE: Record<string, "brand" | "accent" | "green" | "rose" | "gray"> = {
+  suggested: "accent",
+  approved: "green",
+  rejected: "gray",
+  stale: "rose",
+  withdrawn: "gray",
+};
+
+/**
+ * نشانِ تخفیفِ پیشنهادی (§۲۰.۳). قاعده‌ی سخت: تا وقتی «مصوب» نباشد، هیچ پیامکی
+ * با تخفیف نمی‌رود — و همین را روی خودِ نشان می‌گوید تا کسی گمان نکند «پیشنهاد»
+ * یعنی «اعمال‌شده».
+ */
+function OfferBadge({ offer }: { offer: NonNullable<Opportunity["offer"]> }) {
+  const label = OFFER_STATUS_LABEL[offer.status] ?? offer.status;
+  return (
+    <Badge tone={OFFER_STATUS_TONE[offer.status] ?? "gray"}>
+      تخفیف {toFa(offer.suggested_discount_text)} · {label}
+    </Badge>
+  );
+}
+
+
 function MarginPolicyPanel() {
   const [coverage, setCoverage] = useState<CostCoverage | null>(null);
   const [floor, setFloor] = useState<MarginFloor | null>(null);
+  const [policy, setPolicy] = useState<OfferPolicy | null>(null);
+  const [ladderDraft, setLadderDraft] = useState("");
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -611,9 +681,16 @@ function MarginPolicyPanel() {
 
   const load = useCallback(async () => {
     try {
-      const [c, f] = await Promise.all([getCostCoverage(), getMarginFloor()]);
+      const [c, f, p] = await Promise.all([
+        getCostCoverage(),
+        getMarginFloor(),
+        // نصبِ قدیمی این مسیر را ندارد؛ نبودش نباید پنلِ حاشیه را بخواباند
+        getOfferPolicy().catch(() => null),
+      ]);
       setCoverage(c);
       setFloor(f);
+      setPolicy(p);
+      setLadderDraft(p?.ladder_bp ? p.ladder_bp.map((bp) => String(bp / 100)).join("، ") : "");
       setDraft(f.margin_floor_bp == null ? "" : String(f.margin_floor_bp / 100));
     } catch (e) {
       setError(e instanceof Error ? e.message : "خطا در خواندن سیاست حاشیه");
@@ -630,6 +707,31 @@ function MarginPolicyPanel() {
       cancelled = true;
     };
   }, [load]);
+
+  async function saveLadder(raw: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      const rungs = raw
+        .split(/[،,\s]+/)
+        .map((part) => part.trim())
+        .filter(Boolean)
+        .map((part) =>
+          Math.round(Number(part.replace(/[۰-۹]/g, (d) => String("۰۱۲۳۴۵۶۷۸۹".indexOf(d)))) * 100),
+        );
+      if (rungs.some((r) => Number.isNaN(r))) {
+        setError("پله‌ها باید عدد باشند؛ مثلاً «۵، ۱۰، ۱۵»");
+        return;
+      }
+      const next = await setOfferPolicy({ ladder_bp: rungs });
+      setPolicy(next);
+      setLadderDraft(next.ladder_bp ? next.ladder_bp.map((bp) => String(bp / 100)).join("، ") : "");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "خطا در ثبت نردبان تخفیف");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function save(bp: number | null) {
     setBusy(true);
@@ -714,6 +816,53 @@ function MarginPolicyPanel() {
               {floor.products_below_floor.slice(0, 8).join("، ")}
               {floor.products_below_floor.length > 8 ? " …" : ""}
             </p>
+          )}
+          {policy && (
+            <div className="mt-3 space-y-2 border-t border-ink-200 pt-3 dark:border-ink-700">
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="text-xs" htmlFor="offer-ladder">
+                  نردبان تخفیف (درصد، با ویرگول)
+                </label>
+                <input
+                  id="offer-ladder"
+                  type="text"
+                  dir="ltr"
+                  value={ladderDraft}
+                  onChange={(e) => setLadderDraft(e.target.value)}
+                  placeholder="۵، ۱۰، ۱۵"
+                  className="w-40 rounded-lg border border-ink-200 px-2 py-1 tnum dark:border-ink-700 dark:bg-ink-900"
+                />
+                <Button
+                  variant="primary"
+                  disabled={busy || ladderDraft.trim() === ""}
+                  onClick={() => saveLadder(ladderDraft)}
+                >
+                  ثبت نردبان
+                </Button>
+                <Button
+                  variant="ghost"
+                  disabled={busy || !policy.ladder_bp}
+                  onClick={() => saveLadder("")}
+                >
+                  برداشتن نردبان
+                </Button>
+              </div>
+              <p className="text-xs" style={{ color: "var(--muted)" }}>
+                {toFa(policy.note_fa)}
+              </p>
+              {policy.ladder_bp && policy.open_opportunities != null && (
+                <p className="text-xs tnum" style={{ color: "var(--muted)" }}>
+                  دسترسیِ نردبان: {toFa(String(policy.reachable_by_ladder ?? 0))} از{" "}
+                  {toFa(String(policy.open_opportunities))} فرصتِ باز (کالای با حاشیه:{" "}
+                  {toFa(String(policy.with_product_margin ?? 0))} · مشتری با طبقه‌ی معلوم:{" "}
+                  {toFa(String(policy.with_known_tier ?? 0))})
+                </p>
+              )}
+              <p className="text-xs" style={{ color: "var(--muted)" }}>
+                سیستم فقط <b>پیشنهاد</b> می‌کند: کوچک‌ترین پله‌ای که حاشیه‌ی پس از تخفیف را
+                روی کف نگه دارد. هیچ تخفیفی بدون تأییدِ شما روی کارتِ فرصت ارسال نمی‌شود.
+              </p>
+            </div>
           )}
           {error && <Alert tone="warn">{error}</Alert>}
         </div>

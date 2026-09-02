@@ -110,3 +110,17 @@ def test_the_gauge_never_claims_more_reach_than_open_opportunities(analyzed):
     assert body["with_product_margin"] <= body["open_opportunities"]
     assert body["with_known_tier"] <= body["open_opportunities"]
     assert body["note_fa"]
+
+
+def test_every_opportunity_row_carries_the_offer_contract(analyzed):
+    """قراردادِ UI: هر ردیف `offer` و `offer_status` دارد؛ آفر همیشه `sendable` می‌گوید."""
+    body = client.get("/api/v1/opportunities?limit=50").json()
+    assert body.get("items"), "دفتر کل باید فرصت داشته باشد"
+    for row in body["items"]:
+        assert "offer" in row and "offer_status" in row
+        if row["offer"] is not None:
+            assert set(row["offer"]) >= {
+                "suggested_discount_bp", "suggested_discount_text", "status", "sendable",
+            }
+            assert row["offer"]["sendable"] is (row["offer"]["status"] == "approved")
+            assert row["offer_status"] == row["offer"]["status"]

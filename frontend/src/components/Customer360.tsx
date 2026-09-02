@@ -450,6 +450,26 @@ function FutureValuePanel({ features }: { features: CustomerFeatures }) {
           {toFa(String(Math.round(features.whale_probability * 100)))}٪
         </p>
       )}
+      {features.full_price && (
+        <p className="mt-1 text-xs" style={{ color: "var(--muted)" }}>
+          {/* §۲۰.۳: همبستگیِ مشاهده‌ای، نه حساسیتِ علّی — متنِ سرور همیشه همین را می‌گوید */}
+          سهم خرید تمام‌قیمت:{" "}
+          {features.full_price.share_bp == null
+            ? "نامعلوم"
+            : `${toFa(String(Math.round(features.full_price.share_bp / 100)))}٪`}
+          {features.full_price.tier && (
+            <> · طبقه: {FULL_PRICE_TIER_LABEL[features.full_price.tier] ?? features.full_price.tier}</>
+          )}
+          {" — "}
+          {toFa(features.full_price.note_fa)}
+        </p>
+      )}
     </div>
   );
 }
+
+const FULL_PRICE_TIER_LABEL: Record<string, string> = {
+  high: "تمام‌قیمت‌خر",
+  mid: "میانی",
+  low: "وابسته به تخفیف",
+};

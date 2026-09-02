@@ -173,6 +173,14 @@ export type CustomerFeatures = {
    * می‌گوید چرا — هرگز به صفر ترجمه نمی‌شود.
    */
   clv_gross_profit?: ClvGrossProfit;
+  /** §۲۰.۳ — رفتارِ خریدِ تمام‌قیمت. `share_bp === null` یعنی ستون تخفیف نبود. همبستگی است، نه علّیت. */
+  full_price?: {
+    share_bp: number | null;
+    share: number | null;
+    tier: "high" | "mid" | "low" | null;
+    thresholds: { high_bp: number; low_bp: number; min_lines: number; configured: boolean };
+    note_fa: string;
+  };
   /** احتمال «نهنگ آینده». `null` یعنی مدلی فعال نیست، نه احتمال صفر. */
   whale_probability?: number | null;
   whale_model_run_id?: number | null;
@@ -256,6 +264,20 @@ export type OpportunityFactor = {
   value: string | null;
 };
 
+export type OpportunityOffer = {
+  suggested_discount_bp: number;
+  suggested_discount_text: string;
+  status: "suggested" | "approved" | "rejected" | "stale" | "withdrawn" | string;
+  tier: string | null;
+  margin_bp_at_suggestion: number | null;
+  floor_bp_at_suggestion: number | null;
+  decided_by: string | null;
+  decided_at: number | null;
+  decision_note_fa: string | null;
+  updated_at: number;
+  sendable: boolean;
+};
+
 export type Opportunity = {
   id: number;
   kind: string;
@@ -285,6 +307,9 @@ export type Opportunity = {
   causal_note_fa: string;
   created_at: number;
   updated_at: number;
+  /** پیشنهادِ تخفیف (§۲۰.۳). `null` یعنی پیشنهادی نیست؛ بدون `approved` هیچ‌چیز ارسال نمی‌شود. */
+  offer?: OpportunityOffer | null;
+  offer_status?: string | null;
   factors?: OpportunityFactor[];
   events?: {
     type: string;
@@ -721,6 +746,53 @@ export type MarginFloor = {
   products_below_floor?: string[];
   note_fa: string;
 };
+
+export type OfferPolicy = {
+  available: boolean;
+  ladder_bp: number[] | null;
+  margin_floor_bp?: number | null;
+  thresholds?: { high_bp: number; low_bp: number; min_lines: number; configured: boolean };
+  cost_coverage?: number;
+  open_opportunities?: number;
+  with_product_margin?: number;
+  with_known_tier?: number;
+  reachable_by_ladder?: number;
+  note_fa: string;
+};
+
+export async function getOfferPolicy(): Promise<OfferPolicy> {
+  return handle(await apiFetch(`${BASE}/api/v1/offer-policy`, { cache: "no-store" }));
+}
+
+export async function setOfferPolicy(body: {
+  ladder_bp?: number[] | null;
+  full_price_high_bp?: number;
+  full_price_low_bp?: number;
+  full_price_min_lines?: number;
+}): Promise<OfferPolicy> {
+  return handle(
+    await apiFetch(`${BASE}/api/v1/offer-policy`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
+}
+
+/** تأیید یا ردِ تخفیفِ پیشنهادی — تنها راهی که تخفیف وارد ارسال می‌شود. */
+export async function decideOffer(
+  id: number,
+  decision: "approve" | "reject",
+  body: { decided_by?: string; note_fa?: string } = {},
+): Promise<OpportunityOffer> {
+  return handle(
+    await apiFetch(`${BASE}/api/v1/opportunities/${id}/offer/${decision}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
+}
 
 export async function getMarginFloor(): Promise<MarginFloor> {
   return handle(await apiFetch(`${BASE}/api/v1/margin-floor`, { cache: "no-store" }));
