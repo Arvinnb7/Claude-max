@@ -171,16 +171,32 @@ def test_approval_survives_the_next_engine_run(ledger):
 
 
 def test_a_raised_floor_makes_the_approval_stale_on_the_next_run(ledger):
+    """کف بالا رفت ولی همان پله هنوز جا دارد ⇒ مبنای تأیید عوض شده، تأیید دوباره."""
     db, bundle, clean = ledger
     _run(db, bundle, clean)
     decide_offer(_opportunity_id(db, "تخفیفی"), DECISION_APPROVE, db_path=db)
 
-    set_margin_floor_bp(2_700, db_path=db)   # ۵٪ تخفیف حاشیه را به ۲۶٫۳٪ می‌رساند
+    set_margin_floor_bp(2_500, db_path=db)   # ۵٪ تخفیف حاشیه را به ۲۶٫۳٪ می‌رساند؛ هنوز ≥ ۲۵٪
     _run(db, bundle, clean)
 
     offer = _offers(db)["تخفیفی"]
     assert offer.status == OpportunityOffer.STATUS_STALE
+    assert offer.suggested_discount_bp == 500
     assert "کهنه" in (offer.decision_note_fa or "")
+
+
+def test_a_floor_above_every_rung_withdraws_the_approval_on_the_next_run(ledger):
+    """کف چنان بالا رفت که هیچ پله‌ای جا ندارد ⇒ پیشنهادی نیست که دوباره تأیید شود."""
+    db, bundle, clean = ledger
+    _run(db, bundle, clean)
+    decide_offer(_opportunity_id(db, "تخفیفی"), DECISION_APPROVE, db_path=db)
+
+    set_margin_floor_bp(2_700, db_path=db)   # ۲۶٫۳٪ < ۲۷٪ — حتی کوچک‌ترین پله رد می‌شود
+    _run(db, bundle, clean)
+
+    offer = _offers(db)["تخفیفی"]
+    assert offer.status == OpportunityOffer.STATUS_WITHDRAWN
+    assert "برداشته شد" in (offer.decision_note_fa or "")
 
 
 def test_approving_below_todays_floor_is_refused_and_marked_stale(ledger):
@@ -218,3 +234,107 @@ def test_unknown_opportunity_or_decision_is_not_a_conflict(ledger):
 
     with pytest.raises(OfferDecisionError):
         decide_offer(1, "maybe", db_path=db)
+
+
+# ═══════════════════════════════════ یافته‌های بازبینی خصمانه
+def test_removing_the_ladder_withdraws_the_offer_and_blocks_approval(ledger):
+    """ردیفِ کهنه‌ی یک نردبانِ برداشته‌شده نباید با یک کلیک به پیامک برسد."""
+    db, bundle, clean = ledger
+    _run(db, bundle, clean)
+    opportunity_id = _opportunity_id(db, "تخفیفی")
+    decide_offer(opportunity_id, DECISION_APPROVE, db_path=db)
+
+    set_offer_ladder_bp(None, db_path=db)
+    _run(db, bundle, clean)
+    offer = _offers(db)["تخفیفی"]
+    assert offer.status == OpportunityOffer.STATUS_WITHDRAWN
+    assert "برداشته شد" in (offer.decision_note_fa or "")
+
+    with pytest.raises(OfferDecisionError) as caught:
+        decide_offer(opportunity_id, DECISION_APPROVE, db_path=db)
+    assert "برداشته" in caught.value.reason_fa
+    assert _offers(db)["تخفیفی"].status == OpportunityOffer.STATUS_WITHDRAWN
+
+
+def test_a_rung_no_longer_on_the_ladder_cannot_be_approved(ledger):
+    db, bundle, clean = ledger
+    _run(db, bundle, clean)
+    opportunity_id = _opportunity_id(db, "تخفیفی")
+    set_offer_ladder_bp([1_000, 1_500], db_path=db)   # پله‌ی ۵٪ دیگر روی نردبان نیست
+
+    with pytest.raises(OfferDecisionError) as caught:
+        decide_offer(opportunity_id, DECISION_APPROVE, db_path=db)
+
+    assert "روی نردبانِ فعلی" in caught.value.reason_fa
+    with session_scope(db) as session:
+        refused = session.scalars(
+            select(AuditEvent).where(
+                AuditEvent.action == AuditEvent.ACTION_OFFER_APPROVAL_REFUSED
+            )
+        ).all()
+        events = session.scalars(
+            select(OpportunityEvent).where(
+                OpportunityEvent.opportunity_id == opportunity_id,
+                OpportunityEvent.event_type == "offer_approval_refused",
+            )
+        ).all()
+    assert len(refused) == 1 and len(events) == 1, "ردِ سیستمی هم باید ردیفِ ممیزی و رخداد داشته باشد"
+
+
+def test_a_refused_approval_keeps_the_human_rejection_note(ledger):
+    """یک تأییدِ ناموفق نباید یادداشتِ «نه» مدیر را با متنِ سیستم بازنویسی کند."""
+    db, bundle, clean = ledger
+    _run(db, bundle, clean)
+    opportunity_id = _opportunity_id(db, "تخفیفی")
+    decide_offer(opportunity_id, DECISION_REJECT, decided_by="مدیر", note_fa="نه، این مشتری تخفیف نمی‌خواهد", db_path=db)
+    set_margin_floor_bp(2_700, db_path=db)
+
+    with pytest.raises(OfferDecisionError):
+        decide_offer(opportunity_id, DECISION_APPROVE, decided_by="کارمند", db_path=db)
+
+    offer = _offers(db)["تخفیفی"]
+    assert offer.status == OpportunityOffer.STATUS_REJECTED
+    assert offer.decided_by == "مدیر"
+    assert offer.decision_note_fa == "نه، این مشتری تخفیف نمی‌خواهد"
+
+
+def test_approval_recomputes_margin_on_the_basis_the_engine_used(ledger):
+    """فرصتِ بی‌`product_id` با مبنای نام (مثل «شکاف دسته») باید با همان نام بازخوانی شود."""
+    from mktcore.opportunities.offers import _current_margin_and_floor
+
+    db, bundle, clean = ledger
+    _run(db, bundle, clean)
+    with session_scope(db) as session:
+        offer = session.scalars(select(OpportunityOffer)).first()
+        opportunity = session.get(Opportunity, offer.opportunity_id)
+        opportunity.product_id = None            # مثل «شکاف دسته»
+        offer.margin_basis, offer.margin_key = "name", "کالا"   # نامی که در دفتر کل حاشیه دارد
+        by_name = _current_margin_and_floor(session, opportunity, offer)
+        offer.margin_basis, offer.margin_key = "customer", None
+        by_customer = _current_margin_and_floor(session, opportunity, offer)
+        session.rollback()
+
+    assert by_name[0] == 3_000, "مبنای نام باید حاشیه‌ی کالا/دسته را بخواند، نه سبدِ مشتری"
+    assert by_customer[0] == 3_000
+
+
+def test_margin_by_customer_requires_full_cost_coverage(tmp_path):
+    """مشتری با یک خطِ بی‌بها حاشیه ندارد — حاشیه از داده‌ی ناقص، دروغ است."""
+    from mktcore.costs.register import margin_by_customer
+    from mktcore.db.lookup import resolve_business_id
+
+    rows = _rows()
+    # یک خطِ مشتریِ «وفادار» بی‌بها می‌شود
+    rows = [(*r[:-1], "") if r[3] == "وفادار" and r[4] == "L0" else r for r in rows]
+    raw = pd.DataFrame(rows, columns=COLS)
+    clean = clean_frame(SchemaMapper().apply(raw, MAPPING))
+    db = tmp_path / "app.db"
+    write_import(clean, kpis=compute_kpis(clean), db_path=db)
+
+    with session_scope(db) as session:
+        business_id = resolve_business_id(session, "default")
+        margins = margin_by_customer(session, business_id)
+        keys = dict(session.execute(select(Customer.id, Customer.canonical_key)).all())
+    by_key = {keys[cid]: bp for cid, bp in margins.items()}
+    assert by_key["تخفیفی"] == 3_000
+    assert "وفادار" not in by_key

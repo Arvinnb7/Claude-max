@@ -35,7 +35,10 @@ NEW_COLUMNS = (
     ("customer_features", "full_price_share_bp"),
     ("campaign_members", "offer_discount_bp"),
     ("campaign_sends", "offer_discount_bp"),
+    # مهاجرت ۱۶
+    ("customer_features", "full_price_lines"),
 )
+OFFER_COLUMNS_16 = ("margin_basis", "margin_key")
 
 
 @pytest.fixture(autouse=True)
@@ -118,8 +121,8 @@ def test_migration_15_upgrades_a_v14_db_without_touching_rows(tmp_path):
 
     reset_ensure_cache()
     assert ensure_schema(db) == CANONICAL_SCHEMA_VERSION
-    assert CANONICAL_SCHEMA_VERSION >= 15
-    assert 15 in applied_versions(get_engine(db))
+    assert CANONICAL_SCHEMA_VERSION >= 16
+    assert {15, 16} <= set(applied_versions(get_engine(db)))
 
     with get_engine(db).begin() as conn:
         for table, column in NEW_COLUMNS:
@@ -127,6 +130,8 @@ def test_migration_15_upgrades_a_v14_db_without_touching_rows(tmp_path):
         assert conn.exec_driver_sql(
             "SELECT name FROM sqlite_master WHERE name='opportunity_offers'"
         ).fetchall()
+        for column in OFFER_COLUMNS_16:
+            assert column in _columns(conn, "opportunity_offers"), column
         # ردیف‌های قبلی سرِ جایشان و ستونِ تازه NULL — نه صفر
         rows = conn.exec_driver_sql(
             "SELECT id, full_price_share_bp FROM customer_features"
@@ -135,12 +140,13 @@ def test_migration_15_upgrades_a_v14_db_without_touching_rows(tmp_path):
         assert conn.exec_driver_sql("SELECT COUNT(*) FROM opportunities").scalar() == 1
 
 
-def test_migration_15_is_idempotent(tmp_path):
+def test_migrations_15_and_16_are_idempotent(tmp_path):
     db = tmp_path / "app.db"
     ensure_schema(db)
     reset_ensure_cache()
     ensure_schema(db, force=True)
-    assert applied_versions(get_engine(db)).count(15) == 1
+    versions = applied_versions(get_engine(db))
+    assert versions.count(15) == 1 and versions.count(16) == 1
 
 
 def test_offer_row_is_unique_per_opportunity(tmp_path):

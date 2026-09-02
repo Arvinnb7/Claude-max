@@ -33,6 +33,7 @@ from mktcore.db.models import (  # noqa: E402
     CampaignMember,
     CampaignOpportunity,
     CampaignSend,
+    Opportunity,
     OpportunityOffer,
 )
 
@@ -203,3 +204,68 @@ def test_export_shows_the_approved_discount_and_never_a_raw_placeholder(offers_r
     assert "—" in values
     for row in sheet.iter_rows(min_row=2, values_only=True):
         assert all("{تخفیف}" not in str(cell) for cell in row)
+
+
+# ═══════════════════════════════════ یافته‌های بازبینی خصمانه
+def test_a_template_without_the_placeholder_does_not_stamp_an_offer(offers_ready, monkeypatch):
+    """آفرِ تأییدشده ولی قالبِ بی‌`{تخفیف}` ⇒ مشتری تخفیفی ندیده ⇒ هیچ مهرِ آفری."""
+    campaign_id, _treatment, suggested = _campaign_with_offers()
+    sink: list[str] = []
+    _fake_panel(monkeypatch, sink)
+    _enable_panel(monkeypatch)
+    assert client.post(f"/api/v1/opportunities/{suggested[0]}/offer/approve", json={}).status_code == 200
+
+    r = client.post(f"/api/v1/campaigns/{campaign_id}/send", json={
+        "template": "سلام {نام}، کالای تازه رسید.", "dry_run": False, "confirm": True,
+    })
+    send = r.json()["send"]
+    assert send["ارسال‌شده"] >= 1 and send["بدون_تأیید_تخفیف"] == 0
+
+    sent = [row for row in _sends(campaign_id) if row.status == CampaignSend.STATUS_SENT]
+    assert sent and all(row.offer_discount_bp is None for row in sent)
+    with session_scope() as session:
+        stamped = session.scalar(
+            select(CampaignMember.id).where(
+                CampaignMember.campaign_id == campaign_id,
+                CampaignMember.offer_discount_bp.isnot(None),
+            )
+        )
+    assert stamped is None
+
+
+def test_a_member_exposed_by_export_first_still_records_the_sent_rung(offers_ready, monkeypatch):
+    """اول دانلودِ فهرست (بدون آفر)، بعد تأیید، بعد پیامک با تخفیف ⇒ پله‌ی واقعاً ارسال‌شده ثبت شود."""
+    campaign_id, _treatment, suggested = _campaign_with_offers()
+    assert client.get(f"/api/v1/campaigns/{campaign_id}/export").status_code == 200
+    assert client.post(f"/api/v1/opportunities/{suggested[0]}/offer/approve", json={}).status_code == 200
+
+    sink: list[str] = []
+    _fake_panel(monkeypatch, sink)
+    _enable_panel(monkeypatch)
+    r = client.post(f"/api/v1/campaigns/{campaign_id}/send", json={
+        "template": TEMPLATE, "dry_run": False, "confirm": True,
+    })
+    assert r.json()["send"]["ارسال‌شده"] >= 1
+
+    # تأییدهای تست‌های قبلی روی همین دفتر کل می‌مانند؛ پس فقط عضوی را می‌سنجیم
+    # که همین تست تأیید کرد.
+    with session_scope() as session:
+        customer_id = session.scalar(
+            select(Opportunity.customer_id).where(Opportunity.id == suggested[0])
+        )
+        sent = session.scalar(
+            select(CampaignSend).where(
+                CampaignSend.campaign_id == campaign_id,
+                CampaignSend.customer_id == customer_id,
+                CampaignSend.status == CampaignSend.STATUS_SENT,
+            )
+        )
+        assert sent is not None and sent.offer_discount_bp == 500
+        member = session.scalar(
+            select(CampaignMember).where(
+                CampaignMember.campaign_id == campaign_id,
+                CampaignMember.customer_id == customer_id,
+            )
+        )
+        assert member.exposure_channel == "excel_export", "مهرِ اولین تماس یک‌بارمصرف می‌ماند"
+        assert member.offer_discount_bp == 500, "ولی پله‌ی ارسال‌شده باید ثبت شود"

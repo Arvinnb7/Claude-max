@@ -91,6 +91,9 @@ class OpportunityCandidate:
     offer_tier: str | None = None
     offer_margin_bp: int | None = None
     offer_floor_bp: int | None = None
+    # مبنای حاشیه: "name" (کالا/دسته، با کلیدِ نام) یا "customer"
+    offer_margin_basis: str | None = None
+    offer_margin_key: str | None = None
     factors: list[OpportunityFactorNote] = field(default_factory=list)
 
     def dedupe_key(self) -> str:

@@ -394,6 +394,9 @@ class CustomerFeature(Base):
     # که با «هیچ‌وقت تخفیف نگرفته» یکی نیست. همبستگیِ مشاهده‌ای است، نه
     # حساسیتِ علّی (§۲۰.۳).
     full_price_share_bp: Mapped[int | None] = mapped_column(Integer)
+    # شمارِ خطوطی که سهمِ بالا از رویشان حساب شد (کلِ دفتر کل، بدون برگشتی).
+    # آستانه‌ی «کمینه‌ی خطوط» باید روی همین اعمال شود، نه روی خطوطِ همین آپلود.
+    full_price_lines: Mapped[int | None] = mapped_column(Integer)
 
     created_at: Mapped[float] = mapped_column(Float, default=now_ts)
 
@@ -703,6 +706,11 @@ class OpportunityOffer(Base):
     floor_bp_at_suggestion: Mapped[int | None] = mapped_column(Integer)
     # طبقه‌ی خریدِ تمام‌قیمتِ مشتری در لحظه‌ی پیشنهاد: high / mid / low / None
     tier: Mapped[str | None] = mapped_column(String(16))
+    # مبنای حاشیه‌ای که پیشنهاد رویش ساخته شد — تا تأیید **همان** را بازخوانی کند:
+    # `name` (کالا یا دسته، با `margin_key`) یا `customer` (سبدِ خودِ مشتری).
+    # بازخوانی با مبنای دیگر یعنی تأییدِ درست رد شود یا تخفیفِ زیرِ کف تأیید شود.
+    margin_basis: Mapped[str | None] = mapped_column(String(16))
+    margin_key: Mapped[str | None] = mapped_column(String(255))
     status: Mapped[str] = mapped_column(String(16), default=STATUS_SUGGESTED, index=True)
     # با توکنِ مشترک این فقط متنی است که درخواست‌دهنده نوشته — نه هویتِ واقعی
     decided_by: Mapped[str | None] = mapped_column(String(128))
@@ -1279,6 +1287,8 @@ class AuditEvent(Base):
     # تصمیمِ انسان درباره‌ی تخفیف (§۲۰.۳) — تنها راهی که آفر وارد ارسال می‌شود
     ACTION_OFFER_APPROVED = "offer_approved"
     ACTION_OFFER_REJECTED = "offer_rejected"
+    # تأییدی که سیستم رد کرد (زیرِ کف، نردبان برداشته شده، …) — جهشِ وضعیت بدون رد
+    ACTION_OFFER_APPROVAL_REFUSED = "offer_approval_refused"
 
     ACTOR_TOKEN = "توکن‌دار"
     ACTOR_ANONYMOUS = "بدون توکن (نصب محافظت‌نشده)"

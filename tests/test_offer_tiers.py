@@ -152,3 +152,49 @@ def test_customer_api_carries_the_non_causal_note_always():
         assert block["tier"] is None
     assert block["tier"] in (None, TIER_HIGH, TIER_MID, TIER_LOW)
     assert not (isinstance(block["share_bp"], float) and math.isnan(block["share_bp"]))
+
+
+# ═════════════════════════════ یافته‌های بازبینی: پوشش به‌ازای مشتری، بدون برگشتی
+def test_a_customer_whose_rows_all_lack_discount_is_unknown_even_if_others_have_it():
+    """دو آپلود: یکی با ستون تخفیف، یکی بدون. مشتریِ فایلِ دوم «نمی‌دانیم» است، نه ۱۰۰٪."""
+    from mktcore.features.discount import full_price_stats
+
+    frame = pd.DataFrame({
+        "customer_id": [1, 1, 2, 2],
+        "discount_rate_bp": [0, 1_000, None, None],
+        "discount_rial": [None, None, None, None],
+        "is_return": [False, False, False, False],
+    })
+    stats = full_price_stats(frame)
+
+    assert stats.loc[1, "share_bp"] == 5_000 and stats.loc[1, "known_lines"] == 2
+    assert math.isnan(stats.loc[2, "share_bp"]) and stats.loc[2, "known_lines"] == 0
+
+
+def test_return_lines_do_not_count_toward_the_full_price_share():
+    """۳ خریدِ تخفیف‌دار + ۷ برگشتی ⇒ سهمِ تمام‌قیمت ۰٪، نه ۷۰٪."""
+    from mktcore.features.discount import full_price_stats
+
+    frame = pd.DataFrame({
+        "customer_id": [1] * 10,
+        "discount_rate_bp": [1_000] * 3 + [None] * 7,
+        "discount_rial": [None] * 10,
+        "is_return": [False] * 3 + [True] * 7,
+    })
+    stats = full_price_stats(frame)
+
+    assert stats.loc[1, "share_bp"] == 0
+    assert stats.loc[1, "known_lines"] == 3
+
+
+def test_snapshot_stores_the_basis_line_count(tmp_path):
+    """آستانه‌ی کمینه‌ی خطوط روی خطوطِ مبنا اعمال می‌شود، نه خطوطِ همین آپلود."""
+    db = tmp_path / "app.db"
+    _ingest_and_snapshot(db, _discount_rows(amount=False), _COLS_DISC, _MAPPING_DISC)
+
+    with session_scope(db) as session:
+        rows = dict(session.execute(
+            select(Customer.canonical_key, CustomerFeature.full_price_lines)
+            .join(CustomerFeature, CustomerFeature.customer_id == Customer.id)
+        ).all())
+    assert rows["وفادار"] == 10 and rows["تخفیفی"] == 10

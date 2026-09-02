@@ -190,7 +190,7 @@ def write_customer_features(
                 display_currency=display_currency,
                 lifecycle=verdict,
                 profit=profits.get(customer_id),
-                full_price_share_bp=full_price.get(customer_id),
+                full_price=full_price.get(customer_id),
             )
             if customer_id in existing:
                 to_update.append({**payload, "id": existing[customer_id]})
@@ -262,13 +262,14 @@ def _existing_snapshots(
     return out
 
 
-def _full_price_lookup(session: Session, business_id: int) -> dict[int, int]:
-    """سهمِ خریدِ تمام‌قیمتِ هر مشتری از دفتر کل (§۲۰.۳ بند ۱).
+def _full_price_lookup(session: Session, business_id: int) -> dict[int, tuple[int, int]]:
+    """(سهمِ خریدِ تمام‌قیمت، شمارِ خطوطِ مبنا) به‌ازای هر مشتری، از کلِ دفتر کل.
 
-    مشتریِ بدونِ عدد (فایل بدون ستون تخفیف) در خروجی **نیست** تا ستونش NULL
-    بماند — نه صفر، نه ۱۰۰٪.
+    مشتریِ بدونِ عدد (همه‌ی خطوطش بی‌ستونِ تخفیف) در خروجی **نیست** تا ستونش
+    NULL بماند — نه صفر، نه ۱۰۰٪. شمارِ خطوط کنارِ سهم برمی‌گردد چون آستانه‌ی
+    «کمینه‌ی خطوط» باید روی همین مبنا اعمال شود، نه روی خطوطِ همین آپلود.
     """
-    from mktcore.features.discount import full_price_share_bp
+    from mktcore.features.discount import full_price_stats
     from mktcore.features.ledger_frame import load_line_frame
 
     try:
@@ -276,11 +277,11 @@ def _full_price_lookup(session: Session, business_id: int) -> dict[int, int]:
     except Exception:  # noqa: BLE001 - نبودِ این عدد نباید نوشتنِ ویژگی را بخواباند
         logger.exception("سهم خرید تمام‌قیمت خوانده نشد")
         return {}
-    share = full_price_share_bp(lines)
+    stats = full_price_stats(lines)
     return {
-        int(customer_id): int(value)
-        for customer_id, value in share.items()
-        if value == value  # NaN را کنار می‌گذارد
+        int(customer_id): (int(row["share_bp"]), int(row["known_lines"]))
+        for customer_id, row in stats.iterrows()
+        if row["share_bp"] == row["share_bp"]  # NaN را کنار می‌گذارد
     }
 
 
@@ -383,7 +384,7 @@ def _feature_payload(
     display_currency: str,
     lifecycle: LifecycleVerdict | None = None,
     profit: dict | None = None,
-    full_price_share_bp: int | None = None,
+    full_price: tuple[int, int] | None = None,
 ) -> dict:
     n_orders = int(row["n_orders"])
     monetary = float(row["monetary"])
@@ -415,7 +416,8 @@ def _feature_payload(
         ),
         "p_alive_bp": to_basis_points(p_alive),
         # §۲۰.۳ بند ۱ — همبستگیِ مشاهده‌ای؛ NULL یعنی فایل ستون تخفیف نداشت
-        "full_price_share_bp": full_price_share_bp,
+        "full_price_share_bp": None if full_price is None else full_price[0],
+        "full_price_lines": None if full_price is None else full_price[1],
         "clv_rial": to_rial_int(clv, display_currency),
         "segment": segment,
         "lifecycle_state": lifecycle.state if lifecycle else None,

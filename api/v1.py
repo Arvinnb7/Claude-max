@@ -700,7 +700,11 @@ def _full_price_payload(feature: Any, thresholds: dict | None = None) -> dict:
     share = getattr(feature, "full_price_share_bp", None)
     thresholds = dict(thresholds or _tier_thresholds())
     configured = thresholds.pop("configured", False)
-    tier = full_price_tier(share, getattr(feature, "n_lines", None), **thresholds)
+    # کمینه‌ی خطوط روی خطوطِ **مبنای سهم** (کلِ دفتر کل) — نه خطوطِ همین آپلود
+    basis_lines = getattr(feature, "full_price_lines", None)
+    if basis_lines is None:
+        basis_lines = getattr(feature, "n_lines", None)
+    tier = full_price_tier(share, basis_lines, **thresholds)
     return {
         "share_bp": share,
         "share": None if share is None else round(share / 10_000, 4),
@@ -1270,24 +1274,38 @@ def read_offer_policy() -> dict:
         margins = margin_lookup(session, business_id)
         _total_lines, _with_cost, coverage = cost_coverage(session, business_id)
 
+        from mktcore.costs.register import margin_by_customer
+
+        latest = session.scalar(
+            select(func.max(CustomerFeature.as_of_date))
+            .where(CustomerFeature.business_id == business_id)
+        )
+        # فقط **آخرین** عکسِ ویژگیِ همین کسب‌وکار — همان چیزی که موتور می‌خواند؛
+        # جوین با همه‌ی عکس‌ها، طبقه‌ی کهنه را «معلوم» می‌شمرد.
         open_rows = session.execute(
-            select(Opportunity.id, Product.canonical_name, Product.display_name,
-                   CustomerFeature.full_price_share_bp, CustomerFeature.n_lines)
+            select(Opportunity.id, Opportunity.customer_id, Product.canonical_name,
+                   Product.display_name, CustomerFeature.full_price_share_bp,
+                   func.coalesce(CustomerFeature.full_price_lines, CustomerFeature.n_lines))
             .outerjoin(Product, Product.id == Opportunity.product_id)
-            .outerjoin(CustomerFeature, CustomerFeature.customer_id == Opportunity.customer_id)
+            .outerjoin(CustomerFeature, (CustomerFeature.customer_id == Opportunity.customer_id)
+                       & (CustomerFeature.business_id == business_id)
+                       & (CustomerFeature.as_of_date == latest))
             .where(Opportunity.business_id == business_id, Opportunity.status == "open")
         ).all()
+        customer_margins = margin_by_customer(session, business_id)
 
     from mktcore.features.discount import full_price_tier
 
     open_total = len({row[0] for row in open_rows})
     with_margin = {
         row[0] for row in open_rows
-        if (row[1] and row[1] in margins) or (row[2] and row[2] in margins)
+        if (row[2] and row[2] in margins) or (row[3] and row[3] in margins)
+        # فرصتِ بی‌کالا با مبنای سبدِ خودِ مشتری — همان قاعده‌ی فیلتر
+        or (not row[2] and not row[3] and row[1] is not None and int(row[1]) in customer_margins)
     }
     known_tier = {
         row[0] for row in open_rows
-        if full_price_tier(row[3], row[4], high_bp=thresholds["high_bp"],
+        if full_price_tier(row[4], row[5], high_bp=thresholds["high_bp"],
                            low_bp=thresholds["low_bp"], min_lines=thresholds["min_lines"])
         is not None
     }

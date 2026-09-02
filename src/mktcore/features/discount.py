@@ -36,6 +36,7 @@ __all__ = [
     "TIER_LOW",
     "TIER_MID",
     "full_price_share_bp",
+    "full_price_stats",
     "full_price_tier",
 ]
 
@@ -58,29 +59,54 @@ NON_CAUSAL_NOTE_FA = (
 )
 
 
-def full_price_share_bp(frame: pd.DataFrame) -> pd.Series:
-    """سهمِ خطوطِ بدون تخفیفِ هر مشتری، به پایه‌ی هزارم.
+def full_price_stats(frame: pd.DataFrame) -> pd.DataFrame:
+    """به‌ازای هر مشتری: `share_bp` (NaN = نامعلوم) و `known_lines`.
 
-    ورودی فریمِ دفتر کل است (ستون‌های `customer_id`، `discount_rial`،
-    `discount_rate_bp`؛ همان `LINE_COLUMNS`). خروجی با ایندکسِ `customer_id`.
-    نبودِ **هر دو** ستون یا خالی‌بودنِ هر دو ⇒ سریِ NaN برای همه.
+    * فقط خطوطِ **خرید** (بدون برگشتی) — همان تعریفی که حاشیه‌ها به‌کار می‌برند.
+    * خطی که هر دو ستونِ تخفیفش NULL است «نامعلوم» است، نه «بدون تخفیف»؛ پوشش
+      **به‌ازای هر مشتری** سنجیده می‌شود. مشتری‌ای که همه‌ی خطوطش نامعلوم است
+      (مثلاً فقط در فایلی بوده که ستون تخفیف نداشت) `NaN` می‌گیرد — حتی اگر
+      فایل‌های دیگرِ همان کسب‌وکار ستون تخفیف داشته باشند. بازبینیِ خصمانه نشان
+      داد پوششِ سراسری چنین مشتری‌ای را «۱۰۰٪ تمام‌قیمت‌خر» می‌کرد.
     """
+    empty = pd.DataFrame(
+        columns=["share_bp", "known_lines"], index=pd.Index([], name="customer_id"),
+    )
     if frame.empty or "customer_id" not in frame.columns:
-        return pd.Series(dtype=float, name="full_price_share_bp")
+        return empty
+    rows = frame[frame["customer_id"].notna()]
+    if "is_return" in rows.columns:
+        rows = rows[~rows["is_return"].fillna(False).astype(bool)]
+    if rows.empty:
+        return empty
 
-    has_amount = "discount_rial" in frame.columns and frame["discount_rial"].notna().any()
-    has_rate = "discount_rate_bp" in frame.columns and frame["discount_rate_bp"].notna().any()
-    customers = frame["customer_id"].dropna().unique()
-    if not (has_amount or has_rate):
-        return pd.Series(np.nan, index=pd.Index(customers, name="customer_id"),
-                         name="full_price_share_bp")
+    amount = (
+        pd.to_numeric(rows["discount_rial"], errors="coerce")
+        if "discount_rial" in rows.columns else pd.Series(np.nan, index=rows.index)
+    )
+    rate = (
+        pd.to_numeric(rows["discount_rate_bp"], errors="coerce")
+        if "discount_rate_bp" in rows.columns else pd.Series(np.nan, index=rows.index)
+    )
+    known = amount.notna() | rate.notna()
+    full_price = ((amount.fillna(0) == 0) & (rate.fillna(0) == 0)).astype(float)
 
-    amount = pd.to_numeric(frame["discount_rial"], errors="coerce").fillna(0) if has_amount else 0
-    rate = pd.to_numeric(frame["discount_rate_bp"], errors="coerce").fillna(0) if has_rate else 0
-    full_price = ((amount == 0) & (rate == 0)).astype(float)
-    share = full_price.groupby(frame["customer_id"]).mean() * _BP
-    share.index.name = "customer_id"
-    return share.round().rename("full_price_share_bp")
+    grouped_known = known.groupby(rows["customer_id"])
+    known_lines = grouped_known.sum().astype(int)
+    full_price_known = full_price.where(known, np.nan).groupby(rows["customer_id"]).mean() * _BP
+    out = pd.DataFrame({
+        "share_bp": full_price_known.round(),
+        "known_lines": known_lines,
+    })
+    out.loc[out["known_lines"] == 0, "share_bp"] = np.nan
+    out.index.name = "customer_id"
+    return out
+
+
+def full_price_share_bp(frame: pd.DataFrame) -> pd.Series:
+    """سهمِ خطوطِ بدون تخفیفِ هر مشتری، به پایه‌ی هزارم (NaN = نامعلوم)."""
+    stats = full_price_stats(frame)
+    return stats["share_bp"].rename("full_price_share_bp")
 
 
 def full_price_tier(

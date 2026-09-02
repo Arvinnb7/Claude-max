@@ -14,12 +14,16 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import delete
 
 _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT))
 sys.path.insert(0, str(_ROOT / "src"))
 
 from api.main import app  # noqa: E402
+
+from mktcore.db import session_scope  # noqa: E402
+from mktcore.db.models import AppSetting  # noqa: E402
 
 from .conftest import poll_job  # noqa: E402
 
@@ -38,12 +42,27 @@ def analyzed() -> str:
     return data["session_id"]
 
 
+def _clear_thresholds() -> None:
+    """آستانه‌ها راهِ API برای «برداشتن» ندارند؛ تست‌های ماژول‌های دیگر آن‌ها را روی
+    همین دفتر کل می‌گذارند، پس اینجا مستقیم پاک می‌شوند."""
+    with session_scope() as session:
+        session.execute(
+            delete(AppSetting).where(AppSetting.key.in_([
+                AppSetting.KEY_FULL_PRICE_HIGH_BP,
+                AppSetting.KEY_FULL_PRICE_LOW_BP,
+                AppSetting.KEY_FULL_PRICE_MIN_LINES,
+            ]))
+        )
+
+
 @pytest.fixture(autouse=True)
 def _reset_policy(analyzed):
-    """هر تست با نردبانِ برداشته‌شده شروع می‌شود و همان‌طور تمام می‌شود."""
+    """هر تست با نردبان و آستانه‌های برداشته‌شده شروع می‌شود و همان‌طور تمام می‌شود."""
     client.put("/api/v1/offer-policy", json={"ladder_bp": []})
+    _clear_thresholds()
     yield
     client.put("/api/v1/offer-policy", json={"ladder_bp": []})
+    _clear_thresholds()
 
 
 def test_unset_ladder_is_reported_as_not_checked(analyzed):
@@ -124,3 +143,34 @@ def test_every_opportunity_row_carries_the_offer_contract(analyzed):
             }
             assert row["offer"]["sendable"] is (row["offer"]["status"] == "approved")
             assert row["offer_status"] == row["offer"]["status"]
+
+
+def test_sendable_follows_status_across_all_three_decisions(analyzed):
+    """قراردادِ `sendable` روی هر سه وضعیت — نه فقط وقتی اتفاقاً آفری هست."""
+    r = client.put("/api/v1/margin-floor", json={"margin_floor_bp": 1_000})
+    assert r.status_code == 200
+    r = client.put("/api/v1/offer-policy", json={
+        "ladder_bp": [500, 1000, 1500],
+        "full_price_high_bp": 9_900, "full_price_low_bp": 9_500, "full_price_min_lines": 2,
+    })
+    assert r.status_code == 200, r.text
+    try:
+        run = client.post("/api/v1/ops/jobs/opportunity_generation/run").json()
+        assert run["status"] == "succeeded", run
+        items = client.get("/api/v1/opportunities?limit=200").json()["items"]
+        with_offer = [row for row in items if row["offer"] and row["offer"]["status"] == "suggested"]
+        assert len(with_offer) >= 2, "با این نردبان باید پیشنهادِ تخفیف وجود داشته باشد"
+        assert all(row["offer"]["sendable"] is False for row in with_offer)
+
+        approved = client.post(f"/api/v1/opportunities/{with_offer[0]['id']}/offer/approve", json={}).json()
+        rejected = client.post(f"/api/v1/opportunities/{with_offer[1]['id']}/offer/reject", json={}).json()
+        assert approved["status"] == "approved" and approved["sendable"] is True
+        assert rejected["status"] == "rejected" and rejected["sendable"] is False
+
+        fresh = {row["id"]: row for row in client.get("/api/v1/opportunities?limit=200").json()["items"]}
+        assert fresh[with_offer[0]["id"]]["offer_status"] == "approved"
+        assert fresh[with_offer[0]["id"]]["offer"]["sendable"] is True
+        assert fresh[with_offer[1]["id"]]["offer"]["sendable"] is False
+    finally:
+        client.put("/api/v1/offer-policy", json={"ladder_bp": []})
+        client.put("/api/v1/margin-floor", json={"margin_floor_bp": None})

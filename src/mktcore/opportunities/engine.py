@@ -530,7 +530,10 @@ def _full_price_tier_by_customer_key(
                 return {}
             rows = session.execute(
                 select(CustomerFeature.customer_id, CustomerFeature.full_price_share_bp,
-                       CustomerFeature.n_lines).where(
+                       # کمینه‌ی خطوط روی خطوطِ **مبنای سهم** (کلِ دفتر کل) اعمال می‌شود،
+                       # نه خطوطِ همین آپلود؛ وگرنه مشتریِ ۴۰خطی با ۲ خط در فایلِ این
+                       # ماه «نامعلوم» می‌شد.
+                       func.coalesce(CustomerFeature.full_price_lines, CustomerFeature.n_lines)).where(
                     CustomerFeature.business_id == business_id,
                     CustomerFeature.as_of_date == latest,
                     CustomerFeature.customer_id.in_(sorted(set(id_of.values()))),

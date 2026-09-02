@@ -312,16 +312,27 @@ def pick_rung(
     return None
 
 
+OFFER_BASIS_NAME = "name"          # کالا یا دسته، با کلیدِ نام
+OFFER_BASIS_CUSTOMER = "customer"  # سبدِ خودِ مشتری
+
+
 def _offer_margin_bp(candidate: OpportunityCandidate, ctx: dict) -> tuple[int | None, str]:
-    """مبنای حاشیه برای سقفِ تخفیف: کالا اگر مشخص است، وگرنه سبدِ خودِ مشتری.
+    """مبنای حاشیه برای سقفِ تخفیف: کالا/دسته اگر نامش هست، وگرنه سبدِ خودِ مشتری.
 
     فرصتِ بی‌کالا (نجات از ریزش، بازگشت) تخفیف را روی هرچه مشتری بخرد اعمال
     می‌کند؛ پس مبنای درست حاشیه‌ی وزنیِ خریدهای همان مشتری است — نه یک عدد
-    سراسری. مبنا در متنِ شاهد گفته می‌شود.
+    سراسری. مبنا و کلیدش روی نامزد می‌ماند تا **تأیید همان را بازخوانی کند**:
+    فرصتِ «شکاف دسته» `product_id` ندارد ولی نامِ دسته دارد؛ بازخوانی با
+    `product_id` آن را به مبنای مشتری می‌انداخت و تأییدِ درست را رد می‌کرد.
     """
     if candidate.product_name:
-        return _product_margin_bp(candidate, ctx), "بر پایه‌ی حاشیه‌ی کالا"
+        margin = _product_margin_bp(candidate, ctx)
+        candidate.offer_margin_basis = OFFER_BASIS_NAME
+        candidate.offer_margin_key = candidate.product_name
+        return margin, "بر پایه‌ی حاشیه‌ی کالا"
     margin = (ctx.get("customer_margin_bp_of") or {}).get(candidate.customer_key)
+    candidate.offer_margin_basis = OFFER_BASIS_CUSTOMER
+    candidate.offer_margin_key = None
     return (None if margin is None else int(margin)), "بر پایه‌ی حاشیه‌ی خریدهای خودِ مشتری"
 
 
@@ -502,6 +513,8 @@ def apply_filters(
 
 __all__ = [
     "FILTER_CHAIN",
+    "OFFER_BASIS_CUSTOMER",
+    "OFFER_BASIS_NAME",
     "pick_rung",
     "post_discount_margin_bp",
     "filter_operator_capacity",

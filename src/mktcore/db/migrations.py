@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("mktcore.db.migrations")
 
 # نسخه‌ی جاری طرح‌واره‌ی canonical. با افزودن هر مهاجرت، یک عدد بالا می‌رود.
-CANONICAL_SCHEMA_VERSION = 15
+CANONICAL_SCHEMA_VERSION = 16
 
 _MIGRATION_TABLE = "schema_migrations"
 
@@ -265,6 +265,26 @@ def _migration_0015_create_offer_ledger(conn: Connection) -> None:
             conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {column} {ddl_type}")
 
 
+def _migration_0016_offer_margin_basis(conn: Connection) -> None:
+    """مبنای حاشیه‌ی پیشنهاد و شمارِ خطوطِ سهمِ تمام‌قیمت — سه ستونِ nullable.
+
+    بازبینیِ خصمانه نشان داد تأییدِ آفر حاشیه را با مبنایی جز مبنای موتور
+    بازخوانی می‌کرد (فرصتِ «شکاف دسته» `product_id` ندارد ولی نامِ دسته دارد).
+    مبنا حالا روی خودِ ردیف می‌ماند.
+    """
+    added_columns = (
+        ("opportunity_offers", "margin_basis", "VARCHAR(16)"),
+        ("opportunity_offers", "margin_key", "VARCHAR(255)"),
+        ("customer_features", "full_price_lines", "INTEGER"),
+    )
+    for table, column, ddl_type in added_columns:
+        existing = {
+            row[1] for row in conn.exec_driver_sql(f"PRAGMA table_info({table})")
+        }
+        if column not in existing:
+            conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {column} {ddl_type}")
+
+
 _MIGRATIONS: tuple[tuple[int, str, Callable[[Connection], None]], ...] = (
     (1, "create_canonical_tables", _migration_0001_create_canonical_tables),
     (2, "create_opportunity_tables", _migration_0002_create_opportunity_tables),
@@ -281,6 +301,7 @@ _MIGRATIONS: tuple[tuple[int, str, Callable[[Connection], None]], ...] = (
     (13, "create_job_runs", _migration_0013_create_job_runs),
     (14, "create_import_quarantine", _migration_0014_create_import_quarantine),
     (15, "create_offer_ledger", _migration_0015_create_offer_ledger),
+    (16, "offer_margin_basis", _migration_0016_offer_margin_basis),
 )
 
 

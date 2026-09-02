@@ -600,6 +600,10 @@ def send_campaign_sms(campaign_id: int, req: SendCampaignRequest) -> dict:
                     member.exposure_at = stamp
                     member.exposure_date = today
                     member.exposure_channel = EXPOSURE_CHANNEL_SMS
+                # مهرِ آفر جدا از «اولین تماس»: عضوی که اول فهرستش دانلود شده و
+                # بعد با تخفیفِ تأییدشده پیامک گرفته، باید پله‌ی واقعاً ارسال‌شده
+                # را داشته باشد؛ وگرنه در سنجش، شاهدِ بازوی بی‌تخفیف می‌شود.
+                if draft["offer_bp"] is not None:
                     member.offer_discount_bp = draft["offer_bp"]
 
         session.flush()
@@ -713,7 +717,10 @@ def _send_drafts(
             "customer_id": customer_id,
             "phone": normalize_phone(customer.phone_e164) if customer else None,
             "text": text,
-            "offer_bp": offer_bp,
+            # پله‌ای که **واقعاً در متن رفت** — نه هر آفرِ تأییدشده‌ای. قالبِ
+            # بی‌`{تخفیف}` یعنی مشتری تخفیفی ندیده و نباید مهرِ آفر بخورد؛ وگرنه
+            # سنجه‌ی آمادگی مشاهده‌هایی می‌شمارد که هرگز اتفاق نیفتاده‌اند.
+            "offer_bp": offer_bp if (needs_offer and not blocked_by_offer) else None,
             "blocked_by_offer": blocked_by_offer,
         })
     return drafts
@@ -744,8 +751,15 @@ def _export_rows(session, campaign_id: int, members: list[CampaignMember]) -> li
     rows: list[dict] = []
     for member in sorted(members, key=lambda m: -(m.expected_value_rial or 0)):
         customer = customers.get(member.customer_id)
-        for _, kind, action, reason, message, due, value, offer_bp, offer_status in (
-            by_customer.get(member.customer_id, [])
+        # فرصتِ **برگزیده‌ی** عضو همان است که مسیرِ پیامک انتخاب می‌کند
+        # (بیشینه‌ی ارزش، با شکستِ تساویِ قطعی) — فقط آفرِ همان روی عضو مهر می‌خورد،
+        # نه اولین ردیفِ approvedی که SQLite برگرداند.
+        member_rows = sorted(
+            by_customer.get(member.customer_id, []),
+            key=lambda r: (-int(r[6] or 0), r[1] or ""),
+        )
+        for index, (_, kind, action, reason, message, due, value, offer_bp, offer_status) in (
+            enumerate(member_rows)
         ):
             # همان قاعده‌ی مسیرِ پیامک: `{تخفیف}` فقط از آفرِ **تأییدشده** پر
             # می‌شود. در فایلِ انسانی، نبودِ تأیید پنهان نمی‌شود — صریح نوشته
@@ -755,7 +769,13 @@ def _export_rows(session, campaign_id: int, members: list[CampaignMember]) -> li
                 message or "",
                 {"تخفیف": f"{int(offer_bp) / 100:g}٪" if approved else "(بدون تخفیفِ تأییدشده)"},
             )
-            if approved and member.offer_discount_bp is None:
+            # مهرِ آفرِ عضو: فقط از فرصتِ برگزیده، و هرگز روی مهرِ پیامکی
+            # نمی‌نویسد — پیامک می‌داند چه رفته، اکسل فقط می‌داند چه پیشنهاد شد.
+            if (
+                approved and index == 0
+                and member.exposure_channel != EXPOSURE_CHANNEL_SMS
+                and member.offer_discount_bp is None
+            ):
                 member.offer_discount_bp = int(offer_bp)
             rows.append({
                 "مشتری": (customer.display_name if customer else None) or "—",
