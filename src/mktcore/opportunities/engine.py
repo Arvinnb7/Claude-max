@@ -55,6 +55,7 @@ from .generators import (
     generate_candidates,
     generate_whale_relationship,
 )
+from .offers import upsert_offer
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -215,6 +216,9 @@ def build_context(
     margin_floor_bp: int | None = None,
     margin_by_product: dict[str, int] | None = None,
     daily_capacity: int | None = None,
+    offer_ladder_bp: tuple[int, ...] | None = None,
+    full_price_tier_of: dict[str, str | None] | None = None,
+    customer_margin_bp_of: dict[str, int] | None = None,
 ) -> dict:
     """ساخت زمینه‌ی فیلترها از آنچه **واقعاً** در دست است.
 
@@ -238,6 +242,12 @@ def build_context(
         # می‌کند. حدس‌زدنِ یک سقفِ پیش‌فرض یعنی قیچی‌کردنِ فرصت‌های واقعی با
         # عددی که هیچ‌کس نگفته است.
         "daily_capacity": daily_capacity,
+        # نردبانِ تخفیف (§۲۰.۳). `None` یعنی کاربر نردبانی نگفته و فیلترِ آفر
+        # همان «بررسی نشد» امروز را ثبت می‌کند — هیچ پله‌ای حدس زده نمی‌شود.
+        "offer_ladder_bp": tuple(offer_ladder_bp) if offer_ladder_bp else None,
+        "full_price_tier_of": full_price_tier_of or {},
+        # حاشیه‌ی سبدِ خودِ مشتری — مبنای سقفِ تخفیف وقتی فرصت کالای مشخصی ندارد
+        "customer_margin_bp_of": customer_margin_bp_of or {},
         "has_inventory_data": False,   # هیچ مسیر ورودِ موجودی وجود ندارد
         # ⚠️ عمداً `False` می‌ماند، حتی حالا که دفترِ انصراف وجود دارد.
         # دفترِ انصراف می‌گوید **چه کسی «نه» گفته**، نه اینکه چه کسی «بله» گفته.
@@ -299,12 +309,25 @@ def _run_engine_locked(
     )
     uplift_table = _load_uplift_table(db_path)
     floor_bp, margins, capacity = _policy_settings(business_slug, db_path)
+    ladder, tier_thresholds = _offer_policy(business_slug, db_path)
+    # طبقه‌ی مشتری فقط وقتی خوانده می‌شود که نردبانی باشد؛ بدون نردبان، اجرا
+    # بیت‌به‌بیت مثل قبل است.
+    tier_of = _full_price_tier_by_customer_key(
+        candidates, business_slug=business_slug, db_path=db_path,
+        thresholds=tier_thresholds,
+    ) if ladder else {}
+    customer_margins = _customer_margin_by_key(
+        candidates, business_slug=business_slug, db_path=db_path,
+    ) if ladder else {}
     ctx = build_context(
         clean,
         consent_denied=_opted_out_keys(business_slug, db_path),
         margin_floor_bp=floor_bp,
         margin_by_product=margins,
         daily_capacity=capacity,
+        offer_ladder_bp=ladder,
+        full_price_tier_of=tier_of,
+        customer_margin_bp_of=customer_margins,
     )
     ctx["uplift_table"] = uplift_table
     # حالت چرخه‌ی عمر پیش از فیلتر لازم است، چون فیلترِ اثر بر پایه‌ی سلولِ
@@ -416,6 +439,111 @@ def _load_uplift_table(db_path: Path | None):
     except Exception:  # noqa: BLE001 - یادگیری نباید تولید فرصت را بخواباند
         logger.exception("ساخت جدول اثر ناموفق بود؛ رتبه‌بندی مثل قبل ادامه می‌دهد")
         return None
+
+
+def _offer_policy(business_slug: str, db_path: Path | None) -> tuple[tuple[int, ...] | None, dict]:
+    """نردبانِ تخفیف و آستانه‌های طبقه — تنظیمِ کاربر. جدا از `_policy_settings`
+    تا امضای سه‌تاییِ آن (که تست‌ها unpack می‌کنند) دست نخورد.
+
+    شکست ⇒ `(None, پیش‌فرض‌ها)`: بدون نردبان، فیلترِ آفر همان «بررسی نشد» را
+    ثبت می‌کند.
+    """
+    from mktcore.features.discount import (
+        DEFAULT_HIGH_BP,
+        DEFAULT_LOW_BP,
+        DEFAULT_MIN_LINES,
+    )
+
+    defaults = {"high_bp": DEFAULT_HIGH_BP, "low_bp": DEFAULT_LOW_BP, "min_lines": DEFAULT_MIN_LINES}
+    try:
+        from mktcore.settings_store import full_price_thresholds, offer_ladder_bp
+
+        with session_scope(db_path) as session:
+            business_id = resolve_business_id(session, business_slug)
+            if business_id is None:
+                return None, defaults
+            thresholds = full_price_thresholds(session, business_id)
+            thresholds.pop("configured", None)
+            return offer_ladder_bp(session, business_id), thresholds
+    except Exception:  # noqa: BLE001 - نبودِ سیاست نباید موتور را بخواباند
+        logger.debug("سیاستِ آفر در دسترس نبود؛ فیلتر آفر رد شد", exc_info=True)
+        return None, defaults
+
+
+def _customer_margin_by_key(
+    candidates: list[OpportunityCandidate],
+    *,
+    business_slug: str,
+    db_path: Path | None,
+) -> dict[str, int]:
+    """کلید خامِ مشتری → حاشیه‌ی وزنیِ خریدهای خودش (پایه‌ی هزارم).
+
+    مبنای سقفِ تخفیف برای فرصت‌های بی‌کالا (نجات از ریزش، بازگشت). مشتریِ بدون
+    پوششِ کاملِ بها اینجا نیست و فیلتر برایش «بررسی نشد» ثبت می‌کند.
+    """
+    keys = {c.customer_key for c in candidates if c.customer_key and not c.product_name}
+    if not keys:
+        return {}
+    try:
+        from mktcore.costs.register import margin_by_customer
+
+        with session_scope(db_path) as session:
+            business_id = resolve_business_id(session, business_slug)
+            if business_id is None:
+                return {}
+            id_of = customer_ids_by_raw_key(session, business_id, keys)
+            margins = margin_by_customer(session, business_id)
+        return {key: margins[cid] for key, cid in id_of.items() if cid in margins}
+    except Exception:  # noqa: BLE001 - نبودِ حاشیه نباید موتور را بخواباند
+        logger.exception("خواندن حاشیه‌ی مشتری ناموفق بود")
+        return {}
+
+
+def _full_price_tier_by_customer_key(
+    candidates: list[OpportunityCandidate],
+    *,
+    business_slug: str,
+    db_path: Path | None,
+    thresholds: dict,
+) -> dict[str, str | None]:
+    """کلید خامِ مشتری → طبقه‌ی «تمام‌قیمت‌خری» از آخرین عکسِ ویژگی.
+
+    مشتریِ بدون عدد (فایل بدون ستون تخفیف، یا خطوطِ کم) `None` می‌گیرد و فیلتر
+    برایش «بررسی نشد» ثبت می‌کند — نه «تمام‌قیمت» و نه «وابسته به تخفیف».
+    """
+    from mktcore.features.discount import full_price_tier
+
+    keys = {c.customer_key for c in candidates if c.customer_key}
+    if not keys:
+        return {}
+    try:
+        with session_scope(db_path) as session:
+            business_id = resolve_business_id(session, business_slug)
+            if business_id is None:
+                return {}
+            id_of = customer_ids_by_raw_key(session, business_id, keys)
+            latest = session.scalar(
+                select(func.max(CustomerFeature.as_of_date))
+                .where(CustomerFeature.business_id == business_id)
+            )
+            if latest is None:
+                return {}
+            rows = session.execute(
+                select(CustomerFeature.customer_id, CustomerFeature.full_price_share_bp,
+                       CustomerFeature.n_lines).where(
+                    CustomerFeature.business_id == business_id,
+                    CustomerFeature.as_of_date == latest,
+                    CustomerFeature.customer_id.in_(sorted(set(id_of.values()))),
+                )
+            ).all()
+        tier_of_id = {
+            int(cid): full_price_tier(share, n_lines, **thresholds)
+            for cid, share, n_lines in rows
+        }
+        return {key: tier_of_id.get(cid) for key, cid in id_of.items()}
+    except Exception:  # noqa: BLE001 - نبودِ طبقه نباید موتور را بخواباند
+        logger.exception("خواندن طبقه‌ی خرید تمام‌قیمت ناموفق بود")
+        return {}
 
 
 def _lifecycle_by_customer_key(
@@ -618,6 +746,10 @@ def _persist(
             refreshed += 1
 
         _replace_factors(session, opportunity.id, candidate)
+        # پیشنهادِ تخفیف در جدولِ جدا می‌نشیند — نه در `fields` (که هر اجرا
+        # بازنویسی می‌شود) و نه در عامل‌ها (که هر اجرا پاک می‌شوند). تصمیمِ انسان
+        # آنجا زنده می‌ماند.
+        upsert_offer(session, business_id, opportunity, candidate, run_id)
 
     session.flush()
     return created, refreshed, seen

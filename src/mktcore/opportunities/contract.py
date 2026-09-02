@@ -83,6 +83,14 @@ class OpportunityCandidate:
     phone: str | None = None
     due_date: str | None = None
     expires_at: str | None = None
+    # پیشنهادِ تخفیف (§۲۰.۳) — فقط `filter_offer_policy` پرش می‌کند. `None` یعنی
+    # «بررسی نشد»؛ صفر یعنی تصمیمِ صریحِ «بدون تخفیف». هیچ‌کدام وارد `fields`ِ
+    # فرصت نمی‌شوند؛ در `opportunity_offers` می‌نشینند تا تأییدِ انسان با
+    # اجرای بعدی پاک نشود.
+    suggested_discount_bp: int | None = None
+    offer_tier: str | None = None
+    offer_margin_bp: int | None = None
+    offer_floor_bp: int | None = None
     factors: list[OpportunityFactorNote] = field(default_factory=list)
 
     def dedupe_key(self) -> str:

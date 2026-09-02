@@ -248,6 +248,39 @@ def margin_by_product(session: Session, business_id: int) -> dict[str, int]:
     return out
 
 
+def margin_by_customer(session: Session, business_id: int) -> dict[int, int]:
+    """حاشیه‌ی وزنیِ خریدهای **خودِ مشتری** به پایه‌ی هزارم، با کلیدِ `customer_id`.
+
+    برای فرصت‌هایی که کالای مشخصی ندارند (نجات از ریزش، بازگشت) تخفیف روی
+    هرچه مشتری بخرد اعمال می‌شود؛ پس مبنای درستِ سقفِ تخفیف، حاشیه‌ی سبدِ
+    معمولِ همان مشتری است. فقط مشتریانی که **همه‌ی** خطوطشان بها دارند وارد
+    می‌شوند — همان قاعده‌ی `margin_by_product`.
+    """
+    rows = session.execute(
+        select(
+            OrderLine.customer_id,
+            func.count(OrderLine.id),
+            func.count(OrderLine.cost_rial),
+            func.sum(OrderLine.revenue_rial),
+            func.sum(OrderLine.gross_profit_rial),
+        )
+        .where(
+            OrderLine.business_id == business_id,
+            OrderLine.is_return.is_(False),
+            OrderLine.customer_id.isnot(None),
+        )
+        .group_by(OrderLine.customer_id)
+    ).all()
+    out: dict[int, int] = {}
+    for customer_id, total, with_cost, revenue, profit in rows:
+        if not total or int(with_cost or 0) != int(total):
+            continue
+        margin = _margin_bp(int(revenue or 0), int(profit or 0))
+        if margin is not None:
+            out[int(customer_id)] = margin
+    return out
+
+
 def margin_lookup(session: Session, business_id: int) -> dict[str, int]:
     """همان حاشیه‌ها، ولی با **هر نامی که ممکن است در یک پیشنهاد بیاید**.
 
@@ -300,6 +333,7 @@ __all__ = [
     "cost_coverage",
     "import_costs",
     "load_cost_lookups",
+    "margin_by_customer",
     "margin_by_product",
     "margin_lookup",
 ]

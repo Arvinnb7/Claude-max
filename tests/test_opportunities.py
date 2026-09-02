@@ -26,6 +26,7 @@ from mktcore.db.models import (  # noqa: E402
     Opportunity,
     OpportunityEvent,
     OpportunityFactor,
+    OpportunityOffer,
     OpportunityRun,
 )
 from mktcore.db.repo_import import write_import  # noqa: E402
@@ -365,8 +366,14 @@ def test_engine_returns_none_without_a_business(tmp_path, analyzed):
     assert result is None
 
 
-def test_no_offer_or_discount_is_ever_generated(tmp_path, analyzed):
-    """سیستم حق ندارد تخفیف پیشنهاد کند — حساسیت قیمت اندازه‌گیری نشده است."""
+def test_without_a_ladder_no_offer_or_discount_is_ever_generated(tmp_path, analyzed):
+    """بدون نردبانِ تنظیم‌شده، سیستم تخفیف پیشنهاد نمی‌کند — رفتارِ پیش از §۲۰.۳.
+
+    این تست عمداً **باریک** شد نه حذف: قبلاً می‌گفت «هرگز»، حالا می‌گوید «تا
+    وقتی کاربر نردبانی نگفته، هرگز». نسخه‌ی با نردبان و قاعده‌ی «بدون تأییدِ
+    انسان ارسال نمی‌شود» در `test_offer_send_gate.py` و `test_offer_approval.py`
+    است.
+    """
     clean, bundle = analyzed
     db = _prepare(tmp_path, analyzed)
     run_opportunity_engine(bundle, clean, db_path=db)
@@ -375,8 +382,10 @@ def test_no_offer_or_discount_is_ever_generated(tmp_path, analyzed):
         policies = session.scalars(
             select(OpportunityFactor).where(OpportunityFactor.code == "offer_policy")
         ).all()
+        offers = session.scalar(select(func.count()).select_from(OpportunityOffer))
     assert policies
     assert all(p.outcome == OUTCOME_SKIP for p in policies)
+    assert offers == 0, "بدون نردبان هیچ ردیفِ آفری نباید ساخته شود"
 
 
 def test_causal_fields_stay_null(tmp_path, analyzed):

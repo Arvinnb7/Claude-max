@@ -21,7 +21,7 @@ import json
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 
@@ -52,6 +52,7 @@ from mktcore.ingest.quality import build_quality_dimensions, overall_quality
 from mktcore.lifecycle import STATE_LABELS_FA
 from mktcore.money import money_payload
 from mktcore.opportunities.contract import VALUE_RELATIONSHIP
+from mktcore.opportunities.offers import offers_by_opportunity
 from mktcore.security import require_token
 
 logger = logging.getLogger("mktcore.api.v1")
@@ -902,7 +903,8 @@ def list_opportunities(
         ).all()
 
         customer_names = _customer_names(session, {o.customer_id for o in rows if o.customer_id})
-        items = [_opportunity_row(o, customer_names) for o in rows]
+        offers = offers_by_opportunity(session, {o.id for o in rows})
+        items = [_opportunity_row(o, customer_names, offers) for o in rows]
 
         counts = dict(session.execute(
             select(Opportunity.status, func.count())
@@ -967,7 +969,9 @@ def get_opportunity(opportunity_id: int) -> dict:
         names = _customer_names(
             session, {opportunity.customer_id} if opportunity.customer_id else set()
         )
-        payload = _opportunity_row(opportunity, names)
+        payload = _opportunity_row(
+            opportunity, names, offers_by_opportunity(session, {opportunity_id}),
+        )
         payload["factors"] = [
             {
                 "code": f.code,
@@ -1528,6 +1532,43 @@ _TRANSITIONS = {
 }
 
 
+class OfferDecision(BaseModel):
+    decided_by: str | None = Field(default=None, max_length=128)
+    note_fa: str | None = Field(default=None, max_length=2_000)
+
+
+@router.post(
+    "/opportunities/{opportunity_id}/offer/{decision}",
+    dependencies=[Depends(require_token)],
+)
+def decide_opportunity_offer(
+    opportunity_id: int, decision: str, request: Request, body: OfferDecision | None = None,
+) -> dict:
+    """تأیید یا ردِ تخفیفِ پیشنهادی (§۲۰.۳) — تنها راهی که تخفیف وارد ارسال می‌شود.
+
+    تأیید در همین لحظه حاشیه را دوباره حساب می‌کند؛ اگر پله زیرِ کفِ امروز باشد
+    رد می‌شود (۴۰۹) و ردیف «کهنه» می‌خورد. با توکنِ مشترک، `decided_by` فقط
+    متنی است که درخواست‌دهنده نوشته — نه هویتِ واقعی؛ ردیفِ ممیزی همین را
+    صادقانه ثبت می‌کند.
+    """
+    from mktcore.opportunities.offers import OfferDecisionError, decide_offer
+
+    from .audit_context import actor_fa, client_ip
+
+    payload = body or OfferDecision()
+    try:
+        return decide_offer(
+            opportunity_id, decision,
+            decided_by=payload.decided_by, note_fa=payload.note_fa,
+            actor_label=f"{actor_fa(request)} — {payload.decided_by or 'کاربر'}",
+            source_ip=client_ip(request),
+        )
+    except OfferDecisionError as exc:
+        raise HTTPException(
+            status_code=409 if exc.conflict else 404, detail=exc.reason_fa,
+        ) from exc
+
+
 @router.post(
     "/opportunities/{opportunity_id}/{action}",
     dependencies=[Depends(require_token)],
@@ -1606,8 +1647,17 @@ def _customer_names(session, customer_ids: set[int]) -> dict[int, str]:
     return {cid: name for cid, name in rows if name}
 
 
-def _opportunity_row(opportunity: Opportunity, customer_names: dict[int, str]) -> dict:
+def _opportunity_row(
+    opportunity: Opportunity, customer_names: dict[int, str],
+    offers: dict[int, Any] | None = None,
+) -> dict:
+    from mktcore.opportunities.offers import offer_payload
+
+    offer = offer_payload((offers or {}).get(opportunity.id))
     return {
+        # §۲۰.۳ — پیشنهادِ تخفیف و تصمیمِ انسان. `None` یعنی پیشنهادی نیست.
+        "offer": offer,
+        "offer_status": offer["status"] if offer else None,
         "id": opportunity.id,
         "kind": opportunity.kind,
         "title": opportunity.title_fa,

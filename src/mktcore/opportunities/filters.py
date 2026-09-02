@@ -153,6 +153,22 @@ def filter_inventory(candidate: OpportunityCandidate, ctx: dict) -> OpportunityF
     )
 
 
+def _product_margin_bp(candidate: OpportunityCandidate, ctx: dict) -> int | None:
+    """حاشیه‌ی کالای این پیشنهاد، با هر نامی که ممکن است در پیشنهاد بیاید.
+
+    نامِ پیشنهاد ممکن است نمایشی باشد و دفتر کل نامِ نرمال‌شده را بشناسد؛ نبودِ
+    تطبیق نباید به «حاشیه محاسبه نشده» ترجمه شود وقتی فقط شکلِ نوشتاری فرق
+    دارد. مشترک بین کف حاشیه و نردبان تخفیف تا دو تعریف از «حاشیه‌ی کالا» از هم
+    فاصله نگیرند.
+    """
+    margins = ctx.get("margin_by_product") or {}
+    name = candidate.product_name
+    margin_bp = margins.get(name)
+    if margin_bp is None and name:
+        margin_bp = margins.get(normalize_product_name(name))
+    return None if margin_bp is None else int(margin_bp)
+
+
 def filter_margin_floor(candidate: OpportunityCandidate, ctx: dict) -> OpportunityFactorNote:
     """کف حاشیه — به دو چیز نیاز دارد: بهای تمام‌شده **و** کفِ تعیین‌شده.
 
@@ -172,14 +188,7 @@ def filter_margin_floor(candidate: OpportunityCandidate, ctx: dict) -> Opportuni
             "بهای تمام‌شده در داده هست، ولی کف حاشیه‌ی قابل‌قبول تعیین نشده؛ "
             "پس این پیشنهاد از نظر حاشیه بررسی نشده است.",
         )
-    margins = ctx.get("margin_by_product") or {}
-    name = candidate.product_name
-    # نامِ پیشنهاد ممکن است نمایشی باشد و دفتر کل نامِ نرمال‌شده را بشناسد؛
-    # نبودِ تطبیق نباید به «حاشیه محاسبه نشده» ترجمه شود وقتی فقط شکلِ نوشتاری
-    # فرق دارد.
-    margin_bp = margins.get(name)
-    if margin_bp is None and name:
-        margin_bp = margins.get(normalize_product_name(name))
+    margin_bp = _product_margin_bp(candidate, ctx)
     if margin_bp is None:
         return OpportunityFactorNote(
             "margin_floor", FILTER_CODES["margin_floor"], OUTCOME_SKIP,
@@ -268,15 +277,142 @@ def filter_conflict(candidate: OpportunityCandidate, ctx: dict) -> OpportunityFa
     )
 
 
-def filter_offer_policy(candidate: OpportunityCandidate, ctx: dict) -> OpportunityFactorNote:
-    """سیاست آفر: تخفیف پیشنهادی توسط سیستم تولید نمی‌شود.
+# ------------------------------------------------------------ نردبان تخفیف (§۲۰.۳)
+_BP = 10_000
 
-    هیچ‌جای این موتور تخفیف پیشنهاد نمی‌دهد، چون حساسیت قیمت اندازه‌گیری نشده و
-    عددِ حدسی روی تخفیف مستقیماً درآمد را می‌سوزاند.
+_NO_LADDER_NOTE_FA = (
+    "هیچ تخفیفی پیشنهاد نشده است؛ نردبانِ تخفیف تعیین نشده و عدد حدسی مجاز نیست."
+)
+
+
+def post_discount_margin_bp(margin_bp: int, discount_bp: int) -> int | None:
+    """حاشیه‌ی **پس از** تخفیف، به پایه‌ی هزارم.
+
+    قیمت ۱۰۰، بها ۷۶ ⇒ حاشیه ۲۴٪. با ۵٪ تخفیف قیمت ۹۵ می‌شود و سود ۱۹ ⇒
+    حاشیه‌ی واقعی ۱۹/۹۵ = ۲۰٪، نه ۲۴ − ۵ = ۱۹٪. فرمول: (m − d) / (1 − d).
+    این تفاوتِ کوچک دقیقاً روی مرزِ کف تصمیم را عوض می‌کند، پس با تستِ مرزی پین
+    شده است.
     """
+    if discount_bp >= _BP:
+        return None
+    return round((margin_bp - discount_bp) * _BP / (_BP - discount_bp))
+
+
+def pick_rung(
+    ladder: tuple[int, ...] | list[int], margin_bp: int, floor_bp: int,
+) -> int | None:
+    """**کوچک‌ترین** پله‌ای که حاشیه‌ی پس از تخفیف را روی کف نگه دارد.
+
+    §۲۰.۱: «کمترین مشوقِ مؤثر». پله‌های بالاتر تا یادگیری با گروه کنترل موکول‌اند.
+    """
+    for rung in sorted(int(r) for r in ladder):
+        post = post_discount_margin_bp(margin_bp, rung)
+        if post is not None and post >= floor_bp:
+            return rung
+    return None
+
+
+def _offer_margin_bp(candidate: OpportunityCandidate, ctx: dict) -> tuple[int | None, str]:
+    """مبنای حاشیه برای سقفِ تخفیف: کالا اگر مشخص است، وگرنه سبدِ خودِ مشتری.
+
+    فرصتِ بی‌کالا (نجات از ریزش، بازگشت) تخفیف را روی هرچه مشتری بخرد اعمال
+    می‌کند؛ پس مبنای درست حاشیه‌ی وزنیِ خریدهای همان مشتری است — نه یک عدد
+    سراسری. مبنا در متنِ شاهد گفته می‌شود.
+    """
+    if candidate.product_name:
+        return _product_margin_bp(candidate, ctx), "بر پایه‌ی حاشیه‌ی کالا"
+    margin = (ctx.get("customer_margin_bp_of") or {}).get(candidate.customer_key)
+    return (None if margin is None else int(margin)), "بر پایه‌ی حاشیه‌ی خریدهای خودِ مشتری"
+
+
+def filter_offer_policy(candidate: OpportunityCandidate, ctx: dict) -> OpportunityFactorNote:
+    """سیاست آفر: نردبانِ تخفیفِ قاعده‌مند با کفِ حاشیه‌ی سخت — §۲۰.۳.
+
+    ## قاعده‌ها، به ترتیب
+
+    1. **نردبان تعیین‌نشده ⇒ «بررسی نشد».** دقیقاً رفتارِ پیش از این گام: هیچ
+       تخفیفی پیشنهاد نمی‌شود و هیچ عددی حدس زده نمی‌شود.
+    2. **اقدامِ رابطه‌ای هرگز تخفیف نمی‌گیرد** (§۱۸.۵) — این مشتریان را به انتظارِ
+       تخفیف عادت ندهید.
+    3. **مشتریِ تمام‌قیمت‌خر ⇒ بدون تخفیف** (§۲۰.۳ بند ۲). طبقه‌ی میانی هم در گامِ
+       اول بدون تخفیف؛ فقط طبقه‌ی «وابسته به تخفیف» کاندیدِ پله است.
+    4. **طبقه‌ی نامعلوم / بها نیست / کف نیست / حاشیه‌ی کالا نیست ⇒ «بررسی نشد».**
+       نه «قبول»، نه رد.
+    5. **کوچک‌ترین** پله‌ای که حاشیه‌ی پس از تخفیف ≥ کف بماند؛ اگر هیچ پله‌ای نماند
+       ⇒ بدون تخفیف، با دلیل.
+
+    این فیلتر **هرگز رد نمی‌کند** و به `score_rial` دست نمی‌زند: تخفیف فقط
+    **پیشنهاد** است و بدون تأییدِ انسان (`opportunity_offers.status == approved`)
+    هیچ‌جا ارسال نمی‌شود.
+    """
+    code, label = "offer_policy", FILTER_CODES["offer_policy"]
+    ladder = ctx.get("offer_ladder_bp")
+    if not ladder:
+        return OpportunityFactorNote(code, label, OUTCOME_SKIP, _NO_LADDER_NOTE_FA)
+
+    def _no_discount(reason_fa: str, *, tier: str | None) -> OpportunityFactorNote:
+        candidate.suggested_discount_bp = 0
+        candidate.offer_tier = tier
+        return OpportunityFactorNote(code, label, OUTCOME_PASS, reason_fa, value_text="0٪")
+
+    if candidate.value_kind == VALUE_RELATIONSHIP:
+        return _no_discount(
+            "بدون تخفیف — اقدامِ رابطه‌ای عمداً بی‌آفر است (§۱۸.۵).", tier=None,
+        )
+
+    tier = (ctx.get("full_price_tier_of") or {}).get(candidate.customer_key)
+    if tier is None:
+        return OpportunityFactorNote(
+            code, label, OUTCOME_SKIP,
+            "طبقه‌ی خریدِ تمام‌قیمتِ این مشتری نامعلوم است (ستون تخفیف یا خطوطِ کافی "
+            "نیست)؛ پیشنهادی داده نشد.",
+        )
+    if tier == "high":
+        return _no_discount(
+            "این مشتری تمام‌قیمت می‌خرد؛ بدون تخفیف (§۲۰.۳ بند ۲).", tier=tier,
+        )
+    if tier != "low":
+        return _no_discount("طبقه‌ی میانی؛ در گامِ اول بدون تخفیف.", tier=tier)
+
+    if not ctx.get("has_cost_data"):
+        return OpportunityFactorNote(
+            code, label, OUTCOME_SKIP,
+            "بهای تمام‌شده در داده نیست؛ سقفِ تخفیف محاسبه‌شدنی نیست، پس پیشنهادی داده نشد.",
+        )
+    floor_bp = ctx.get("margin_floor_bp")
+    if floor_bp is None:
+        return OpportunityFactorNote(
+            code, label, OUTCOME_SKIP,
+            "کف حاشیه تعیین نشده است؛ بدون کف هیچ پله‌ای پیشنهاد نمی‌شود.",
+        )
+    margin_bp, basis_fa = _offer_margin_bp(candidate, ctx)
+    if margin_bp is None:
+        return OpportunityFactorNote(
+            code, label, OUTCOME_SKIP,
+            "حاشیه‌ی این کالا محاسبه نشده است؛ پیشنهادی داده نشد."
+            if candidate.product_name else
+            "این فرصت کالای مشخصی ندارد و حاشیه‌ی خریدهای خودِ مشتری هم محاسبه‌شدنی "
+            "نیست (پوششِ بها ناقص)؛ پیشنهادی داده نشد.",
+        )
+
+    candidate.offer_margin_bp = margin_bp
+    candidate.offer_floor_bp = int(floor_bp)
+    rung = pick_rung(ladder, margin_bp, int(floor_bp))
+    if rung is None:
+        return _no_discount(
+            f"هیچ پله‌ای کفِ حاشیه ({floor_bp / 100:g}٪) را حفظ نمی‌کند "
+            f"(حاشیه‌ی کالا {margin_bp / 100:g}٪)؛ بدون تخفیف.",
+            tier=tier,
+        )
+    candidate.suggested_discount_bp = rung
+    candidate.offer_tier = tier
+    post = post_discount_margin_bp(margin_bp, rung)
     return OpportunityFactorNote(
-        "offer_policy", FILTER_CODES["offer_policy"], OUTCOME_SKIP,
-        "هیچ تخفیفی پیشنهاد نشده است؛ حساسیت قیمت اندازه‌گیری نشده و عدد حدسی مجاز نیست.",
+        code, label, OUTCOME_PASS,
+        f"پیشنهادِ {rung / 100:g}٪ تخفیف — کوچک‌ترین پله‌ای که حاشیه‌ی پس از تخفیف "
+        f"({post / 100:g}٪، {basis_fa}) بالای کف ({floor_bp / 100:g}٪) می‌ماند. تا تأییدِ "
+        "انسان ارسال نمی‌شود.",
+        value_text=f"{rung / 100:g}٪",
     )
 
 
@@ -366,6 +502,8 @@ def apply_filters(
 
 __all__ = [
     "FILTER_CHAIN",
+    "pick_rung",
+    "post_discount_margin_bp",
     "filter_operator_capacity",
     "MIN_VALUE_DISPLAY",
     "RELATIONSHIP_CAP",

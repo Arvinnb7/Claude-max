@@ -1272,6 +1272,9 @@ class AuditEvent(Base):
 
     ACTION_CAMPAIGN_EXPORT = "campaign_export"
     ACTION_SESSION_EXPORT = "session_export"
+    # تصمیمِ انسان درباره‌ی تخفیف (§۲۰.۳) — تنها راهی که آفر وارد ارسال می‌شود
+    ACTION_OFFER_APPROVED = "offer_approved"
+    ACTION_OFFER_REJECTED = "offer_rejected"
 
     ACTOR_TOKEN = "توکن‌دار"
     ACTOR_ANONYMOUS = "بدون توکن (نصب محافظت‌نشده)"
