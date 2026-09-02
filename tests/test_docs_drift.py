@@ -176,3 +176,47 @@ def test_the_security_doc_lists_the_guarded_routes_from_code():
     for key in EXTRA_GUARDED_ROUTES:
         path = key.split(" ", 1)[1]
         assert path in text, f"{path} در سند امنیت نیامده است"
+
+
+# ═══════════════════════════════════════ نردبان تخفیف و ممیزی (§۲۰.۳، §۳۱)
+_EXPERIMENTATION = _ROOT / "docs" / "revenue-intelligence" / "EXPERIMENTATION_GUIDE.md"
+_IMPLEMENTATION_STATUS = _ROOT / "docs" / "revenue-intelligence" / "IMPLEMENTATION_STATUS.md"
+
+
+def test_the_security_doc_names_every_audit_action():
+    """رویدادِ ممیزی‌ای که در سند امنیت نیامده، برای خواننده وجود ندارد."""
+    from mktcore.db.models import AuditEvent
+
+    text = _SECURITY.read_text(encoding="utf-8")
+    actions = [
+        value for name, value in vars(AuditEvent).items()
+        if name.startswith("ACTION_") and isinstance(value, str)
+    ]
+    assert actions
+    missing = [a for a in actions if a not in text]
+    assert not missing, f"این رویدادهای ممیزی در سند امنیت نیستند: {missing}"
+
+
+def test_the_experimentation_guide_states_the_approval_rule():
+    text = _EXPERIMENTATION.read_text(encoding="utf-8")
+    for fragment in ("holdout", "approved", "{تخفیف}", "(m − d) / (1 − d)", "phase5-readiness"):
+        assert fragment in text, f"«{fragment}» در راهنمای آزمایش نیست"
+
+
+def test_required_docs_count_in_status_matches_the_disk():
+    """«۶ از ۱۵» و «۴ از ۱۵» هم‌زمان در یک سند بودند و هیچ‌کدام درست نبود."""
+    required = [
+        "CURRENT_SYSTEM_AUDIT", "TARGET_ARCHITECTURE", "DATA_DICTIONARY",
+        "SOURCE_MAPPING_GUIDE", "FINANCIAL_CALCULATION_RULES", "IDENTITY_RESOLUTION",
+        "FEATURE_CATALOG", "OPPORTUNITY_ENGINE", "MODEL_CARDS", "EXPERIMENTATION_GUIDE",
+        "API_GUIDE", "OPERATIONS_RUNBOOK", "SECURITY_AND_PRIVACY",
+        "IMPLEMENTATION_STATUS", "RELEASE_NOTES",
+    ]
+    on_disk = sum((_ROOT / "docs" / "revenue-intelligence" / f"{n}.md").exists() for n in required)
+    text = _IMPLEMENTATION_STATUS.read_text(encoding="utf-8")
+    claims = set(re.findall(r"\*\*(\d+|[۰-۹]+) از ۱۵\*\*", text))
+    fa = "۰۱۲۳۴۵۶۷۸۹"
+    normalised = {"".join(str(fa.index(ch)) if ch in fa else ch for ch in c) for c in claims}
+    assert normalised == {str(on_disk)}, (
+        f"سند وضعیت می‌گوید {sorted(claims)} از ۱۵؛ روی دیسک {on_disk} سند هست"
+    )

@@ -12,14 +12,33 @@
 | فاز | عنوان سند | وضعیت | دروازه‌ی پذیرش |
 |---|---|---|---|
 | ۰ | حسابرسی و پایه‌ی ایمنی | ✅ کامل | ندارد |
-| ۱ | داده‌ی canonical و Customer 360 | 🔶 ~۶۰٪ | ✅ می‌گذرد (idempotent + آشتی) |
-| ۲ | موتور فرصت قطعی | 🔶 ~۸۰٪ | ✅ می‌گذرد (شواهد + بازتولیدپذیری) |
-| ۳ | کمپین حلقه‌بسته و آزمایش | 🔶 ~۹۵٪ | ✅ **می‌گذرد** — سود افزوده گزارش می‌شود |
-| ۴ | مدل‌های پیش‌بین | 🔶 ~۹۰٪ | ✅ **می‌گذرد** — دو مدل با holdout زمانی خط پایه را می‌برند |
-| ۵ | بهینه‌سازی علّی آفر و قیمت | 🔶 ~۲۰٪ | — |
-| ۶ | بهینه‌سازی عملیاتی | 🔶 ~۲۰٪ | — |
+| ۱ | داده‌ی canonical و Customer 360 | 🔶 ~۸۵٪ | ✅ می‌گذرد (idempotent + آشتی + قرنطینه) |
+| ۲ | موتور فرصت قطعی | 🔶 ~۹۰٪ | ✅ می‌گذرد (شواهد + بازتولیدپذیری + ظرفیت + نردبان تخفیف) |
+| ۳ | کمپین حلقه‌بسته و آزمایش | ✅ ~۹۵٪ | ✅ **می‌گذرد** — سود افزوده گزارش می‌شود |
+| ۴ | مدل‌های پیش‌بین | ✅ ~۹۰٪ | ✅ **می‌گذرد** — دو مدل با holdout زمانی خط پایه را می‌برند |
+| ۵ | بهینه‌سازی علّی آفر و قیمت | 🔶 ~۳۵٪ — **بخشِ پیش از داده** (§۲۰.۲، §۲۰.۳، سنجه‌ی آمادگی) ساخته شد؛ بقیه ⛔ منتظرِ داده | ⛔ دروازه‌ی داده باز نیست (`GET /api/v1/phase5-readiness`) |
+| ۶ | بهینه‌سازی عملیاتی | ✅ ~۹۰٪ | ندارد — کارها، صف مرده، مانیتورینگ، ظرفیت، قرنطینه |
 
-اسناد الزامی §۳۶: **۶ از ۱۵** ساخته شده.
+اسناد الزامی §۳۶: **۱۰ از ۱۵** ساخته شده.
+
+## این دور — نردبانِ تخفیف با کف حاشیه و تأیید دستی (§۲۰.۳)
+
+| گام | وضعیت | اثبات |
+|---|---|---|
+| S0 فیکسچرهای §۳۴.۳ + قطعی‌کردنِ گاردهای خطِ سرخ | `validated` | `test_golden_scenarios` (وفادار/وابسته به تخفیف)، `test_campaign_send` بدون skip |
+| S1 مهاجرت ۱۵: `opportunity_offers` + ستون‌های آفر | `validated` | `test_offer_ledger` (ارتقای v14 بدون دست‌خوردنِ ردیف) |
+| S2 سهمِ خریدِ تمام‌قیمت + طبقه + برچسبِ غیرعلّی | `validated` | `test_offer_tiers` |
+| S3 نردبان و آستانه‌ها (`/api/v1/offer-policy`) | `validated` | `test_offer_policy` |
+| S4 `filter_offer_policy` fail-closed با فرمولِ پس از تخفیف | `validated` | `test_offer_ladder_filter` (مرزِ ۲۴۰۰/۲۰۰۰/۵۰۰) |
+| S5 دفترِ آفر + تأیید/رد + ممیزی | `validated` | `test_offer_approval` |
+| S6 دروازه‌ی ارسال: `{تخفیف}` فقط از آفرِ مصوب | `validated` | `test_offer_send_gate` |
+| S7 UI: نردبان، نشان و تأیید روی کارت، پرونده‌ی مشتری | `implemented` — فرانت تستِ خودکار ندارد؛ `tsc`/`eslint`/`build` + قراردادِ API | `test_offer_policy::test_every_opportunity_row_carries_the_offer_contract` |
+| S8 اسناد | `validated` | `test_docs_drift` |
+| S9 سنجه‌ی آمادگیِ فاز ۵ + آستانه‌ی تنظیم‌پذیر | `validated` | `test_phase5_readiness` |
+
+قاعده‌ای که این دور رویش بنا شد: **سیستم فقط پیشنهاد می‌کند؛ هیچ تخفیفی بدون
+تأییدِ انسان ارسال نمی‌شود** — و این را نه یک پرچم، که خودِ مسیرِ ارسال تضمین
+می‌کند.
 
 ## تصحیح ادعاها — چه چیزی را غلط گزارش کرده بودم
 
@@ -428,25 +447,28 @@ grep -rn "campaign_outcomes" src/mktcore/opportunities/ src/mktcore/analysis/  �
 | دو کلید خام که به یک مشتری حل شده‌اند | نقض قید یکتای عکس ویژگی و از دست رفتن کل عکس‌برداری | جمع‌بندی در `_group_by_resolved_customer` |
 | نوشتن هزاران فرصت در هر اجرا | صندوقِ غیرقابل‌استفاده + کندی واقعی | سقف ۵۰۰ با **گزارش صریح** تعداد حذف‌شده |
 
-## اسناد الزامی سند (§۳۶) — ۴ از ۱۵
+## اسناد الزامی سند (§۳۶) — **۱۰ از ۱۵**
+
+> شمارشِ این جدول با `tests/test_docs_drift.py` به فایل‌های روی دیسک پین شده؛
+> نسخه‌ی قبلی هم‌زمان «۶ از ۱۵» و «۴ از ۱۵» می‌گفت و هیچ‌کدام درست نبود.
 
 | سند | وضعیت |
 |---|---|
-| `CURRENT_SYSTEM_AUDIT.md` | `validated` |
-| `TARGET_ARCHITECTURE.md` | `validated` |
+| `CURRENT_SYSTEM_AUDIT.md` | `validated` — عکسِ «پیش از ارتقا» |
+| `TARGET_ARCHITECTURE.md` | `validated` — تصمیم‌های فاز ۶ هنوز افزوده نشده |
 | `FINANCIAL_CALCULATION_RULES.md` | `validated` |
 | `IMPLEMENTATION_STATUS.md` | `validated` |
-| `DATA_DICTIONARY.md` | `not_started` |
-| `SOURCE_MAPPING_GUIDE.md` | `not_started` |
-| `IDENTITY_RESOLUTION.md` | `not_started` |
-| `FEATURE_CATALOG.md` | `not_started` |
-| `OPPORTUNITY_ENGINE.md` | `not_started` |
-| `MODEL_CARDS.md` | `not_started` — تا مدلی promote نشود، کارت مدل محتوایی ندارد |
-| `EXPERIMENTATION_GUIDE.md` | `not_started` |
-| `API_GUIDE.md` | `not_started` |
-| `OPERATIONS_RUNBOOK.md` | `not_started` |
-| `SECURITY_AND_PRIVACY.md` | `not_started` |
-| `RELEASE_NOTES.md` | `not_started` |
+| `FEATURE_CATALOG.md` | `validated` — با `test_docs_drift` پین شده |
+| `MODEL_CARDS.md` | `validated` — با `test_docs_drift` پین شده |
+| `EXPERIMENTATION_GUIDE.md` | `validated` — با `test_docs_drift` پین شده |
+| `OPERATIONS_RUNBOOK.md` | `validated` — با `test_docs_drift` پین شده |
+| `SECURITY_AND_PRIVACY.md` | `validated` — با `test_docs_drift` پین شده |
+| `RELEASE_NOTES.md` | `validated` |
+| `DATA_DICTIONARY.md` | `not_started` — منبعِ حقیقت: `db/models.py` |
+| `SOURCE_MAPPING_GUIDE.md` | `not_started` — منبعِ حقیقت: `ingest/schema.py` + `mapper.py` |
+| `IDENTITY_RESOLUTION.md` | `not_started` — منبعِ حقیقت: `identity/` + `repo_import._resolve_customers` |
+| `OPPORTUNITY_ENGINE.md` | `not_started` — منبعِ حقیقت: `opportunities/` |
+| `API_GUIDE.md` | `not_started` — منبعِ حقیقت: مسیرهای FastAPI / `openapi.json` |
 
 `MASTER_SPEC.md` (خودِ سند)، `SPEC_GAP_AUDIT.md`، `PRESERVE_CONTRACT.md` و
 `ROLLBACK.md` **افزون بر** فهرست سندند.
