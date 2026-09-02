@@ -15,6 +15,7 @@ import {
   type ReconcileCheck,
 } from "@/lib/apiV1";
 import { toFa } from "@/lib/format";
+import { UnauthorizedError } from "@/lib/token";
 
 import { Alert, Badge, Button, Card, SectionTitle, Spinner, StatCard } from "./ui";
 
@@ -59,6 +60,7 @@ const CHECK_LABEL: Record<ReconcileCheck["status"], string> = {
 export default function DataQualityPanel() {
   const [quality, setQuality] = useState<DataQuality | null>(null);
   const [quarantine, setQuarantine] = useState<QuarantineResponse | null>(null);
+  const [quarantineLocked, setQuarantineLocked] = useState(false);
   const [batches, setBatches] = useState<ImportBatch[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [openId, setOpenId] = useState<number | null>(null);
@@ -70,12 +72,16 @@ export default function DataQualityPanel() {
         getDataQuality(),
         listImports(30),
         // قرنطینه نباید بقیه‌ی پنل را زمین بزند: نصبِ قدیمی هنوز این مسیر را
-        // ندارد و آن‌وقت کلِ صفحه‌ی کیفیت خالی می‌شد.
-        getQuarantine(50).catch(() => null),
+        // ندارد و آن‌وقت کلِ صفحه‌ی کیفیت خالی می‌شد. ولی «بسته با توکن» با
+        // «وجود ندارد» فرق دارد و باید گفته شود، نه پنهان.
+        getQuarantine(50).catch((e: unknown) =>
+          e instanceof UnauthorizedError ? ("locked" as const) : null,
+        ),
       ]);
       setQuality(q);
       setBatches(list.items ?? []);
-      setQuarantine(quarantined);
+      setQuarantineLocked(quarantined === "locked");
+      setQuarantine(quarantined === "locked" ? null : quarantined);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "خطا در خواندن وضعیت کیفیت داده");
@@ -187,6 +193,14 @@ export default function DataQualityPanel() {
         </Card>
       )}
 
+      {quarantineLocked && (
+        <Card>
+          <SectionTitle
+            title="ردیف‌های واردنشده"
+            subtitle="ردیفِ خامِ فایل فروش داده‌ی شخصی است؛ دیدنش توکن API می‌خواهد. توکن را در نوار بالای صفحه وارد کنید."
+          />
+        </Card>
+      )}
       {!!quarantine?.total && (
         <Card>
           <SectionTitle

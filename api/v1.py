@@ -47,7 +47,7 @@ from mktcore.db.models import (
     OrderLine,
     Product,
 )
-from mktcore.identity import mask_phone
+from mktcore.identity import mask_phone, normalize_phone
 from mktcore.ingest.quality import build_quality_dimensions, overall_quality
 from mktcore.lifecycle import STATE_LABELS_FA
 from mktcore.money import money_payload
@@ -457,7 +457,7 @@ def list_quarantine(
                 "reason_code": row.reason_code,
                 "reason_fa": row.reason_detail_fa,
                 "suggested_resolution_fa": row.suggested_resolution_fa,
-                "raw": _safe_json(row.raw_payload_json),
+                "raw": _mask_raw_row(_safe_json(row.raw_payload_json)),
                 "resolved_at": row.resolved_at,
                 "resolved_by": row.resolved_by,
                 "resolution_note_fa": row.resolution_note_fa,
@@ -498,6 +498,30 @@ def resolve_quarantine(row_id: int, payload: ResolveQuarantineRequest) -> dict:
                 "برای واردکردنش، فایل اصلاح‌شده را دوباره بارگذاری کنید."
             ),
         }
+
+
+_PHONE_LIKE_KEYS = ("موبایل", "تلفن", "همراه", "شماره", "phone", "mobile", "tel")
+
+
+def _mask_raw_row(raw: dict | None) -> dict | None:
+    """ردیفِ خامِ قرنطینه با شماره‌های ماسک‌شده.
+
+    ردیفِ خام همان سطرِ فایلِ فروش است و ستونِ موبایل را عیناً دارد. مسیرِ
+    قرنطینه برای رسیدگی به ردیفِ ردشده است، نه برای خواندنِ شماره؛ پس هر مقداری
+    که یا زیرِ ستونی با نامِ شماره‌مانند نشسته یا خودش شبیهِ شماره‌ی تلفن است،
+    مثلِ بقیه‌ی مسیرهای تشخیصی ماسک می‌شود (`mask_phone`).
+    """
+    if not raw:
+        return raw
+    out: dict = {}
+    for key, value in raw.items():
+        key_text = str(key).lower()
+        looks_like_phone_column = any(token in key_text for token in _PHONE_LIKE_KEYS)
+        if value is not None and (looks_like_phone_column or normalize_phone(value) is not None):
+            out[key] = mask_phone(value)
+        else:
+            out[key] = value
+    return out
 
 
 def _safe_json(raw: str | None) -> dict | None:
