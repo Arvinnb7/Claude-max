@@ -172,7 +172,10 @@ def build_uplift_table(
         if business_id is None:
             return UpliftTable()
         observations = collect_observations(session, business_id)
-    return compute_uplift_table(observations)
+        from mktcore.settings_store import data_gate_thresholds
+
+        minimum = int(data_gate_thresholds(session, business_id)["min_cell_observations"])
+    return compute_uplift_table(observations, min_cell_observations=minimum)
 
 
 def _to_bp(value: float | None) -> int | None:

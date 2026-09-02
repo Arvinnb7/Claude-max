@@ -264,8 +264,53 @@ def set_full_price_thresholds(
         return full_price_thresholds(session, business_id)
 
 
+# --------------------------------------------------------- دروازه‌ی داده
+def data_gate_thresholds(session: Session, business_id: int) -> dict:
+    """آستانه‌های دروازه‌ی داده‌ی فاز ۵ + اینکه تنظیمِ کاربرند یا پیش‌فرض."""
+    from mktcore.uplift.empirical import MIN_CELL_OBSERVATIONS
+
+    raw = get_setting(session, business_id, AppSetting.KEY_MIN_CELL_OBSERVATIONS)
+    value, configured = MIN_CELL_OBSERVATIONS, False
+    if raw is not None:
+        try:
+            value, configured = int(raw), True
+        except (TypeError, ValueError):
+            pass
+    return {"min_cell_observations": value, "configured": configured}
+
+
+def set_data_gate_thresholds(
+    *, min_cell_observations: int | None, business_slug: str = "default",
+    db_path: Path | None = None,
+) -> dict:
+    """ثبت آستانه؛ `None` یعنی بازگشت به پیش‌فرض. آستانه‌ی زیر ۵ پذیرفته نمی‌شود:
+    با کمتر از آن، بازه‌ی اطمینان هر سلول عملاً کلِ محور است."""
+    ensure_schema(db_path)
+    with write_lock, session_scope(db_path) as session:
+        business_id = resolve_business_id(session, business_slug)
+        if business_id is None:
+            raise ValueError("کسب‌وکاری ثبت نشده است؛ اول یک فایل فروش تحلیل کنید.")
+        if min_cell_observations is None:
+            row = session.scalar(
+                select(AppSetting).where(
+                    AppSetting.business_id == business_id,
+                    AppSetting.key == AppSetting.KEY_MIN_CELL_OBSERVATIONS,
+                )
+            )
+            if row is not None:
+                session.delete(row)
+        else:
+            value = int(min_cell_observations)
+            if not 5 <= value <= 10_000:
+                raise ValueError("کمترین مشاهده‌ی هر بازو باید بین ۵ و ۱۰۰۰۰ باشد.")
+            set_setting(session, business_id, AppSetting.KEY_MIN_CELL_OBSERVATIONS, str(value))
+        return data_gate_thresholds(session, business_id)
+
+
 __all__ = [
     "MAX_DAILY_CAPACITY",
+    "data_gate_thresholds",
+    "set_data_gate_thresholds",
     "MAX_LADDER_RUNGS",
     "MAX_LADDER_RUNG_BP",
     "full_price_thresholds",

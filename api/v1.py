@@ -1406,6 +1406,56 @@ def write_operator_capacity(payload: CapacityRequest) -> dict:
     return read_operator_capacity()
 
 
+class DataGateRequest(BaseModel):
+    """آستانه‌ی دروازه‌ی داده (§۲۹.۶). `None` یعنی بازگشت به پیش‌فرضِ مستند."""
+
+    min_cell_observations: int | None = Field(default=None, ge=5, le=10_000)
+
+
+@router.get("/data-gates")
+def read_data_gates() -> dict:
+    ensure_schema()
+    from mktcore.settings_store import data_gate_thresholds
+
+    with session_scope() as session:
+        business_id = _business_id(session)
+        if business_id is None:
+            return {**_no_ledger_yet(), "min_cell_observations": None}
+        gates = data_gate_thresholds(session, business_id)
+    return {
+        "available": True,
+        **gates,
+        "note_fa": (
+            "کمترین مشاهده در هر بازوی هر سلول تا اثرِ اندازه‌گیری‌شده «قابل استفاده» "
+            "شمرده شود. پایین‌آوردنش یعنی پذیرفتنِ بازه‌های اطمینانِ پهن‌تر."
+        ),
+    }
+
+
+@router.put("/data-gates", dependencies=[Depends(require_token)])
+def write_data_gates(payload: DataGateRequest) -> dict:
+    ensure_schema()
+    from mktcore.settings_store import set_data_gate_thresholds
+
+    try:
+        set_data_gate_thresholds(min_cell_observations=payload.min_cell_observations)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return read_data_gates()
+
+
+@router.get("/phase5-readiness")
+def phase5_readiness_view() -> dict:
+    """چقدر تا دروازه‌ی داده‌ی فاز ۵ مانده — سنجه، نه مدل.
+
+    «هیچ کمپینِ دوبازویی نداریم» و «صفر مشاهده داریم» یکی نیستند و جدا گفته
+    می‌شوند. عددی که مبنایش نیست `None` است.
+    """
+    from mktcore.experiments.readiness import phase5_readiness
+
+    return phase5_readiness()
+
+
 @router.get("/experiment-plan")
 def experiment_plan(
     target_effect: float = Query(0.05, gt=0.0, lt=1.0),

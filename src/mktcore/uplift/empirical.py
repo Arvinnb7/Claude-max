@@ -91,6 +91,8 @@ class UpliftCell:
     n_control: int = 0
     conv_treatment: int = 0
     conv_control: int = 0
+    # آستانه‌ی «داده‌ی کافی» — §۲۹.۶ می‌خواهد قابل‌تنظیم باشد؛ پیش‌فرضِ مستند
+    min_observations: int = MIN_CELL_OBSERVATIONS
 
     # پس از انقباض پر می‌شوند
     raw_uplift: float = 0.0
@@ -108,8 +110,8 @@ class UpliftCell:
 
     @property
     def has_enough_data(self) -> bool:
-        return (self.n_treatment >= MIN_CELL_OBSERVATIONS
-                and self.n_control >= MIN_CELL_OBSERVATIONS)
+        return (self.n_treatment >= self.min_observations
+                and self.n_control >= self.min_observations)
 
     @property
     def significantly_useless(self) -> bool:
@@ -201,7 +203,7 @@ def _shrink(raw: float, parent: float, n: int, k: float = SHRINKAGE_K) -> float:
     return weight * raw + (1 - weight) * parent
 
 
-def compute_uplift_table(observations: list[Observation]) -> UpliftTable:
+def compute_uplift_table(observations: list[Observation], *, min_cell_observations: int = MIN_CELL_OBSERVATIONS) -> UpliftTable:
     """ساخت جدول اثر از مشاهده‌های آزمایشی.
 
     تابع خالص: ورودی فهرست مشاهده، خروجی جدول. هیچ I/O و هیچ وابستگی به دیتابیس.
@@ -232,7 +234,9 @@ def compute_uplift_table(observations: list[Observation]) -> UpliftTable:
         by_cell.setdefault(obs.cell_key, []).append(obs)
 
     for (kind, state), group in by_cell.items():
-        cell = UpliftCell(kind=kind, lifecycle_state=state)
+        cell = UpliftCell(
+            kind=kind, lifecycle_state=state, min_observations=min_cell_observations,
+        )
         for obs in group:
             if obs.arm == "control":
                 cell.n_control += 1

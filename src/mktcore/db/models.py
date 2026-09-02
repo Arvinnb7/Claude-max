@@ -1017,6 +1017,10 @@ class AppSetting(Base):
     KEY_FULL_PRICE_LOW_BP = "full_price_low_bp"
     KEY_FULL_PRICE_MIN_LINES = "full_price_min_lines"
 
+    # دروازه‌ی داده‌ی فاز ۵ (§۲۹.۶ «آستانه‌ها قابل‌تنظیم باشند»): کمترین مشاهده در هر
+    # بازوی هر سلول تا اثر «قابل استفاده» شمرده شود. نبودنش یعنی پیش‌فرضِ مستند.
+    KEY_MIN_CELL_OBSERVATIONS = "min_cell_observations"
+
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     business_id: Mapped[int] = mapped_column(ForeignKey("businesses.id"), index=True)
     key: Mapped[str] = mapped_column(String(64), index=True)
