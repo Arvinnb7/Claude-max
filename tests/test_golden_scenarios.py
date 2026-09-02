@@ -464,3 +464,90 @@ def test_scenario_identity_merge_is_not_reported_as_a_mismatch(tmp_path):
     assert customer_check.status == "OK"     # نه MISMATCH
     assert "ادغام هویت" in customer_check.detail_fa
     assert result.reconcile_status == "RECONCILED"
+
+
+# ---------------------------------------- ۱۷: وفادارِ تمام‌قیمت / وابسته به تخفیف
+# §۳۴.۳ این دو فیکسچر را صریحاً لازم می‌داند. پیش از این هیچ سناریویی درباره‌ی
+# رفتارِ تخفیف نبود — یعنی نردبانِ تخفیف (§۲۰.۳) هیچ داده‌ی آزمونی نداشت.
+_COLS_DISC = [*_COLS, "تخفیف"]
+_MAPPING_DISC = {**_MAPPING, ColumnRole.DISCOUNT: "تخفیف"}
+
+
+def _discount_rows(*, amount: bool) -> list[tuple]:
+    """سه مشتری: همیشه تمام‌قیمت، ۷۰٪ با تخفیف، و یک پرکننده."""
+    rows: list[tuple] = []
+    for i in range(10):
+        day = 1 + i * 20
+        month, dom = divmod(day - 1, 30)
+        date = f"1402/{month + 1:02d}/{dom + 1:02d}"
+        rows.append((date, 500_000, 1, "وفادار", f"L{i}", "کالا", "09121110001", 0))
+        # ۷ از ۱۰ خرید با تخفیف؛ مبلغی (۵۰٬۰۰۰) یا نسبتی (۰٫۱)
+        disc = (50_000 if amount else 0.1) if i < 7 else 0
+        rows.append((date, 450_000, 1, "تخفیفی", f"D{i}", "کالا", "09121110002", disc))
+    for j in range(20):
+        rows.append((f"1402/{(j % 10) + 1:02d}/10", 200_000, 1,
+                     f"C{j}", f"G{j}", "کالا", "", 0))
+    return rows
+
+
+def _full_price_share(db: Path) -> dict[str, float]:
+    from mktcore.db.lookup import resolve_business_id
+    from mktcore.features.ledger_frame import load_line_frame
+    from mktcore.features.point_in_time import (
+        PointInTimeSpec,
+        compute_point_in_time_features,
+    )
+
+    with session_scope(db) as session:
+        business_id = resolve_business_id(session, "default")
+        lines = load_line_frame(session, business_id)
+        names = dict(session.execute(
+            select(Customer.id, Customer.canonical_key)
+            .where(Customer.business_id == business_id)
+        ).all())
+    as_of = (pd.Timestamp(str(lines["line_date"].max())) + pd.Timedelta(days=1)).date().isoformat()
+    features = compute_point_in_time_features(lines, PointInTimeSpec(as_of=as_of))
+    return {
+        names[int(cid)]: value
+        for cid, value in features["full_price_share_bp"].items()
+        if int(cid) in names
+    }
+
+
+@pytest.mark.parametrize("amount", [False, True], ids=["نسبتی", "مبلغی"])
+def test_scenario_full_price_loyal_vs_discount_dependent(tmp_path, amount):
+    """وفادارِ تمام‌قیمت ۱۰۰٪، وابسته به تخفیف ~۳۰٪ — با هر دو شکلِ ستونِ تخفیف.
+
+    هر دو مولدِ داده‌ی مصنوعی تخفیف را **نسبتی** می‌سازند و `repo_import` فقط
+    یکی از دو ستون را پر می‌کند؛ پس هر محاسبه‌ای که فقط یکی از دو ستون را
+    ببیند، در تست‌های موجود سبز و روی فایلِ مبلغی غلط است. این سناریو هر دو
+    شکل را می‌پوشاند.
+    """
+    clean = _clean(_discount_rows(amount=amount), _COLS_DISC, _MAPPING_DISC)
+    assert clean.attrs["discount_is_amount"] is amount
+    db = tmp_path / "app.db"
+    _ingest(clean, db)
+
+    # دفتر کل دقیقاً همان ستونی را پر می‌کند که فایل داشته — نه هر دو
+    with session_scope(db) as session:
+        amounts = session.scalar(select(func.count(OrderLine.discount_rial)))
+        rates = session.scalar(select(func.count(OrderLine.discount_rate_bp)))
+    if amount:
+        assert amounts > 0 and rates == 0
+    else:
+        assert rates > 0 and amounts == 0
+
+    share = _full_price_share(db)
+    assert share["وفادار"] == 10_000
+    assert 2_500 <= share["تخفیفی"] <= 3_500, share["تخفیفی"]
+
+
+def test_scenario_no_discount_column_means_unknown_not_full_price(tmp_path):
+    """نبودِ ستونِ تخفیف ≠ «هیچ‌وقت تخفیف نگرفته». باید NaN بماند، نه ۱۰۰٪."""
+    rows = [r[:-1] for r in _discount_rows(amount=False)]
+    clean = _clean(rows)
+    db = tmp_path / "app.db"
+    _ingest(clean, db)
+
+    share = _full_price_share(db)
+    assert all(pd.isna(value) for value in share.values()), share

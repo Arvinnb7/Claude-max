@@ -391,13 +391,61 @@ def test_send_reports_gate_suppression(analyzed):
 
 
 # ═════════════════════════ متنِ پیام: هرگز راهنمای تیم فروش
-def _expansion_only_campaign() -> int | None:
-    """کمپینی فقط از فرصت‌های «توسعه‌ی سبد خرید» — که `message_fa` ندارند."""
+_EXPANSION_SEQ = iter(range(1, 10_000))
+
+
+def _expansion_only_campaign() -> int:
+    """کمپینی فقط از فرصت‌های «توسعه‌ی سبد خرید» — که `message_fa` ندارند.
+
+    نسخه‌ی قبلی به این تکیه داشت که موتور روی داده‌ی نمونه چنین فرصتی ساخته
+    باشد و وگرنه `None` می‌داد و چهار تستِ **خطِ سرخ** با `pytest.skip` از اجرا
+    می‌افتادند. یعنی هر تغییری در زنجیره‌ی فیلتر یا مولدها می‌توانست همان
+    گاردها را بی‌صدا خاموش کند. حالا فرصت مستقیم درج می‌شود و تست همیشه اجرا
+    می‌شود.
+    """
+    from mktcore.contact.register import build_gate
+    from mktcore.db.lookup import active_business_id
+    from mktcore.db.models import Opportunity
+    from mktcore.opportunities.generators import KIND_EXPANSION
+
+    with session_scope() as session:
+        business_id = active_business_id(session)
+        assert business_id is not None
+        # مشتریِ شماره‌داری که **خودِ دروازه‌ی مجوز تماس** قبولش دارد — قاعده‌ی
+        # دروازه (انصراف، گروه کنترلِ کمپینِ باز، …) اینجا دوباره نوشته نمی‌شود،
+        # چون هر بار که آن قاعده تغییر کند این فیکسچر بی‌صدا غلط می‌شد.
+        gate = build_gate(session, business_id)
+        with_phone = session.scalars(
+            select(Customer).where(
+                Customer.business_id == business_id,
+                Customer.phone_e164.isnot(None),
+            ).order_by(Customer.id)
+        ).all()
+        customer = next(
+            c for c in with_phone
+            if gate.partition([c], key=lambda x: str(x.id)).allowed
+        )
+        seq = next(_EXPANSION_SEQ)
+        session.add(Opportunity(
+            business_id=business_id,
+            dedupe_key=f"test-expansion-{customer.id}-{seq}",
+            customer_id=customer.id,
+            kind=KIND_EXPANSION,
+            generator="test",
+            generator_version=1,
+            title_fa="توسعه‌ی سبد خرید — آزمون",
+            action_fa="به این مشتری «X» را معرفی کنید؛ مشتریان مشابهش این دسته را می‌خرند ولی او نه.",
+            reason_fa="آزمون",
+            message_fa=None,
+            expected_value_rial=1_000_000,
+            score_rial=1_000_000,
+            value_kind="ارزش فرصت",
+        ))
+
     r = client.post("/api/v1/campaigns", json={
-        "name": "فقط توسعه", "holdout_pct": 10, "kind": "توسعه‌ی سبد خرید",
+        "name": f"فقط توسعه {seq}", "holdout_pct": 0, "kind": KIND_EXPANSION, "limit": 1,
     })
-    if r.status_code != 200:
-        return None
+    assert r.status_code == 200, r.text
     return r.json()["id"]
 
 
@@ -408,8 +456,6 @@ def test_sales_instruction_is_never_sent_to_a_customer(analyzed, monkeypatch):
     «به این مشتری «X» را معرفی کنید؛ مشتریان مشابهش این دسته را می‌خرند ولی او نه.»
     """
     campaign_id = _expansion_only_campaign()
-    if campaign_id is None:
-        pytest.skip("فرصتِ «توسعه‌ی سبد خرید» در این داده وجود ندارد")
 
     sink: list[str] = []
     _fake_panel(monkeypatch, sink)
@@ -443,8 +489,6 @@ def test_sales_instruction_is_never_sent_to_a_customer(analyzed, monkeypatch):
 def test_template_makes_a_textless_campaign_sendable(analyzed, monkeypatch):
     """راهِ جبران باید باز باشد: با قالب صریح، همان کمپین ارسال‌شدنی می‌شود."""
     campaign_id = _expansion_only_campaign()
-    if campaign_id is None:
-        pytest.skip("فرصتِ «توسعه‌ی سبد خرید» در این داده وجود ندارد")
 
     sink: list[str] = []
     _fake_panel(monkeypatch, sink)
@@ -468,8 +512,6 @@ def test_template_makes_a_textless_campaign_sendable(analyzed, monkeypatch):
 
 def test_a_skipped_member_gets_no_exposure_stamp(analyzed, monkeypatch):
     campaign_id = _expansion_only_campaign()
-    if campaign_id is None:
-        pytest.skip("فرصتِ «توسعه‌ی سبد خرید» در این داده وجود ندارد")
 
     sink: list[str] = []
     _fake_panel(monkeypatch, sink)
@@ -490,8 +532,6 @@ def test_a_skipped_member_gets_no_exposure_stamp(analyzed, monkeypatch):
 
 def test_skipped_member_costs_nothing(analyzed, monkeypatch):
     campaign_id = _expansion_only_campaign()
-    if campaign_id is None:
-        pytest.skip("فرصتِ «توسعه‌ی سبد خرید» در این داده وجود ندارد")
 
     sink: list[str] = []
     _fake_panel(monkeypatch, sink)
