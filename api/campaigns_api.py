@@ -41,6 +41,7 @@ from mktcore.db.models import (
     Customer,
     CustomerFeature,
     Opportunity,
+    OpportunityOffer,
 )
 from mktcore.db.repo_audit import record_audit_event
 from mktcore.execution import send_campaign
@@ -57,6 +58,7 @@ logger = logging.getLogger("mktcore.api.campaigns")
 
 router = APIRouter(prefix="/api/v1/campaigns", tags=["campaigns"])
 
+OFFER_PLACEHOLDER = "{تخفیف}"
 EXPOSURE_CHANNEL_EXCEL = "excel_export"
 EXPOSURE_CHANNEL_SMS = "sms"
 EXPOSURE_NOTE_FA = (
@@ -485,7 +487,10 @@ def send_campaign_sms(campaign_id: int, req: SendCampaignRequest) -> dict:
         # هزینه هم ثبت می‌شد، بی‌آنکه چیزی به دست مشتری برسد.
         sendable = [d for d in drafts if d["phone"] and d["text"]]
         without_phone = [d for d in drafts if not d["phone"]]
-        without_text = [d for d in drafts if d["phone"] and not d["text"]]
+        without_offer = [d for d in drafts if d["phone"] and d["blocked_by_offer"]]
+        without_text = [
+            d for d in drafts if d["phone"] and not d["text"] and not d["blocked_by_offer"]
+        ]
 
         result = None
         if sendable:
@@ -526,6 +531,13 @@ def send_campaign_sms(campaign_id: int, req: SendCampaignRequest) -> dict:
             if not has_phone:
                 status = CampaignSend.STATUS_SKIPPED
                 detail = "شماره‌ی موبایل ثبت نشده است."
+            elif draft["blocked_by_offer"]:
+                status = CampaignSend.STATUS_SKIPPED
+                detail = (
+                    f"قالب پیام «{OFFER_PLACEHOLDER}» دارد ولی این فرصت تخفیفِ "
+                    "تأییدشده ندارد. هیچ تخفیفی بدون تأییدِ انسان ارسال نمی‌شود؛ "
+                    "در صندوق فرصت‌ها تأیید کنید یا قالبی بدون تخفیف بدهید."
+                )
             elif not has_text:
                 status = CampaignSend.STATUS_SKIPPED
                 detail = (
@@ -575,6 +587,8 @@ def send_campaign_sms(campaign_id: int, req: SendCampaignRequest) -> dict:
             row.status_detail_fa = detail
             # شناسه‌ی پیام نزد پنل — پیش‌نیازِ webhook تحویل در گام بعد.
             row.provider_message_id = message_id_of.get(str(draft["customer_id"]))
+            # §۲۰.۲ «کدام آفر نشان داده شد» — فقط آفرِ تأییدشده به اینجا می‌رسد
+            row.offer_discount_bp = draft["offer_bp"] if status == CampaignSend.STATUS_SENT else None
             row.sent_at = stamp
 
             # ⚠️ مهرِ تماس **فقط** برای ارسالِ واقعیِ موفق.
@@ -586,6 +600,7 @@ def send_campaign_sms(campaign_id: int, req: SendCampaignRequest) -> dict:
                     member.exposure_at = stamp
                     member.exposure_date = today
                     member.exposure_channel = EXPOSURE_CHANNEL_SMS
+                    member.offer_discount_bp = draft["offer_bp"]
 
         session.flush()
         payload = _campaign_detail(session, campaign)
@@ -596,6 +611,7 @@ def send_campaign_sms(campaign_id: int, req: SendCampaignRequest) -> dict:
         "ناموفق": failed,
         "بدون_شماره": len(without_phone),
         "بدون_متن": len(without_text),
+        "بدون_تأیید_تخفیف": len(without_offer),
         "حالت_آزمایشی": not real_send,
         "ارائه‌دهنده": provider,
         "قطعه": total_segments,
@@ -645,26 +661,43 @@ def _send_drafts(
             Opportunity.message_fa,
             Opportunity.action_fa,
             Opportunity.score_rial,
+            OpportunityOffer.suggested_discount_bp,
+            OpportunityOffer.status,
         ).join(Opportunity, Opportunity.id == CampaignOpportunity.opportunity_id)
+        .outerjoin(OpportunityOffer, OpportunityOffer.opportunity_id == Opportunity.id)
         .where(CampaignOpportunity.campaign_id == campaign_id)
     ).all()
 
-    # ارزشمندترین فرصتِ هر مشتری متنِ پیام را تعیین می‌کند
+    # ارزشمندترین فرصتِ هر مشتری متنِ پیام را تعیین می‌کند — و آفرِ **همان**
+    # فرصت، نه هر آفرِ تأییدشده‌ی این مشتری در جای دیگر.
     best: dict[int, tuple] = {}
-    for customer_id, message_fa, action_fa, score in rows:
+    for customer_id, message_fa, action_fa, score, offer_bp, offer_status in rows:
         key = int(customer_id)
         current = best.get(key)
         if current is None or int(score or 0) > int(current[2] or 0):
-            best[key] = (message_fa, action_fa, score)
+            approved = offer_status == OpportunityOffer.STATUS_APPROVED and offer_bp
+            best[key] = (message_fa, action_fa, score, int(offer_bp) if approved else None)
 
     drafts: list[dict] = []
     for member in members:
         customer_id = int(member.customer_id)
         customer = customers.get(customer_id)
         name = (customer.display_name if customer else None) or "مشتری گرامی"
-        message_fa, action_fa, _score = best.get(customer_id, (None, None, None))
+        message_fa, action_fa, _score, offer_bp = best.get(
+            customer_id, (None, None, None, None),
+        )
+        # قاعده‌ی سختِ §۲۰.۳ / تصمیمِ کاربر: `{تخفیف}` فقط از آفرِ **تأییدشده**
+        # رندر می‌شود. قالبی که `{تخفیف}` دارد و آفرِ مصوبی نیست، برای این عضو
+        # «قابل ارسال نیست» — نه اینکه «{تخفیف}» خام برای مشتری برود (رفتارِ
+        # قبلی) و نه اینکه پیامِ بی‌تخفیف بی‌صدا فرستاده شود.
+        source = template if template else (message_fa or "")
+        needs_offer = OFFER_PLACEHOLDER in source
+        blocked_by_offer = needs_offer and offer_bp is None
+        variables = {"نام": name}
+        if offer_bp is not None:
+            variables["تخفیف"] = f"{offer_bp / 100:g}٪"
         if template:
-            text = render_template(template, {"نام": name})
+            text = "" if blocked_by_offer else render_template(template, variables)
         else:
             # ⚠️ عمداً هیچ fallbackی به `action_fa` نیست.
             # `action_fa` طبق تعریفِ خودش «جمله‌ی امری برای تیم فروش» است، نه متنِ
@@ -672,12 +705,16 @@ def _send_drafts(
             # «به این مشتری فلان را معرفی کنید؛ مشتریان مشابهش می‌خرند ولی او نه»
             # مستقیم برای همان مشتری برود، که هم بی‌معنا است هم پروفایلِ داخلی را
             # لو می‌دهد. نبودِ متن یعنی «قابل ارسال نیست»، نه «هرچه هست بفرست».
-            text = (message_fa or "").strip()
+            text = "" if blocked_by_offer else render_template(
+                (message_fa or "").strip(), variables,
+            )
         drafts.append({
             "member": member,
             "customer_id": customer_id,
             "phone": normalize_phone(customer.phone_e164) if customer else None,
             "text": text,
+            "offer_bp": offer_bp,
+            "blocked_by_offer": blocked_by_offer,
         })
     return drafts
 
@@ -694,7 +731,9 @@ def _export_rows(session, campaign_id: int, members: list[CampaignMember]) -> li
             CampaignOpportunity.customer_id,
             Opportunity.kind, Opportunity.action_fa, Opportunity.reason_fa,
             Opportunity.message_fa, Opportunity.due_date, Opportunity.expected_value_rial,
+            OpportunityOffer.suggested_discount_bp, OpportunityOffer.status,
         ).join(Opportunity, Opportunity.id == CampaignOpportunity.opportunity_id)
+        .outerjoin(OpportunityOffer, OpportunityOffer.opportunity_id == Opportunity.id)
         .where(CampaignOpportunity.campaign_id == campaign_id)
     ).all()
 
@@ -705,16 +744,27 @@ def _export_rows(session, campaign_id: int, members: list[CampaignMember]) -> li
     rows: list[dict] = []
     for member in sorted(members, key=lambda m: -(m.expected_value_rial or 0)):
         customer = customers.get(member.customer_id)
-        for _, kind, action, reason, message, due, value in by_customer.get(
-            member.customer_id, [],
+        for _, kind, action, reason, message, due, value, offer_bp, offer_status in (
+            by_customer.get(member.customer_id, [])
         ):
+            # همان قاعده‌ی مسیرِ پیامک: `{تخفیف}` فقط از آفرِ **تأییدشده** پر
+            # می‌شود. در فایلِ انسانی، نبودِ تأیید پنهان نمی‌شود — صریح نوشته
+            # می‌شود تا کسی با تلفن تخفیفی ندهد که کسی تأیید نکرده.
+            approved = offer_status == OpportunityOffer.STATUS_APPROVED and offer_bp
+            text = render_template(
+                message or "",
+                {"تخفیف": f"{int(offer_bp) / 100:g}٪" if approved else "(بدون تخفیفِ تأییدشده)"},
+            )
+            if approved and member.offer_discount_bp is None:
+                member.offer_discount_bp = int(offer_bp)
             rows.append({
                 "مشتری": (customer.display_name if customer else None) or "—",
                 "شماره تماس": normalize_phone(customer.phone_e164) if customer else None,
                 "نوع اقدام": kind,
                 "اقدام پیشنهادی": action,
                 "دلیل": reason,
-                "متن پیشنهادی": message or "",
+                "متن پیشنهادی": text,
+                "تخفیف تأییدشده": f"{int(offer_bp) / 100:g}٪" if approved else "—",
                 "سررسید": due or "",
                 "ارزش مورد انتظار (ریال)": int(value or 0),
             })
