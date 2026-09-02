@@ -106,8 +106,12 @@ def create_campaign(req: CreateCampaignRequest) -> dict:
             stmt = stmt.where(Opportunity.status == req.status)
         if req.kind:
             stmt = stmt.where(Opportunity.kind == req.kind)
+        # حدِ اندازه‌ی کمپین **بعد از** دروازه اعمال می‌شود (پایین‌تر)، نه در
+        # همین پرس‌وجو: وگرنه عضوِ کنترلِ کمپینِ دیگری که فرصتِ پرارزش‌تری دارد،
+        # جای یکی از مجازها را می‌گیرد و بعد کنار گذاشته می‌شود — کمپین کوچک‌تر
+        # از آنچه کاربر خواست می‌شود، یا با حدِ کوچک بی‌دلیل ۴۰۹ می‌گیرد.
         opportunities = session.scalars(
-            stmt.order_by(Opportunity.score_rial.desc()).limit(req.limit)
+            stmt.order_by(Opportunity.score_rial.desc(), Opportunity.id)
         ).all()
         if not opportunities:
             raise HTTPException(
@@ -126,7 +130,7 @@ def create_campaign(req: CreateCampaignRequest) -> dict:
         eligible = gate.partition(
             opportunities, key=lambda o: str(o.customer_id),
         )
-        opportunities = eligible.allowed
+        opportunities = eligible.allowed[: req.limit]
         if not opportunities:
             raise HTTPException(
                 status_code=409,

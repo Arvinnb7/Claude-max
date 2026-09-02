@@ -437,8 +437,10 @@ def _expansion_only_campaign() -> int:
             action_fa="به این مشتری «X» را معرفی کنید؛ مشتریان مشابهش این دسته را می‌خرند ولی او نه.",
             reason_fa="آزمون",
             message_fa=None,
-            expected_value_rial=1_000_000,
-            score_rial=1_000_000,
+            # بالاتر از هر فرصتِ موتور روی داده‌ی نمونه: کمپینِ «۱ نفره» باید
+            # **همین** فرصت را بردارد، نه فرصتِ توسعه‌ای که موتور ساخته.
+            expected_value_rial=1_000_000_000_000,
+            score_rial=1_000_000_000_000,
             value_kind="ارزش فرصت",
         ))
 
@@ -447,6 +449,82 @@ def _expansion_only_campaign() -> int:
     })
     assert r.status_code == 200, r.text
     return r.json()["id"]
+
+
+def test_gated_out_contacts_do_not_consume_campaign_slots(analyzed):
+    """حدِ اندازه‌ی کمپین روی مخاطبانِ **مجاز** اعمال می‌شود، نه پیش از دروازه.
+
+    وگرنه عضوِ کنترلِ کمپینِ بازِ دیگری که فرصتِ پرارزش‌تری دارد، تنها جای
+    کمپینِ «۱ نفره» را می‌گیرد و بعد کنار گذاشته می‌شود ⇒ ۴۰۹ بی‌دلیل، یا کمپینی
+    کوچک‌تر از آنچه کاربر خواست. سوئیتِ کامل همین را گرفت: فیکسچرِ خطِ سرخ در
+    حضورِ کمپین‌های تست‌های قبلی با ۴۰۹ افتاد.
+    """
+    from mktcore.contact.register import build_gate
+    from mktcore.db.lookup import active_business_id
+    from mktcore.db.models import Campaign, Opportunity
+    from mktcore.opportunities.generators import KIND_EXPANSION
+
+    seq = next(_EXPANSION_SEQ)
+    with session_scope() as session:
+        business_id = active_business_id(session)
+        gate = build_gate(session, business_id)
+        with_phone = session.scalars(
+            select(Customer).where(
+                Customer.business_id == business_id,
+                Customer.phone_e164.isnot(None),
+            ).order_by(Customer.id)
+        ).all()
+        allowed = [c for c in with_phone if gate.partition([c], key=lambda x: str(x.id)).allowed]
+        assert len(allowed) >= 2
+        blocked, kept = allowed[0], allowed[1]
+        other = Campaign(
+            business_id=business_id, name=f"کمپین دیگر {seq}", status="running", holdout_pct=50,
+        )
+        session.add(other)
+        session.flush()
+        session.add(CampaignMember(
+            campaign_id=other.id, customer_id=blocked.id, arm=ARM_CONTROL,
+            stratum="—", assigned_date="2026-01-01",
+        ))
+        for customer, score in ((blocked, 9_000_000_000_000), (kept, 8_000_000_000_000)):
+            session.add(Opportunity(
+                business_id=business_id,
+                dedupe_key=f"test-gate-{customer.id}-{seq}",
+                customer_id=customer.id,
+                kind=KIND_EXPANSION,
+                generator="test",
+                generator_version=1,
+                title_fa="توسعه‌ی سبد خرید — آزمونِ دروازه",
+                action_fa="به این مشتری «X» را معرفی کنید.",
+                reason_fa="آزمون",
+                message_fa=None,
+                expected_value_rial=score,
+                score_rial=score,
+                value_kind="ارزش فرصت",
+            ))
+        blocked_id, kept_id, other_id = blocked.id, kept.id, other.id
+
+    try:
+        r = client.post("/api/v1/campaigns", json={
+            "name": f"دروازه پیش از حد {seq}", "holdout_pct": 0, "kind": KIND_EXPANSION, "limit": 1,
+        })
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert "عضو گروه کنترل" in body.get("contact_gate_note_fa", "")
+        with session_scope() as session:
+            members = session.scalars(
+                select(CampaignMember.customer_id).where(CampaignMember.campaign_id == body["id"])
+            ).all()
+        assert members == [kept_id], "جای کمپین باید به مجاز برسد، نه به عضوِ کنترلِ حذف‌شده"
+        assert blocked_id not in members
+    finally:
+        # ردِ پا برای تست‌های بعدیِ همین دفتر کل نماند
+        with session_scope() as session:
+            for opportunity in session.scalars(
+                select(Opportunity).where(Opportunity.dedupe_key.like(f"test-gate-%-{seq}"))
+            ):
+                opportunity.status = "expired"
+            session.get(Campaign, other_id).status = "closed"
 
 
 def test_sales_instruction_is_never_sent_to_a_customer(analyzed, monkeypatch):
