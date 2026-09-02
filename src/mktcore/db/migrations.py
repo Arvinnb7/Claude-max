@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("mktcore.db.migrations")
 
 # نسخه‌ی جاری طرح‌واره‌ی canonical. با افزودن هر مهاجرت، یک عدد بالا می‌رود.
-CANONICAL_SCHEMA_VERSION = 14
+CANONICAL_SCHEMA_VERSION = 15
 
 _MIGRATION_TABLE = "schema_migrations"
 
@@ -242,6 +242,29 @@ def _migration_0014_create_import_quarantine(conn: Connection) -> None:
     Base.metadata.create_all(bind=conn, checkfirst=True)
 
 
+def _migration_0015_create_offer_ledger(conn: Connection) -> None:
+    """دفترِ آفر (§۲۰.۳) + ستون‌های لاگِ آفر (§۲۰.۲).
+
+    جدولِ تازه با `create_all` می‌آید؛ سه ستون روی جدول‌های **موجود** با همان
+    حلقه‌ی `ALTER TABLE` مهاجرت ۸ و ۱۰ اضافه می‌شوند.
+    """
+    from mktcore.db import models  # noqa: F401 - ثبت مدل‌ها در metadata
+
+    Base.metadata.create_all(bind=conn, checkfirst=True)
+
+    added_columns = (
+        ("customer_features", "full_price_share_bp", "INTEGER"),
+        ("campaign_members", "offer_discount_bp", "INTEGER"),
+        ("campaign_sends", "offer_discount_bp", "INTEGER"),
+    )
+    for table, column, ddl_type in added_columns:
+        existing = {
+            row[1] for row in conn.exec_driver_sql(f"PRAGMA table_info({table})")
+        }
+        if column not in existing:
+            conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {column} {ddl_type}")
+
+
 _MIGRATIONS: tuple[tuple[int, str, Callable[[Connection], None]], ...] = (
     (1, "create_canonical_tables", _migration_0001_create_canonical_tables),
     (2, "create_opportunity_tables", _migration_0002_create_opportunity_tables),
@@ -257,6 +280,7 @@ _MIGRATIONS: tuple[tuple[int, str, Callable[[Connection], None]], ...] = (
     (12, "create_audit_events_and_leases", _migration_0012_create_audit_events),
     (13, "create_job_runs", _migration_0013_create_job_runs),
     (14, "create_import_quarantine", _migration_0014_create_import_quarantine),
+    (15, "create_offer_ledger", _migration_0015_create_offer_ledger),
 )
 
 

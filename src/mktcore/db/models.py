@@ -390,6 +390,10 @@ class CustomerFeature(Base):
     replenish_probability_bp: Mapped[int | None] = mapped_column(Integer)
     replenish_model_run_id: Mapped[int | None] = mapped_column(Integer)
     scored_at: Mapped[float | None] = mapped_column(Float)
+    # سهمِ خریدِ تمام‌قیمت (پایه‌ی هزارم). `NULL` یعنی فایل ستون تخفیف نداشت —
+    # که با «هیچ‌وقت تخفیف نگرفته» یکی نیست. همبستگیِ مشاهده‌ای است، نه
+    # حساسیتِ علّی (§۲۰.۳).
+    full_price_share_bp: Mapped[int | None] = mapped_column(Integer)
 
     created_at: Mapped[float] = mapped_column(Float, default=now_ts)
 
@@ -654,6 +658,63 @@ class OpportunityEvent(Base):
     created_at: Mapped[float] = mapped_column(Float, default=now_ts, index=True)
 
 
+class OpportunityOffer(Base):
+    """پیشنهادِ تخفیفِ یک فرصت و **تصمیمِ انسان** درباره‌اش — §۲۰.۳.
+
+    ## چرا جدولِ جدا و نه ستون روی `opportunities`
+
+    `_persist` در هر اجرای موتور همه‌ی فیلدهای فرصت را با `setattr` بازنویسی
+    می‌کند و `_replace_factors` عامل‌ها را پاک می‌کند؛ موتور هم هر روز ساعت ۷
+    اجرا می‌شود. تصمیمِ انسان («این تخفیف را تأیید کردم») در هیچ‌کدام از آن دو
+    جا زنده نمی‌ماند. اینجا ماندگاریِ تصمیم **ساختاری** است، نه با نظم.
+
+    ## چرا حاشیه و کفِ لحظه‌ی پیشنهاد ذخیره می‌شود
+
+    اگر فردا کف بالا برود یا بها عوض شود، تأییدِ دیروز دیگر معتبر نیست. با
+    نگه‌داشتنِ مبنای پیشنهاد، اجرای بعدی می‌تواند بگوید «کهنه شد» به‌جای اینکه
+    بی‌صدا تخفیفی را بفرستد که زیرِ کف رفته است.
+
+    ## قاعده‌ی سختِ این جدول
+
+    هیچ ردیفی با `status != approved` هرگز وارد متنِ پیامک نمی‌شود. آن قاعده
+    در `campaigns_api._send_drafts` پیاده و در `test_offer_send_gate.py` پین
+    شده است.
+    """
+
+    __tablename__ = "opportunity_offers"
+
+    STATUS_SUGGESTED = "suggested"
+    STATUS_APPROVED = "approved"
+    STATUS_REJECTED = "rejected"
+    # مبنای پیشنهاد (حاشیه/کف) عوض شده؛ تأییدِ قبلی دیگر معتبر نیست
+    STATUS_STALE = "stale"
+    # موتور در اجرای بعدی دیگر پیشنهادی نداشت (مثلاً طبقه‌ی مشتری عوض شد)
+    STATUS_WITHDRAWN = "withdrawn"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    business_id: Mapped[int] = mapped_column(ForeignKey("businesses.id"), index=True)
+    opportunity_id: Mapped[int] = mapped_column(
+        ForeignKey("opportunities.id", ondelete="CASCADE"), unique=True, index=True
+    )
+    # پله‌ی پیشنهادی به پایه‌ی هزارم (۵۰۰ = ۵٪). صفر یعنی «بدون تخفیف» که خودش
+    # یک تصمیمِ صریح است، نه نبودِ تصمیم.
+    suggested_discount_bp: Mapped[int] = mapped_column(Integer)
+    margin_bp_at_suggestion: Mapped[int | None] = mapped_column(Integer)
+    floor_bp_at_suggestion: Mapped[int | None] = mapped_column(Integer)
+    # طبقه‌ی خریدِ تمام‌قیمتِ مشتری در لحظه‌ی پیشنهاد: high / mid / low / None
+    tier: Mapped[str | None] = mapped_column(String(16))
+    status: Mapped[str] = mapped_column(String(16), default=STATUS_SUGGESTED, index=True)
+    # با توکنِ مشترک این فقط متنی است که درخواست‌دهنده نوشته — نه هویتِ واقعی
+    decided_by: Mapped[str | None] = mapped_column(String(128))
+    decided_at: Mapped[float | None] = mapped_column(Float)
+    decision_note_fa: Mapped[str | None] = mapped_column(Text)
+    run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("opportunity_runs.id", ondelete="SET NULL")
+    )
+    created_at: Mapped[float] = mapped_column(Float, default=now_ts)
+    updated_at: Mapped[float] = mapped_column(Float, default=now_ts)
+
+
 class UpliftSnapshot(Base):
     """عکسِ جدولِ اثرِ آموخته‌شده در یک لحظه.
 
@@ -766,6 +827,9 @@ class CampaignMember(Base):
     exposure_channel: Mapped[str | None] = mapped_column(String(32))
     # جمعِ ارزش فرصت‌های این مشتری در این کمپین (برای گزارش، نه برای سنجش اثر)
     expected_value_rial: Mapped[int | None] = mapped_column(BigInteger)
+    # پله‌ی تخفیفِ **تأییدشده‌ای** که در لحظه‌ی تماس روی این عضو اعمال شد
+    # (§۲۰.۲ «کدام آفر نشان داده شد»). `NULL` یعنی بدون آفر.
+    offer_discount_bp: Mapped[int | None] = mapped_column(Integer)
 
 
 class CampaignOpportunity(Base):
@@ -873,6 +937,8 @@ class CampaignSend(Base):
     status: Mapped[str] = mapped_column(String(32), default=STATUS_SENT, index=True)
     status_detail_fa: Mapped[str | None] = mapped_column(Text)
     provider_message_id: Mapped[str | None] = mapped_column(String(128))
+    # پله‌ی تخفیفی که در متنِ همین پیام رفت — فقط از آفرِ تأییدشده (§۲۰.۲)
+    offer_discount_bp: Mapped[int | None] = mapped_column(Integer)
     sent_at: Mapped[float] = mapped_column(Float, default=now_ts, index=True)
 
 
@@ -1241,6 +1307,7 @@ __all__ = [
     "Opportunity",
     "OpportunityEvent",
     "OpportunityFactor",
+    "OpportunityOffer",
     "OpportunityRun",
     "Order",
     "OrderLine",
