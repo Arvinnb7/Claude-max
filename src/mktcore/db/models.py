@@ -1008,6 +1008,15 @@ class AppSetting(Base):
     # ثبت می‌کند — نه یک سقفِ حدسی که فرصت‌های واقعی را قیچی کند.
     KEY_DAILY_CAPACITY = "operator_daily_capacity"
 
+    # نردبانِ تخفیف (§۲۰.۳): پله‌ها به پایه‌ی هزارم، جداشده با کاما («500,1000,1500»).
+    # نبودنش یعنی «کاربر نردبانی نگفته» و `filter_offer_policy` همان «بررسی نشد»
+    # امروز را ثبت می‌کند — هیچ پله‌ای حدس زده نمی‌شود.
+    KEY_OFFER_LADDER_BP = "offer_ladder_bp"
+    # آستانه‌های طبقه‌بندیِ «تمام‌قیمت‌خری»؛ نبودنشان یعنی پیش‌فرضِ مستند.
+    KEY_FULL_PRICE_HIGH_BP = "full_price_high_bp"
+    KEY_FULL_PRICE_LOW_BP = "full_price_low_bp"
+    KEY_FULL_PRICE_MIN_LINES = "full_price_min_lines"
+
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     business_id: Mapped[int] = mapped_column(ForeignKey("businesses.id"), index=True)
     key: Mapped[str] = mapped_column(String(64), index=True)

@@ -165,6 +165,7 @@ def write_customer_features(
         ])
         previous_states = _previous_states(session, business.id, as_of, set(grouped))
         profits = _profit_lookup(session, business.id, set(grouped))
+        full_price = _full_price_lookup(session, business.id)
 
         to_insert: list[dict] = []
         to_update: list[dict] = []
@@ -189,6 +190,7 @@ def write_customer_features(
                 display_currency=display_currency,
                 lifecycle=verdict,
                 profit=profits.get(customer_id),
+                full_price_share_bp=full_price.get(customer_id),
             )
             if customer_id in existing:
                 to_update.append({**payload, "id": existing[customer_id]})
@@ -258,6 +260,28 @@ def _existing_snapshots(
         ).all()
         out.update(dict(rows))
     return out
+
+
+def _full_price_lookup(session: Session, business_id: int) -> dict[int, int]:
+    """سهمِ خریدِ تمام‌قیمتِ هر مشتری از دفتر کل (§۲۰.۳ بند ۱).
+
+    مشتریِ بدونِ عدد (فایل بدون ستون تخفیف) در خروجی **نیست** تا ستونش NULL
+    بماند — نه صفر، نه ۱۰۰٪.
+    """
+    from mktcore.features.discount import full_price_share_bp
+    from mktcore.features.ledger_frame import load_line_frame
+
+    try:
+        lines = load_line_frame(session, business_id)
+    except Exception:  # noqa: BLE001 - نبودِ این عدد نباید نوشتنِ ویژگی را بخواباند
+        logger.exception("سهم خرید تمام‌قیمت خوانده نشد")
+        return {}
+    share = full_price_share_bp(lines)
+    return {
+        int(customer_id): int(value)
+        for customer_id, value in share.items()
+        if value == value  # NaN را کنار می‌گذارد
+    }
 
 
 def _profit_lookup(
@@ -359,6 +383,7 @@ def _feature_payload(
     display_currency: str,
     lifecycle: LifecycleVerdict | None = None,
     profit: dict | None = None,
+    full_price_share_bp: int | None = None,
 ) -> dict:
     n_orders = int(row["n_orders"])
     monetary = float(row["monetary"])
@@ -389,6 +414,8 @@ def _feature_payload(
             float(recency - avg_gap) if avg_gap else None
         ),
         "p_alive_bp": to_basis_points(p_alive),
+        # §۲۰.۳ بند ۱ — همبستگیِ مشاهده‌ای؛ NULL یعنی فایل ستون تخفیف نداشت
+        "full_price_share_bp": full_price_share_bp,
         "clv_rial": to_rial_int(clv, display_currency),
         "segment": segment,
         "lifecycle_state": lifecycle.state if lifecycle else None,

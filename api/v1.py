@@ -557,7 +557,8 @@ def list_customers(
         rows = session.execute(
             stmt.order_by(ordering).limit(limit).offset(offset)
         ).all()
-        items = [_customer_row(customer, feature) for customer, feature in rows]
+        thresholds = _tier_thresholds(session, business_id)
+        items = [_customer_row(customer, feature, thresholds) for customer, feature in rows]
 
     return {
         "available": True,
@@ -617,7 +618,10 @@ def get_customer(customer_id: int, history_limit: int = Query(200, ge=1, le=2000
 
         payload = {
             "available": True,
-            "customer": _customer_row(customer, snapshots[0] if snapshots else None),
+            "customer": _customer_row(
+                customer, snapshots[0] if snapshots else None,
+                _tier_thresholds(session, customer.business_id),
+            ),
             "likely_branch": likely_branch(order_branches).to_dict(),
             "contact_opt_out": None if suppression is None else {
                 "reason_fa": suppression.reason_fa,
@@ -680,7 +684,57 @@ def _product_names(session, product_ids: set[int]) -> dict[int, str]:
     return dict(rows)
 
 
-def _customer_row(customer: Customer, feature: Any | None) -> dict:
+def _full_price_payload(feature: Any, thresholds: dict | None = None) -> dict:
+    """سهمِ خریدِ تمام‌قیمت + طبقه — همیشه با متنِ «همبستگی است، نه علّیت».
+
+    `share_bp=None` یعنی فایل ستون تخفیف نداشت؛ طبقه هم `None` می‌ماند، نه
+    «متوسط» و نه «تمام‌قیمت». آستانه‌ها از سیاستِ تنظیم‌شده‌ی کاربر می‌آیند و
+    اگر تنظیم نشده باشند، پیش‌فرض‌ها **گفته** می‌شوند.
+    """
+    from mktcore.features.discount import (
+        NON_CAUSAL_NOTE_FA,
+        full_price_tier,
+    )
+
+    share = getattr(feature, "full_price_share_bp", None)
+    thresholds = dict(thresholds or _tier_thresholds())
+    configured = thresholds.pop("configured", False)
+    tier = full_price_tier(share, getattr(feature, "n_lines", None), **thresholds)
+    return {
+        "share_bp": share,
+        "share": None if share is None else round(share / 10_000, 4),
+        "tier": tier,
+        "thresholds": {**thresholds, "configured": configured},
+        "note_fa": (
+            "ستون تخفیف در داده نبود، پس رفتار خرید تمام‌قیمت نامعلوم است. "
+            if share is None else
+            f"کمتر از {thresholds['min_lines']} خط خرید؛ طبقه معتبر نیست. "
+            if tier is None else ""
+        ) + NON_CAUSAL_NOTE_FA,
+    }
+
+
+def _tier_thresholds(session=None, business_id: int | None = None) -> dict:
+    """آستانه‌های طبقه‌بندی — تنظیمِ کاربر، وگرنه پیش‌فرضِ مستند (و گفته می‌شود کدام)."""
+    from mktcore.features.discount import (
+        DEFAULT_HIGH_BP,
+        DEFAULT_LOW_BP,
+        DEFAULT_MIN_LINES,
+    )
+
+    if session is not None and business_id is not None:
+        from mktcore.settings_store import full_price_thresholds
+
+        return full_price_thresholds(session, business_id)
+    return {
+        "high_bp": DEFAULT_HIGH_BP, "low_bp": DEFAULT_LOW_BP,
+        "min_lines": DEFAULT_MIN_LINES, "configured": False,
+    }
+
+
+def _customer_row(
+    customer: Customer, feature: Any | None, thresholds: dict | None = None,
+) -> dict:
     row = {
         "id": customer.id,
         "key": customer.canonical_key,
@@ -719,6 +773,8 @@ def _customer_row(customer: Customer, feature: Any | None) -> dict:
         "top_product": feature.top_product,
         # CLV سودمحور — **افزودنی**؛ `clv_12m` بالا دست‌نخورده و درآمدی می‌ماند.
         "clv_gross_profit": _clv_profit_payload(feature),
+        # §۲۰.۳ — رفتارِ خریدِ تمام‌قیمت. متنِ غیرعلّی **اجباری** است.
+        "full_price": _full_price_payload(feature, thresholds),
         # امتیازهای مدل. `None` یعنی مدلی فعال نیست، نه «احتمال صفر».
         "whale_probability": (
             None if feature.whale_probability_bp is None
@@ -1174,6 +1230,121 @@ def write_margin_floor(payload: MarginFloorRequest) -> dict:
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return read_margin_floor()
+
+
+class OfferPolicyRequest(BaseModel):
+    """نردبانِ تخفیف و آستانه‌های طبقه. هر فیلد `None` باشد دست نمی‌خورد.
+
+    `ladder_bp=[]` یعنی برداشتنِ نردبان (بازگشت به «بررسی نشد»).
+    """
+
+    ladder_bp: list[int] | None = Field(default=None, max_length=8)
+    full_price_high_bp: int | None = Field(default=None, ge=0, le=10_000)
+    full_price_low_bp: int | None = Field(default=None, ge=0, le=10_000)
+    full_price_min_lines: int | None = Field(default=None, ge=1, le=1_000)
+
+
+@router.get("/offer-policy")
+def read_offer_policy() -> dict:
+    """نردبانِ تخفیف (§۲۰.۳) + اینکه روی چند فرصت اصلاً **می‌تواند** اثر بگذارد.
+
+    عددِ تنها کافی نیست: نردبان فقط روی فرصتی اثر دارد که کالایش حاشیه‌ی
+    محاسبه‌شده داشته باشد و مشتری‌اش طبقه‌ی معلوم. اگر پوششِ بها صفر باشد،
+    نردبان همیشه «بررسی نشد» می‌ماند — ایمن، ولی بی‌اثر — و همین باید گفته شود.
+    """
+    ensure_schema()
+    from mktcore.costs.register import cost_coverage, margin_lookup
+    from mktcore.settings_store import full_price_thresholds, offer_ladder_bp
+
+    with session_scope() as session:
+        business_id = _business_id(session)
+        if business_id is None:
+            return {**_no_ledger_yet(), "ladder_bp": None}
+        ladder = offer_ladder_bp(session, business_id)
+        floor = _margin_floor(session, business_id)
+        thresholds = full_price_thresholds(session, business_id)
+        margins = margin_lookup(session, business_id)
+        _total_lines, _with_cost, coverage = cost_coverage(session, business_id)
+
+        open_rows = session.execute(
+            select(Opportunity.id, Product.canonical_name, Product.display_name,
+                   CustomerFeature.full_price_share_bp, CustomerFeature.n_lines)
+            .outerjoin(Product, Product.id == Opportunity.product_id)
+            .outerjoin(CustomerFeature, CustomerFeature.customer_id == Opportunity.customer_id)
+            .where(Opportunity.business_id == business_id, Opportunity.status == "open")
+        ).all()
+
+    from mktcore.features.discount import full_price_tier
+
+    open_total = len({row[0] for row in open_rows})
+    with_margin = {
+        row[0] for row in open_rows
+        if (row[1] and row[1] in margins) or (row[2] and row[2] in margins)
+    }
+    known_tier = {
+        row[0] for row in open_rows
+        if full_price_tier(row[3], row[4], high_bp=thresholds["high_bp"],
+                           low_bp=thresholds["low_bp"], min_lines=thresholds["min_lines"])
+        is not None
+    }
+    reachable = len(with_margin & known_tier)
+
+    if ladder is None:
+        note = (
+            "نردبان تعیین نشده است؛ فیلترِ آفر هیچ تخفیفی پیشنهاد نمی‌کند و در گزارش "
+            "«بررسی نشد» ثبت می‌شود."
+        )
+    elif floor is None:
+        note = "نردبان هست ولی **کف حاشیه** تعیین نشده؛ بدون کف، هیچ پله‌ای پیشنهاد نمی‌شود."
+    elif coverage == 0:
+        note = (
+            "نردبان و کف هر دو هستند، ولی هیچ خطی بها ندارد؛ حاشیه‌ی هیچ کالایی "
+            "محاسبه‌شدنی نیست و نردبان روی هیچ فرصتی اثر ندارد."
+        )
+    else:
+        note = (
+            f"از {open_total} فرصتِ باز، {reachable} مورد هم حاشیه‌ی کالا دارند هم "
+            f"طبقه‌ی معلومِ مشتری — فقط همان‌ها می‌توانند پیشنهادِ تخفیف بگیرند."
+        )
+
+    return {
+        "available": True,
+        "ladder_bp": list(ladder) if ladder else None,
+        "margin_floor_bp": floor,
+        "thresholds": thresholds,
+        "cost_coverage": coverage,
+        "open_opportunities": open_total,
+        "with_product_margin": len(with_margin),
+        "with_known_tier": len(known_tier),
+        "reachable_by_ladder": reachable,
+        "note_fa": note,
+    }
+
+
+@router.put("/offer-policy", dependencies=[Depends(require_token)])
+def write_offer_policy(payload: OfferPolicyRequest) -> dict:
+    """ثبت سیاستِ آفر — تصمیمِ کاربر است، نه حدسِ سیستم."""
+    ensure_schema()
+    from mktcore.settings_store import set_full_price_thresholds, set_offer_ladder_bp
+
+    try:
+        if payload.ladder_bp is not None:
+            set_offer_ladder_bp(payload.ladder_bp)
+        if (payload.full_price_high_bp is not None or payload.full_price_low_bp is not None
+                or payload.full_price_min_lines is not None):
+            set_full_price_thresholds(
+                high_bp=payload.full_price_high_bp, low_bp=payload.full_price_low_bp,
+                min_lines=payload.full_price_min_lines,
+            )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return read_offer_policy()
+
+
+def _margin_floor(session, business_id: int) -> int | None:
+    from mktcore.settings_store import margin_floor_bp
+
+    return margin_floor_bp(session, business_id)
 
 
 class CapacityRequest(BaseModel):

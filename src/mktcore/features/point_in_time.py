@@ -392,16 +392,12 @@ def _attach_discount(out: pd.DataFrame, frame: pd.DataFrame, grouped) -> None:
     «هیچ ستون تخفیفی نداریم» با «هیچ‌وقت تخفیف نگرفته» یکی نیست؛ دومی ادعایی
     است که داده پشتش نیست.
     """
-    has_amount = "discount_rial" in frame.columns and frame["discount_rial"].notna().any()
-    has_rate = "discount_rate_bp" in frame.columns and frame["discount_rate_bp"].notna().any()
-    if not (has_amount or has_rate):
-        out["full_price_share_bp"] = np.nan
-        return
-    amount = frame["discount_rial"].fillna(0) if has_amount else 0
-    rate = frame["discount_rate_bp"].fillna(0) if has_rate else 0
-    full_price = ((amount == 0) & (rate == 0)).astype(float)
-    share = full_price.groupby(frame["customer_id"]).mean() * _BP
-    out["full_price_share_bp"] = share.reindex(out.index).round().astype(float)
+    # منطقِ مشترک با عکسِ ویژگی و نردبانِ تخفیف در یک جا زندگی می‌کند؛ دو نسخه
+    # از «تمام‌قیمت یعنی چه» دیر یا زود از هم فاصله می‌گیرند.
+    from mktcore.features.discount import full_price_share_bp
+
+    share = full_price_share_bp(frame)
+    out["full_price_share_bp"] = share.reindex(out.index).astype(float)
 
 
 __all__ = [
