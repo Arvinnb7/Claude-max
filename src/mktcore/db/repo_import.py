@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
-from sqlalchemy import func, insert, select, update
+from sqlalchemy import case, func, insert, select, update
 
 from mktcore.catalog import normalize_product_name, parse_pack_size
 from mktcore.identity import normalize_phone
@@ -148,7 +148,29 @@ def frame_dataset_key(df: pd.DataFrame) -> str:
 
 
 def line_uid(business_id: int, dataset_key: str, sheet: str, source_row: object) -> str:
+    """هویتِ خطِ **بی‌شماره‌فاکتور**: فقط با همان فایل و همان ردیف یکی است."""
     raw = f"{business_id}|{dataset_key}|{sheet}|{source_row}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+LINE_IDENTITY_VERSION = "v2"
+
+
+def line_uid_for_order(
+    business_id: int, order_key: str, product_norm: str, is_return: bool, ordinal: int,
+) -> str:
+    """هویتِ پایدارِ خطِ فاکتور (§۸.۴ لایه‌های ۲–۴).
+
+    کلید = کسب‌وکار + شماره‌ی فاکتور + کالای نرمال‌شده + نوع (فروش/برگشت) +
+    ترتیبِ خط در همین گروه. **مبلغ و مقدار عمداً در کلید نیستند**: صادراتِ
+    دوباره‌ی همان دوره با یک مبلغِ اصلاح‌شده باید همان خط را به‌روز کند، نه
+    اینکه خطِ تازه بسازد و قدیمی را کنارش بگذارد (دوبارشماری). با کلیدِ قبلی
+    (هشِ فایل + شماره‌ی ردیف) هر بایتِ تفاوتِ فایل همه‌ی خطوط را تازه می‌کرد.
+    """
+    raw = (
+        f"{LINE_IDENTITY_VERSION}|{business_id}|o|{order_key}|{product_norm}"
+        f"|{int(bool(is_return))}|{ordinal}"
+    )
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
@@ -426,6 +448,9 @@ def _build_line_payloads(
     is_returns = col("__is_return")
 
     payloads: list[dict] = []
+    # ترتیبِ خط درونِ گروهِ (فاکتور، کالا، نوع) — به ترتیبِ ردیفِ فایل. دو خطِ
+    # هم‌کالا در یک فاکتور با همین عدد از هم جدا می‌شوند.
+    ordinals: dict[tuple[str, str, bool], int] = {}
     for i in range(len(frame)):
         iso = _iso_date(dates[i]) if dates is not None else None
         if iso is None:
@@ -444,6 +469,17 @@ def _build_line_payloads(
         product_norm = normalize_product_name(raw_product) if raw_product else None
 
         raw_order = _text_or_none(orders[i]) if orders is not None else None
+        is_return_flag = bool(is_returns[i]) if is_returns is not None else False
+        if raw_order is not None:
+            group = (raw_order, product_norm or "", is_return_flag)
+            ordinal = ordinals.get(group, 0)
+            ordinals[group] = ordinal + 1
+            uid = line_uid_for_order(
+                business_id, raw_order, product_norm or "", is_return_flag, ordinal,
+            )
+        else:
+            uid = line_uid(business_id, dataset_key, sheet,
+                           source_row if source_row is not None else f"i{i}")
 
         discount_rial = None
         discount_bp = None
@@ -454,8 +490,7 @@ def _build_line_payloads(
                 discount_bp = to_basis_points(discounts[i])
 
         payloads.append({
-            "line_uid": line_uid(business_id, dataset_key, sheet,
-                                source_row if source_row is not None else f"i{i}"),
+            "line_uid": uid,
             "business_id": business_id,
             "batch_id": batch_id,
             "order_key": raw_order or "",
@@ -484,7 +519,7 @@ def _build_line_payloads(
             "gross_profit_rial": (
                 None if cost_rial is None else int(revenue_rial) - int(cost_rial)
             ),
-            "is_return": bool(is_returns[i]) if is_returns is not None else False,
+            "is_return": is_return_flag,
             "source_row": source_row,
             "sheet_name": sheet,
             "raw_customer_key": raw_customer,
@@ -546,6 +581,65 @@ def _upsert_lines(session: Session, payloads: list[dict]) -> tuple[int, int]:
             updated += len(to_update)
         session.flush()
     return inserted, updated
+
+
+def _overlap_with_other_uploads(
+    session: Session, payloads: list[dict], *, dataset_key: str,
+) -> int:
+    """چند خطِ این فایل قبلاً از **فایلِ دیگری** وارد شده بود؟ (کنترل L08)
+
+    این خطوط به‌روز می‌شوند نه دوبار شمرده؛ ولی عددش باید دیده شود تا کاربر
+    بداند دو صادراتش هم‌پوشانی دارند.
+    """
+    uids = [p["line_uid"] for p in payloads if p["has_order_key"]]
+    count = 0
+    for start in range(0, len(uids), CHUNK):
+        rows = session.execute(
+            select(OrderLine.line_uid, ImportBatch.dataset_key)
+            .join(ImportBatch, ImportBatch.id == OrderLine.batch_id)
+            .where(OrderLine.line_uid.in_(uids[start:start + CHUNK]))
+        ).all()
+        count += sum(1 for _uid, key in rows if key != dataset_key)
+    return count
+
+
+def _recompute_order_headers(session: Session, order_ids: list[int]) -> None:
+    """جمع‌ها و شمارِ خطوطِ سرِ فاکتور از **همه‌ی** خطوطِ وصل‌شده.
+
+    وقتی خطوطِ یک فاکتور از چند بارگذاری می‌آیند، جمعِ «همین دسته» ناقص است؛
+    سرِ فاکتور باید با آنچه واقعاً زیرش نشسته یکی باشد.
+    """
+    for start in range(0, len(order_ids), CHUNK):
+        chunk = order_ids[start:start + CHUNK]
+        rows = session.execute(
+            select(
+                OrderLine.order_id,
+                func.sum(case((OrderLine.is_return.is_(False), OrderLine.revenue_rial), else_=0)),
+                func.sum(case((OrderLine.is_return.is_(True), -OrderLine.revenue_rial), else_=0)),
+                func.count(OrderLine.id),
+                func.sum(OrderLine.discount_rial),
+                func.count(OrderLine.discount_rial),
+                func.min(OrderLine.line_date),
+            )
+            .where(OrderLine.order_id.in_(chunk))
+            .group_by(OrderLine.order_id)
+        ).all()
+        updates = []
+        for order_id, gross, returns, n_lines, discount, n_discount, first_date in rows:
+            gross_i, returns_i = int(gross or 0), int(returns or 0)
+            updates.append({
+                "id": order_id,
+                "gross_rial": gross_i,
+                "returns_rial": returns_i,
+                "net_rial": gross_i - returns_i,
+                "line_count": int(n_lines or 0),
+                "discount_rial": int(discount) if n_discount else None,
+                "order_date": first_date,
+                "updated_at": now_ts(),
+            })
+        if updates:
+            session.execute(update(Order), updates)
+    session.flush()
 
 
 def _write_orders(
@@ -643,7 +737,9 @@ def _write_orders(
         ]
         if updates:
             session.execute(update(OrderLine), updates)
-        session.flush()
+    session.flush()
+    # سرِ فاکتور از همه‌ی خطوطِ وصل‌شده — نه فقط خطوطِ همین دسته
+    _recompute_order_headers(session, sorted(existing.values()))
 
     return len(keys)
 
@@ -689,6 +785,7 @@ def _reconcile(
     n_source_rows: int,
     display_currency: str,
     kpis: Any | None,
+    overlap_lines: int = 0,
 ) -> tuple[str, list[ReconcileCheck]]:
     """مقایسه‌ی «آنچه تحلیل گفت» با «آنچه در دفتر نشست».
 
@@ -743,6 +840,34 @@ def _reconcile(
 
     add("L07", "هیچ ردیفی در مسیر نوشتن گم نشده است", n_source_rows, n_lines, 0,
         "اختلاف یعنی خطی به دفتر کل نرسیده است (تاریخ یا مبلغ نامعتبر)")
+
+    # L08 — هم‌پوشانی با فایل‌های پیشین: اطلاع است، نه خطا. خطِ هم‌پوشان به‌روز
+    # می‌شود نه دوبار شمرده؛ ولی عددش باید دیده شود.
+    checks.append(ReconcileCheck(
+        "L08", "هم‌پوشانی با بارگذاری‌های پیشین", overlap_lines, overlap_lines, 0, "OK",
+        None if not overlap_lines else (
+            f"{overlap_lines} خطِ این فایل قبلاً از فایلِ دیگری وارد شده بود و به‌روز شد، "
+            "نه دوبار شمرده (هویتِ خط = فاکتور + کالا + ترتیب)."
+        ),
+    ))
+
+    # L09 — شمار سفارش (§۸.۶): همان تعریفِ KPI — فاکتورهای با جمعِ خالصِ مثبت.
+    if kpis is not None:
+        expected_orders = getattr(kpis, "n_orders", None)
+        if any(p["has_order_key"] for p in payloads):
+            net_by_order: dict[str, int] = {}
+            for p in payloads:
+                if p["has_order_key"]:
+                    net_by_order[p["order_key"]] = (
+                        net_by_order.get(p["order_key"], 0) + int(p["revenue_rial"])
+                    )
+            actual_orders = sum(1 for net in net_by_order.values() if net > 0)
+            add("L09", "شمار سفارش با KPI", expected_orders, actual_orders, 0)
+        else:
+            checks.append(ReconcileCheck(
+                "L09", "شمار سفارش با KPI", expected_orders, None, 0, "WARN",
+                "فایل ستون فاکتور ندارد؛ تحلیل هر خط را یک سفارش می‌شمارد.",
+            ))
 
     for check in checks:
         session.add(ImportReconciliation(
@@ -848,6 +973,7 @@ def write_import(
             customer_ids=customer_ids,
             product_ids=product_ids,
         )
+        overlap_lines = _overlap_with_other_uploads(session, payloads, dataset_key=key)
         inserted, updated = _upsert_lines(session, payloads)
         orders_written = _write_orders(session, business.id, batch.id, payloads)
 
@@ -859,6 +985,7 @@ def write_import(
             n_source_rows=len(combined),
             display_currency=display_currency,
             kpis=kpis,
+            overlap_lines=overlap_lines,
         )
 
         batch.lines_inserted = inserted
@@ -992,6 +1119,7 @@ __all__ = [
     "ReconcileCheck",
     "frame_dataset_key",
     "line_uid",
+    "line_uid_for_order",
     "write_import",
 ]
 

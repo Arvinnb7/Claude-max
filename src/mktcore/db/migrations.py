@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("mktcore.db.migrations")
 
 # نسخه‌ی جاری طرح‌واره‌ی canonical. با افزودن هر مهاجرت، یک عدد بالا می‌رود.
-CANONICAL_SCHEMA_VERSION = 16
+CANONICAL_SCHEMA_VERSION = 17
 
 _MIGRATION_TABLE = "schema_migrations"
 
@@ -285,6 +285,100 @@ def _migration_0016_offer_margin_basis(conn: Connection) -> None:
             conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {column} {ddl_type}")
 
 
+def _migration_0017_order_line_identity(conn: Connection) -> None:
+    """هویتِ پایدارِ خطِ فاکتور (§۸.۴ لایه‌های ۲–۴).
+
+    تا این نسخه `line_uid` از هشِ فایل + شماره‌ی ردیف ساخته می‌شد؛ پس دو صادراتِ
+    هم‌پوشان از ERP همان خط را دوبار می‌نوشتند. حالا کلیدِ خطِ فاکتوردار =
+    فاکتور + کالا + نوع + ترتیب است (`line_uid_for_order`). این مهاجرت:
+
+    1. تکراری‌های ازقبل‌ایجادشده را ادغام می‌کند: خطوطِ یک گروهِ (فاکتور، کالا،
+       نوع) که از **دسته‌های متفاوت** آمده‌اند و مبلغ و مقدارِ یکسان دارند، یک
+       خط‌اند؛ جدیدترین می‌ماند. (خطِ اصلاح‌شده‌ی تاریخی قابل تشخیص نیست و
+       می‌ماند — مستند در FINANCIAL_CALCULATION_RULES.)
+    2. `line_uid` بازماندگان را با قاعده‌ی تازه بازنویسی می‌کند.
+    3. سرِ فاکتورهای لمس‌شده را از خطوطِ واقعی‌شان بازمحاسبه می‌کند.
+    """
+    from mktcore.catalog import normalize_product_name
+    from mktcore.db.repo_import import line_uid_for_order
+
+    rows = conn.exec_driver_sql(
+        "SELECT ol.id, ol.business_id, o.order_key, ol.raw_product_name, ol.is_return, "
+        "ol.source_row, ol.batch_id, ol.order_id, ol.revenue_rial, ol.quantity_milli "
+        "FROM order_lines ol JOIN orders o ON o.id = ol.order_id "
+        "WHERE ol.order_id IS NOT NULL "
+        "ORDER BY ol.business_id, ol.order_id, ol.source_row, ol.id"
+    ).fetchall()
+
+    groups: dict[tuple, list[tuple]] = {}
+    for row in rows:
+        (_line_id, business_id, order_key, raw_product, is_return, *_rest) = row
+        key = (business_id, order_key, normalize_product_name(raw_product) if raw_product else "",
+               bool(is_return))
+        groups.setdefault(key, []).append(row)
+
+    to_delete: list[int] = []
+    uid_updates: list[dict] = []
+    touched_orders: set[int] = set()
+    for key, members in groups.items():
+        business_id, order_key, product_norm, is_return = key
+        # ادغامِ تکراری‌های میان‌دسته‌ای: همان (مبلغ، مقدار) از دسته‌ای دیگر
+        survivors: list[tuple] = []
+        seen: dict[tuple, tuple] = {}
+        for row in members:
+            (line_id, _b, _o, _p, _r, _src, batch_id, order_id, revenue, qty) = row
+            fingerprint = (revenue, qty)
+            previous = seen.get(fingerprint)
+            if previous is not None and previous[6] != batch_id:
+                # جدیدترین می‌ماند (دسته‌ی بزرگ‌تر، سپس شناسه‌ی بزرگ‌تر)
+                keep, drop = (row, previous) if (batch_id, line_id) > (previous[6], previous[0]) else (previous, row)
+                to_delete.append(drop[0])
+                touched_orders.add(drop[7])
+                survivors = [r for r in survivors if r[0] != drop[0]]
+                seen[fingerprint] = keep
+                if keep is row:
+                    survivors.append(row)
+                continue
+            seen[fingerprint] = row
+            survivors.append(row)
+        survivors.sort(key=lambda r: ((r[5] if r[5] is not None else 1 << 60), r[0]))
+        for ordinal, row in enumerate(survivors):
+            uid_updates.append({
+                "id": row[0],
+                "uid": line_uid_for_order(business_id, order_key, product_norm, is_return, ordinal),
+            })
+
+    for start in range(0, len(to_delete), 500):
+        chunk = to_delete[start:start + 500]
+        conn.exec_driver_sql(
+            f"DELETE FROM order_lines WHERE id IN ({','.join(str(i) for i in chunk)})"
+        )
+    for start in range(0, len(uid_updates), 500):
+        chunk = uid_updates[start:start + 500]
+        conn.execute(
+            text("UPDATE order_lines SET line_uid = :uid WHERE id = :id"), chunk,
+        )
+    for order_id in sorted(touched_orders):
+        conn.execute(text(
+            "UPDATE orders SET "
+            "gross_rial = (SELECT COALESCE(SUM(CASE WHEN is_return = 0 THEN revenue_rial ELSE 0 END), 0) "
+            "  FROM order_lines WHERE order_id = :oid), "
+            "returns_rial = (SELECT COALESCE(SUM(CASE WHEN is_return = 1 THEN -revenue_rial ELSE 0 END), 0) "
+            "  FROM order_lines WHERE order_id = :oid), "
+            "line_count = (SELECT COUNT(*) FROM order_lines WHERE order_id = :oid) "
+            "WHERE id = :oid"
+        ), {"oid": order_id})
+        conn.execute(text(
+            "UPDATE orders SET net_rial = gross_rial - returns_rial WHERE id = :oid"
+        ), {"oid": order_id})
+    if rows:
+        logger.info(
+            "مهاجرت ۱۷: %s خطِ فاکتوردار بازکلیدگذاری شد، %s تکراریِ میان‌دسته‌ای ادغام شد، "
+            "%s سرِ فاکتور بازمحاسبه شد",
+            len(uid_updates), len(to_delete), len(touched_orders),
+        )
+
+
 _MIGRATIONS: tuple[tuple[int, str, Callable[[Connection], None]], ...] = (
     (1, "create_canonical_tables", _migration_0001_create_canonical_tables),
     (2, "create_opportunity_tables", _migration_0002_create_opportunity_tables),
@@ -302,6 +396,7 @@ _MIGRATIONS: tuple[tuple[int, str, Callable[[Connection], None]], ...] = (
     (14, "create_import_quarantine", _migration_0014_create_import_quarantine),
     (15, "create_offer_ledger", _migration_0015_create_offer_ledger),
     (16, "offer_margin_basis", _migration_0016_offer_margin_basis),
+    (17, "order_line_identity", _migration_0017_order_line_identity),
 )
 
 
