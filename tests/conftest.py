@@ -65,8 +65,10 @@ def reset_contact_history() -> None:
     from sqlalchemy import update
 
     from mktcore.db import session_scope
+    from mktcore.db.migrations import ensure_schema
     from mktcore.db.models import CampaignMember
 
+    ensure_schema()
     with store._conn() as conn:  # noqa: SLF001 - فقط در تست
         conn.execute("DELETE FROM outbox")
     with session_scope() as session:
@@ -75,3 +77,26 @@ def reset_contact_history() -> None:
                 exposure_at=None, exposure_date=None, exposure_channel=None,
             )
         )
+
+
+def close_open_campaigns() -> None:
+    """کمپین‌های بازِ ماژول‌های قبلی روی دفتر کلِ مشترک بسته می‌شوند.
+
+    دروازه‌ی تماس عضوِ کنترلِ هر کمپینِ باز را کنار می‌گذارد؛ در سوئیتِ کامل
+    آن‌قدر کمپینِ باز از ماژول‌های قبلی می‌ماند که مخاطبِ مجازِ کمپینِ تازه به چند
+    نفر — هر کدام تنها در طبقه‌ی خودش — می‌رسد و گروه کنترل خالی می‌شود. ماژولی
+    که درباره‌ی هم‌پوشانیِ کمپین‌ها نیست، از وضعیتِ آزمایشیِ تمیز شروع می‌کند.
+    """
+    from sqlalchemy import select
+
+    from mktcore.db import session_scope
+    from mktcore.db.base import now_ts
+    from mktcore.db.migrations import ensure_schema
+    from mktcore.db.models import Campaign
+
+    # فیکسچرِ autouseِ ماژول پیش از فیکسچرِ تحلیل اجرا می‌شود؛ طرح‌واره باید باشد.
+    ensure_schema()
+    with session_scope() as session:
+        for campaign in session.scalars(select(Campaign).where(Campaign.status != "closed")):
+            campaign.status = "closed"
+            campaign.closed_at = now_ts()

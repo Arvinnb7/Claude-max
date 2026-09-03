@@ -27,9 +27,15 @@ from api.main import app  # noqa: E402
 from mktcore.db import session_scope  # noqa: E402
 from mktcore.db.models import CampaignMember, OrderLine, Product  # noqa: E402
 
-from .conftest import poll_job, reset_contact_history  # noqa: E402
+from .conftest import close_open_campaigns, poll_job, reset_contact_history  # noqa: E402
 
 client = TestClient(app)
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _fresh_experiment_state():
+    """کمپین‌های بازِ ماژول‌های قبلی بسته می‌شوند تا مخاطبِ این ماژول فرو نریزد."""
+    close_open_campaigns()
 
 
 @pytest.fixture(autouse=True)
