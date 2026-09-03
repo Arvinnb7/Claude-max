@@ -207,12 +207,28 @@ def _policy_settings(
         return None, {}, None
 
 
+def _campaign_recent_keys(business_slug: str, db_path: Path | None, window_days: int) -> set[str]:
+    """مهرِ تماسِ کمپین‌ها (اکسل یا پیامکِ واقعی) به‌صورت کلیدهای خامِ موتور."""
+    try:
+        from mktcore.contact.register import recent_contact_keys
+
+        with session_scope(db_path) as session:
+            business_id = resolve_business_id(session, business_slug)
+            if business_id is None:
+                return set()
+            return recent_contact_keys(session, business_id, window_days=window_days)
+    except Exception:  # noqa: BLE001 - نبودِ دفتر نباید موتور را بخواباند
+        logger.debug("مهرِ تماسِ کمپین‌ها در دسترس نبود", exc_info=True)
+        return set()
+
+
 def build_context(
     clean: pd.DataFrame,
     *,
     fatigue_window_days: int = 14,
     per_customer_open_cap: int = 3,
     consent_denied: set[str] | None = None,
+    recently_contacted_extra: set[str] | None = None,
     margin_floor_bp: int | None = None,
     margin_by_product: dict[str, int] | None = None,
     daily_capacity: int | None = None,
@@ -226,6 +242,11 @@ def build_context(
     ندارند.
     """
     recent, window = _recently_contacted(fatigue_window_days)
+    if recently_contacted_extra:
+        # تماسِ کمپین (اکسل/پیامک) هم تماس است — تا دیروز فیلترِ خستگی فقط outbox
+        # را می‌دید و عضوِ تازه‌تماس‌گرفته‌ی کمپین دوباره فرصت می‌ساخت.
+        recent = set(recent) | set(recently_contacted_extra)
+        window = window if window is not None else fatigue_window_days
     has_cost = bool(
         "cost" in clean.columns and clean["cost"].notna().any()
     )
@@ -322,6 +343,7 @@ def _run_engine_locked(
     ctx = build_context(
         clean,
         consent_denied=_opted_out_keys(business_slug, db_path),
+        recently_contacted_extra=_campaign_recent_keys(business_slug, db_path, 14),
         margin_floor_bp=floor_bp,
         margin_by_product=margins,
         daily_capacity=capacity,

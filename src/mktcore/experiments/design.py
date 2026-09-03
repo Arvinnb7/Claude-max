@@ -225,10 +225,11 @@ class ExperimentPlan:
 
 
 def _cell_status(n_treatment: int, n_control: int,
-                 ci: tuple[float, float] | None) -> str:
+                 ci: tuple[float, float] | None,
+                 min_cell_observations: int = MIN_CELL_OBSERVATIONS) -> str:
     if not n_treatment and not n_control:
         return STATUS_NO_DATA
-    if n_treatment < MIN_CELL_OBSERVATIONS or n_control < MIN_CELL_OBSERVATIONS:
+    if n_treatment < min_cell_observations or n_control < min_cell_observations:
         return STATUS_THIN
     if ci is None:
         return STATUS_INCONCLUSIVE
@@ -253,11 +254,14 @@ def build_plan(
     *,
     target_effect: float = DEFAULT_TARGET_EFFECT,
     holdout_pct: int = DEFAULT_HOLDOUT_PCT,
+    min_cell_observations: int = MIN_CELL_OBSERVATIONS,
 ) -> ExperimentPlan:
     """ساخت برنامه از عرضه‌ی سلول‌ها و جدولِ اثرِ آموخته‌شده.
 
     `table` می‌تواند `None` باشد (هیچ آزمایشی انجام نشده) — در آن حالت همه‌ی
     سلول‌ها `no_data` می‌شوند و نرخ پایه صریحاً «فرضی» برچسب می‌خورد.
+    `min_cell_observations` همان آستانه‌ی دروازه‌ی داده است (§۲۹.۶) — تنظیمِ
+    کاربر، نه ثابتِ کد، تا نمای برنامه‌ریز با نمای آمادگی یکی باشد.
     """
     global_rate = _global_control_rate(table) if table is not None else None
     suggestions: list[ExperimentSuggestion] = []
@@ -270,11 +274,11 @@ def build_plan(
         n_t = cell.n_treatment if cell else 0
         n_c = cell.n_control if cell else 0
         ci = cell.ci if cell else None
-        status = _cell_status(n_t, n_c, ci)
+        status = _cell_status(n_t, n_c, ci, min_cell_observations)
 
         # نرخ پایه: سلولِ خودش → کلِ کمپین‌ها → فرض. پایه صریحاً گزارش می‌شود
         # چون عددِ اندازه‌ی نمونه به آن حساس است.
-        if cell is not None and n_c >= MIN_CELL_OBSERVATIONS:
+        if cell is not None and n_c >= min_cell_observations:
             baseline, source = cell.rate_control, BASELINE_CELL
         elif global_rate is not None:
             baseline, source = global_rate, BASELINE_GLOBAL

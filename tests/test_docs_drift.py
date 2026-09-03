@@ -220,3 +220,53 @@ def test_required_docs_count_in_status_matches_the_disk():
     assert normalised == {str(on_disk)}, (
         f"سند وضعیت می‌گوید {sorted(claims)} از ۱۵؛ روی دیسک {on_disk} سند هست"
     )
+
+
+# ═══════════════════════════════ راست‌شدنِ اسناد با کد (دورِ صحت و ایمنی)
+_STATUS = _ROOT / "docs" / "revenue-intelligence" / "IMPLEMENTATION_STATUS.md"
+_RUNBOOK = _ROOT / "docs" / "revenue-intelligence" / "OPERATIONS_RUNBOOK.md"
+_TARGET = _ROOT / "docs" / "revenue-intelligence" / "TARGET_ARCHITECTURE.md"
+_SPEC_GAP = _ROOT / "docs" / "revenue-intelligence" / "SPEC_GAP_AUDIT.md"
+
+
+def test_status_ledger_does_not_call_shipped_features_deferred():
+    """auth و audit log ساخته و تست شده‌اند؛ دفتر نباید «خارج از دامنه» بخواندشان."""
+    text = _STATUS.read_text(encoding="utf-8")
+    assert "احراز هویت / RBAC / audit log" not in text
+    assert "`security.py`" in text and "audit_events" in text
+    assert "لغو ۱۱" in text and "contact-suppressions" in text
+
+
+def test_runbook_and_rollback_agree_on_code_rollback():
+    """کدِ قدیمی روی دیتابیسِ جدید کار می‌کند — دو سند نباید خلافِ هم بگویند."""
+    runbook = _RUNBOOK.read_text(encoding="utf-8")
+    rollback = _ROLLBACK.read_text(encoding="utf-8")
+    assert "پشتیبانی نمی‌شود" not in runbook.split("مهاجرت طرح‌واره")[-1].split("---")[0]
+    assert "MKT_CANONICAL_ENABLE" in runbook and "MKT_CANONICAL_ENABLE" in rollback
+    assert "اختیاری" in runbook and "اختیاری" in rollback
+
+
+def test_target_architecture_reflects_the_token_guard_and_later_phases():
+    text = _TARGET.read_text(encoding="utf-8")
+    assert "MKT_API_TOKEN" in text and "security.py" in text
+    assert "## تصمیم‌های فاز ۵" in text
+    assert "auth/RBAC" not in text
+
+
+def test_spec_gap_docs_table_matches_the_disk():
+    from tests.test_docs_drift import _ROOT as root  # noqa: PLC0415
+
+    text = _SPEC_GAP.read_text(encoding="utf-8")
+    docs_dir = root / "docs" / "revenue-intelligence"
+    required = [
+        "CURRENT_SYSTEM_AUDIT", "TARGET_ARCHITECTURE", "DATA_DICTIONARY",
+        "SOURCE_MAPPING_GUIDE", "FINANCIAL_CALCULATION_RULES", "IDENTITY_RESOLUTION",
+        "FEATURE_CATALOG", "OPPORTUNITY_ENGINE", "MODEL_CARDS", "EXPERIMENTATION_GUIDE",
+        "API_GUIDE", "OPERATIONS_RUNBOOK", "SECURITY_AND_PRIVACY", "IMPLEMENTATION_STATUS",
+        "RELEASE_NOTES",
+    ]
+    present = sum(1 for name in required if (docs_dir / f"{name}.md").exists())
+    assert f"## اسناد الزامی (§۳۶): {present} از ۱۵" in text.replace("۱۰", "10").replace("۱۵", "15") or (
+        f"{present}" in text.split("## اسناد الزامی (§۳۶):")[1].split("\n")[0]
+        .replace("۱۰", "10").replace("۱۵", "15")
+    )

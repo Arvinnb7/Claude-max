@@ -37,10 +37,16 @@ from mktcore.db.models import (  # noqa: E402
     OpportunityOffer,
 )
 
-from .conftest import poll_job  # noqa: E402
+from .conftest import poll_job, reset_contact_history  # noqa: E402
 from .test_campaign_send import _enable_panel, _fake_panel  # noqa: E402
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_contact_history():
+    """هر تست از وضعیتِ «کسی تازه تماس نگرفته» شروع می‌کند (خستگیِ تماسِ کمپین)."""
+    reset_contact_history()
 TEMPLATE = "سلام {نام}، این هفته {تخفیف} تخفیف برای شما داریم."
 
 

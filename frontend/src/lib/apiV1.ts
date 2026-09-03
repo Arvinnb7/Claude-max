@@ -337,6 +337,11 @@ export type OpportunityList = {
   relationship_value_kind?: string;
   relationship_note_fa?: string;
   economics_note_fa?: string;
+  /** «امروز» از دیدِ داده (as_of آخرین اجرای موتور) — مرجعِ «نزدیکِ انقضا» */
+  reference_date?: string | null;
+  expiring_soon_days?: number;
+  expiring_soon_count?: number;
+  sort?: "score" | "expires_at";
 };
 
 export type CustomerList = {
@@ -399,12 +404,17 @@ export async function listOpportunities(params: {
   valueKind?: string;
   limit?: number;
   offset?: number;
+  sort?: "score" | "expires_at";
+  expiresWithinDays?: number;
 } = {}): Promise<OpportunityList> {
   const search = new URLSearchParams();
   search.set("status", params.status ?? "open");
   if (params.kind) search.set("kind", params.kind);
   if (params.assignedTo) search.set("assigned_to", params.assignedTo);
   if (params.valueKind) search.set("value_kind", params.valueKind);
+  if (params.sort) search.set("sort", params.sort);
+  if (params.expiresWithinDays != null)
+    search.set("expires_within_days", String(params.expiresWithinDays));
   search.set("limit", String(params.limit ?? 50));
   search.set("offset", String(params.offset ?? 0));
   return handle(
@@ -435,6 +445,8 @@ export type CampaignSummary = {
   treatment_pipeline: Money;
   strata: Record<string, number>;
   exposure_note_fa?: string;
+  /** فقط در پاسخِ ساخت: چند مخاطب با دروازه‌ی مجوز تماس کنار گذاشته شدند و چرا */
+  contact_gate_note_fa?: string;
 };
 
 export type ArmSummary = {
@@ -463,8 +475,18 @@ export type CampaignReport = {
   relative_lift: number | null;
   lift_ci: [number, number] | null;
   incremental_orders: number | null;
-  incremental_revenue: Money;
+  /** فقط با حکمِ اثبات‌شده؛ برای حکمِ غیرعلّی null است و عدد در observed_difference می‌آید */
+  incremental_revenue: Money | null;
   incremental_revenue_ci: [number, number] | null;
+  observed_difference?: {
+    orders: number | null;
+    revenue_rial: number | null;
+    revenue: Money | null;
+    revenue_ci: [number, number] | null;
+    gross_profit_rial: number | null;
+    gross_profit: Money | null;
+  };
+  causal_note_fa?: string | null;
   blocked_metrics: Record<string, string>;
   /**
    * کوچک‌ترین اثری که با **این** اندازه‌ی گروه‌ها دیدنی بود. بدون این عدد،
@@ -660,7 +682,13 @@ export type UpliftTable = {
   note_fa?: string;
   n_observations?: number;
   global_uplift?: number | null;
+  /** کمینه‌ی بازو و بازه‌ی تخمینِ کل — بدون نمونه‌ی کافی، global_uplift null است */
+  global_n?: number;
+  global_ci?: [number, number] | null;
+  global_has_enough_data?: boolean;
+  min_observations?: number;
   by_kind?: Record<string, number>;
+  by_kind_detail?: Record<string, { uplift: number; n_min: number; ci: [number, number] | null }>;
   cells?: UpliftCell[];
   reference_note_fa?: string;
   method_note_fa?: string;
@@ -716,6 +744,40 @@ export async function optOutCustomer(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ reason_fa: reasonFa, actor }),
+    }),
+  );
+}
+
+/** «لغو ۱۱» / لیستِ سیاهِ پنل: انصراف با شماره، بدون نیاز به شناسه‌ی مشتری. */
+export async function optOutByPhone(
+  phone: string,
+  reasonFa: string,
+  source: "manual" | "provider" | "import" = "provider",
+): Promise<{ created: boolean; reactivated: boolean; phone_masked: string; note_fa: string }> {
+  return handle(
+    await apiFetch(`${BASE}/api/v1/contact-suppressions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ phone, reason_fa: reasonFa, source }),
+    }),
+  );
+}
+
+export async function importOptOuts(
+  phones: string[],
+  reasonFa: string,
+): Promise<{
+  created: number;
+  reactivated: number;
+  unchanged: number;
+  rejected: { row: number; phone_masked: string; reason_fa: string }[];
+  note_fa: string;
+}> {
+  return handle(
+    await apiFetch(`${BASE}/api/v1/contact-suppressions/import`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rows: phones.map((phone) => ({ phone })), reason_fa: reasonFa }),
     }),
   );
 }

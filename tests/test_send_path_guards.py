@@ -29,7 +29,7 @@ from mktcore.campaigns.assign import ARM_CONTROL, ARM_TREATMENT  # noqa: E402
 from mktcore.db import session_scope  # noqa: E402
 from mktcore.db.models import CampaignMember, Customer  # noqa: E402
 
-from .conftest import poll_job  # noqa: E402
+from .conftest import poll_job, reset_contact_history  # noqa: E402
 
 client = TestClient(app)
 
@@ -233,6 +233,7 @@ def test_new_campaign_excludes_the_control_arm_of_an_open_campaign(session_id):
     می‌شود. حذف در لحظه‌ی ساخت انجام می‌شود، نه خروجی، تا اندازه‌ی بازوها بعد از
     تخصیص تغییر نکند.
     """
+    reset_contact_history()
     first = client.post("/api/v1/campaigns", json={
         "name": "کمپین اول", "holdout_pct": 20,
     })
@@ -262,6 +263,7 @@ def test_export_stamps_exposure_only_for_members_actually_in_the_file(session_id
     اگر بخورد، سنجش تماسی را می‌شمارد که هرگز انجام نشده و اثر را کمتر از واقع
     نشان می‌دهد.
     """
+    reset_contact_history()
     created = client.post("/api/v1/campaigns", json={
         "name": "کمپین مهر", "holdout_pct": 10,
     })
@@ -327,3 +329,77 @@ def test_opt_out_requires_a_reason(session_id):
 def test_revoking_a_missing_opt_out_is_404(session_id):
     r = client.delete("/api/v1/customers/999999/opt-out")
     assert r.status_code == 404
+
+
+# ═══════════════════════════════ خستگی تماس در مسیر کمپین (§۲۷.۵ — بازبینی)
+def _campaign_members(campaign_id: int) -> dict[str, list[int]]:
+    with session_scope() as session:
+        rows = session.execute(
+            select(CampaignMember.arm, CampaignMember.customer_id)
+            .where(CampaignMember.campaign_id == campaign_id)
+        ).all()
+    out: dict[str, list[int]] = {}
+    for arm, customer_id in rows:
+        out.setdefault(arm, []).append(int(customer_id))
+    return out
+
+
+def test_exposed_members_are_fatigued_for_the_next_campaign(session_id, monkeypatch):
+    """عضوی که این هفته از کمپین «الف» فهرستش دانلود شده، در «ب» دوباره تماس نمی‌گیرد."""
+    from mktcore.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "mkt_api_token", "", raising=False)
+    reset_contact_history()
+    a = client.post("/api/v1/campaigns", json={"name": "الف", "holdout_pct": 20, "limit": 40})
+    assert a.status_code == 200, a.text
+    a_id = a.json()["id"]
+    assert client.get(f"/api/v1/campaigns/{a_id}/export").status_code == 200
+    exposed = set(_campaign_members(a_id).get(ARM_TREATMENT, []))
+    assert exposed, "کمپین الف باید بازوی آزمایشِ تماس‌گرفته داشته باشد"
+
+    # کمپینِ خودِ عضو مستثناست: دانلودِ دوباره‌ی همان فهرست مجاز می‌ماند
+    assert client.get(f"/api/v1/campaigns/{a_id}/export").status_code == 200
+
+    b = client.post("/api/v1/campaigns", json={"name": "ب", "holdout_pct": 20, "limit": 500})
+    if b.status_code == 409:
+        # همه‌ی نامزدها کنار گذاشته شدند — دلیلش باید همان خستگی تماس باشد
+        assert "خستگی تماس" in b.json()["detail"]
+        return
+    assert b.status_code == 200, b.text
+    body = b.json()
+    b_members = _campaign_members(body["id"])
+    all_b = set(b_members.get(ARM_TREATMENT, [])) | set(b_members.get(ARM_CONTROL, []))
+    assert not (all_b & exposed), "عضوِ تماس‌گرفته‌ی «الف» نباید واردِ «ب» شود"
+    reasons = {row["دلیل"]: row["تعداد"] for row in body["contact_gate"]["دلایل_مسدودی"]}
+    assert reasons.get("خستگی تماس (تماس اخیر)", 0) >= 1
+    assert "بررسی‌نشده" not in body["contact_gate"], "خستگی دیگر «بررسی‌نشده» نیست"
+    assert "خستگی تماس" in body.get("contact_gate_note_fa", "")
+
+
+def test_recent_exposures_ignore_previews_and_the_campaign_itself(session_id):
+    from mktcore.contact.register import recent_exposures
+    from mktcore.db.lookup import active_business_id
+    from mktcore.db.models import Campaign
+
+    with session_scope() as session:
+        business_id = active_business_id(session)
+        campaign = session.scalar(
+            select(Campaign).where(Campaign.business_id == business_id).order_by(Campaign.id.desc())
+        )
+        assert campaign is not None
+        member = session.scalar(
+            select(CampaignMember).where(CampaignMember.campaign_id == campaign.id)
+        )
+        member.exposure_at = 1_000_000.0          # دیروزِ دور: بیرونِ پنجره
+        session.flush()
+        old = recent_exposures(session, business_id, window_days=14, now=1_000_000.0 + 20 * 86400)
+        fresh = recent_exposures(session, business_id, window_days=14, now=1_000_000.0 + 3 * 86400)
+        own = recent_exposures(
+            session, business_id, window_days=14, now=1_000_000.0 + 3 * 86400,
+            exclude_campaign_id=campaign.id,
+        )
+        member.exposure_at = None
+
+    assert member.customer_id not in old
+    assert member.customer_id in fresh
+    assert member.customer_id not in own

@@ -172,3 +172,33 @@ def test_missing_database_does_not_break_the_engine(tmp_path):
     from mktcore.opportunities.engine import _load_uplift_table
 
     assert _load_uplift_table(tmp_path / "does-not-exist.db") is None
+
+
+# ─────────────────────────────────────── نشتِ دروازه (بازبینی): داده‌ی نازک
+def test_one_observation_per_arm_does_not_move_the_ranking():
+    """قهرمان می‌ماند: با یک مشاهده در هر بازو، رتبه دقیقاً برابرِ ارزش است."""
+    table = compute_uplift_table(_obs("چرخه", "لغزش", n=1, rate_t=1.0, rate_c=0.0))
+    candidate = _candidate()
+
+    note = filter_uplift(candidate, {"uplift_table": table, "lifecycle_of": {"C1": "لغزش"}})
+
+    assert note.outcome == "filter_skip"
+    assert "کافی وجود ندارد" in (note.detail_fa or "")
+    assert table.lookup("چرخه", "لغزش") == (0.0, "none")
+    assert uplift_multiplier(None) == 1.0
+
+
+def test_uplift_label_follows_the_sign_and_names_a_borrowed_basis():
+    from mktcore.uplift.empirical import MIN_CELL_OBSERVATIONS
+
+    n = MIN_CELL_OBSERVATIONS
+    # اثرِ منفی ولی نامعلوم (بازه‌ی پهن) ⇒ می‌گذرد، با متنِ صادق؛ نه «اثر مثبت»
+    negative = compute_uplift_table(_obs("چرخه", "لغزش", n=n, rate_t=0.3, rate_c=0.4))
+    note = filter_uplift(_candidate(), {"uplift_table": negative, "lifecycle_of": {"C1": "لغزش"}})
+    assert note.outcome == "filter_pass"
+    assert "اثرِ مثبتی نشان نمی‌دهد" in (note.detail_fa or "")
+    assert "اثر مثبت دارد" not in (note.detail_fa or "")
+
+    borrowed = filter_uplift(_candidate(), {"uplift_table": negative, "lifecycle_of": {"C1": "حالتِ ندیده"}})
+    assert borrowed.outcome == "filter_pass"
+    assert "عاریتی" in (borrowed.detail_fa or "") and "کمینه‌ی بازو" in (borrowed.detail_fa or "")

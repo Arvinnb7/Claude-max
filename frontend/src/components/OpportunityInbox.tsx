@@ -95,6 +95,7 @@ function todayPlus(days: number): string {
 
 export default function OpportunityInbox() {
   const [status, setStatus] = useState<string>("open");
+  const [expiringOnly, setExpiringOnly] = useState(false);
   const [data, setData] = useState<Awaited<ReturnType<typeof listOpportunities>> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
@@ -107,13 +108,19 @@ export default function OpportunityInbox() {
 
   const load = useCallback(async () => {
     try {
-      setData(await listOpportunities({ status, limit: 100 }));
+      setData(
+        await listOpportunities({
+          status,
+          limit: 100,
+          ...(expiringOnly ? { sort: "expires_at", expiresWithinDays: 7 } : {}),
+        }),
+      );
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "خطا در خواندن صندوق فرصت‌ها");
       setData(null);
     }
-  }, [status]);
+  }, [status, expiringOnly]);
 
   useEffect(() => {
     let cancelled = false;
@@ -237,6 +244,20 @@ export default function OpportunityInbox() {
               )}
             </button>
           ))}
+          <button
+            onClick={() => setExpiringOnly((v) => !v)}
+            className={`rounded-full px-3 py-1.5 text-sm font-medium transition ${
+              expiringOnly
+                ? "bg-rose-600 text-white"
+                : "bg-ink-100 text-ink-600 hover:bg-ink-200 dark:bg-ink-800 dark:text-ink-300"
+            }`}
+            title="فرصت‌های بازی که تا ۷ روزِ آینده (از دیدِ داده) منقضی می‌شوند"
+          >
+            نزدیک انقضا
+            {data?.expiring_soon_count != null && (
+              <span className="ms-1 tnum">({toFa(String(data.expiring_soon_count))})</span>
+            )}
+          </button>
         </div>
 
         {data?.open_pipeline && (
@@ -318,7 +339,21 @@ export default function OpportunityInbox() {
                     >
                       <span>مشتری: {o.customer_name ?? o.customer_id ?? "—"}</span>
                       {o.due_date && <span>سررسید: {jalali(o.due_date)}</span>}
-                      {o.expires_at && <span>اعتبار تا: {jalali(o.expires_at)}</span>}
+                      {o.expires_at && (
+                        <span
+                          style={
+                            daysLeft(o.expires_at, data?.reference_date) != null &&
+                            daysLeft(o.expires_at, data?.reference_date)! <= 7
+                              ? { color: "var(--rose, #e11d48)", fontWeight: 600 }
+                              : undefined
+                          }
+                        >
+                          اعتبار تا: {jalali(o.expires_at)}
+                          {daysLeft(o.expires_at, data?.reference_date) != null
+                            ? ` (${toFa(String(Math.max(0, daysLeft(o.expires_at, data?.reference_date)!)))} روز مانده)`
+                            : ""}
+                        </span>
+                      )}
                       {o.probability != null && (
                         <span>احتمال: {toFa(String(Math.round(o.probability * 100)))}٪</span>
                       )}
@@ -480,7 +515,8 @@ function CampaignForm({
       onCreated(
         `کمپین «${created.name}» ساخته شد: ${toFa(String(created.treatment_size))} نفر ` +
           `گروه آزمایش و ${toFa(String(created.control_size))} نفر گروه کنترل. ` +
-          "فهرست تماس را از تب «اثر کمپین‌ها» دانلود کنید.",
+          "فهرست تماس را از تب «اثر کمپین‌ها» دانلود کنید." +
+          (created.contact_gate_note_fa ? ` ${toFa(created.contact_gate_note_fa)}` : ""),
       );
     } catch (e) {
       setError(e instanceof Error ? e.message : "ساخت کمپین ناموفق بود");
@@ -869,4 +905,11 @@ function MarginPolicyPanel() {
       )}
     </div>
   );
+}
+
+/** روزهای مانده تا انقضا، از دیدِ داده (reference_date)؛ بدون مرجع، null. */
+function daysLeft(expiresAt: string, referenceDate?: string | null): number | null {
+  if (!referenceDate) return null;
+  const ms = Date.parse(expiresAt) - Date.parse(referenceDate);
+  return Number.isFinite(ms) ? Math.round(ms / 86_400_000) : null;
 }

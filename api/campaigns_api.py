@@ -26,7 +26,8 @@ from mktcore.campaigns.analysis import ArmStats, analyze_campaign
 from mktcore.campaigns.assign import ARM_CONTROL, ARM_TREATMENT, assign_arms
 from mktcore.campaigns.outcomes import arm_stats, compute_campaign_outcomes
 from mktcore.config import get_settings
-from mktcore.contact.register import build_gate
+from mktcore.contact.permission import DEFAULT_FATIGUE_WINDOW_DAYS
+from mktcore.contact.register import build_gate, recent_contact_keys
 from mktcore.db.base import now_ts
 from mktcore.db.engine import session_scope, write_lock
 from mktcore.db.lookup import active_business_id
@@ -82,6 +83,30 @@ def _business_id(session) -> int | None:
     return active_business_id(session)
 
 
+def _campaign_gate(session, business_id: int, *, exclude_campaign_id: int | None = None):
+    """دروازه‌ی مجوز تماس برای مسیرِ کمپین — با خستگیِ تماس (§۲۷.۵).
+
+    تا پیش از این، سه مسیرِ کمپین `build_gate` را بدون تاریخچه‌ی تماس می‌ساختند و
+    خستگی «بررسی نشد» بود: عضوی که همین هفته از کمپین «الف» پیامک گرفته بود، در
+    کمپین «ب» دوباره تماس می‌گرفت. پنجره همان ۱۴ روزِ موتور فرصت است (تصمیمِ
+    کاربر)؛ منبع: مهرِ تماسِ کمپین‌ها + outboxِ legacy. کمپینِ خودِ عضو مستثناست.
+    """
+    try:
+        from api.persistence import store
+
+        legacy = set(store.recent_contact_customer_ids(DEFAULT_FATIGUE_WINDOW_DAYS))
+    except Exception:  # noqa: BLE001 - نبودِ تاریخچه‌ی legacy نباید کمپین را بخواباند
+        legacy = set()
+    recent = recent_contact_keys(
+        session, business_id, window_days=DEFAULT_FATIGUE_WINDOW_DAYS,
+        exclude_campaign_id=exclude_campaign_id, legacy_raw_keys=legacy,
+    )
+    return build_gate(
+        session, business_id,
+        fatigue_window_days=DEFAULT_FATIGUE_WINDOW_DAYS, recently_contacted=recent,
+    )
+
+
 def _no_ledger() -> dict:
     return {
         "available": False,
@@ -126,7 +151,7 @@ def create_campaign(req: CreateCampaignRequest) -> dict:
         # مهم‌ترین موردش هم‌پوشانیِ کمپین‌هاست: مشتری‌ای که در کمپینِ فعالِ «الف»
         # گروه کنترل است، نباید در کمپین «ب» تماس بگیرد — وگرنه گروه کنترلِ «الف»
         # دیگر کنترل نیست و اثرِ اندازه‌گیری‌شده‌ی هر دو کمپین بی‌اعتبار می‌شود.
-        gate = build_gate(session, business_id)
+        gate = _campaign_gate(session, business_id)
         eligible = gate.partition(
             opportunities, key=lambda o: str(o.customer_id),
         )
@@ -330,7 +355,7 @@ def export_campaign(campaign_id: int, request: Request):
         # دروازه‌ی مجوز تماس روی بازوی آزمایش. مشتریِ منصرف نباید در فایل بیاید،
         # **و مهرِ تماس هم نباید بخورد** — وگرنه سنجش، تماسی را می‌شمارد که هرگز
         # انجام نشده و اثر را کمتر از واقع نشان می‌دهد.
-        gate = build_gate(session, campaign.business_id)
+        gate = _campaign_gate(session, campaign.business_id, exclude_campaign_id=campaign.id)
         screened = gate.partition(members, key=lambda m: str(m.customer_id))
         members = screened.allowed
         if not members:
@@ -474,7 +499,7 @@ def send_campaign_sms(campaign_id: int, req: SendCampaignRequest) -> dict:
             )
 
         # دروازه‌ی مجوز تماس — همان گاردی که خروجی اکسل هم از آن رد می‌شود
-        gate = build_gate(session, campaign.business_id)
+        gate = _campaign_gate(session, campaign.business_id, exclude_campaign_id=campaign.id)
         screened = gate.partition(pending, key=lambda m: str(m.customer_id))
         pending = screened.allowed[:req.limit]
         if not pending:
@@ -869,7 +894,18 @@ def _report(session, campaign_id: int) -> dict:
     control = ArmStats(arm=ARM_CONTROL, **stats.get(ARM_CONTROL, {}))
     cost = _contact_cost_rial(session, campaign_id)
     report = analyze_campaign(treatment, control, contact_cost_rial=cost).to_dict()
-    report["incremental_revenue"] = money_payload(report["incremental_revenue_rial"])
+    report["incremental_revenue"] = (
+        None if report["incremental_revenue_rial"] is None
+        else money_payload(report["incremental_revenue_rial"])
+    )
+    observed = report["observed_difference"]
+    observed["revenue"] = (
+        None if observed["revenue_rial"] is None else money_payload(observed["revenue_rial"])
+    )
+    observed["gross_profit"] = (
+        None if observed["gross_profit_rial"] is None
+        else money_payload(observed["gross_profit_rial"])
+    )
     report["contact_cost"] = (
         None if report["contact_cost_rial"] is None
         else money_payload(report["contact_cost_rial"])

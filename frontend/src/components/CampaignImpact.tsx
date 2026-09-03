@@ -571,9 +571,19 @@ function LearnedUplift() {
         <span className="text-xs tnum" style={{ color: "var(--muted)" }}>
           از {toFa(String(data.n_observations ?? 0))} مشاهده‌ی آزمایشی
         </span>
-        {data.global_uplift != null && (
+        {data.global_uplift != null ? (
           <Badge tone={data.global_uplift > 0 ? "green" : "rose"}>
             اثر کل: {pct(data.global_uplift)}
+            {data.global_ci
+              ? ` (بازه ${pct(data.global_ci[0])} تا ${pct(data.global_ci[1])})`
+              : ""}
+          </Badge>
+        ) : (
+          <Badge tone="gray">
+            اثر کل: هنوز نمونه‌ی کافی نیست
+            {data.min_observations != null
+              ? ` (دست‌کم ${toFa(String(data.min_observations))} در هر بازو)`
+              : ""}
           </Badge>
         )}
       </div>
@@ -724,10 +734,25 @@ function CampaignDetailView({
           />
           <StatCard
             label="درآمد افزوده"
-            value={r.is_causal ? toFa(r.incremental_revenue.display_text) : "—"}
+            value={
+              r.is_causal && r.incremental_revenue
+                ? toFa(r.incremental_revenue.display_text)
+                : "—"
+            }
             hint={r.is_causal ? undefined : "تا اثبات اثر، عدد ارائه نمی‌شود"}
           />
         </div>
+
+        {!r.is_causal && r.observed_difference?.revenue && (
+          <p className="mt-2 text-xs tnum" style={{ color: "var(--muted)" }}>
+            تفاوتِ مشاهده‌شده‌ی دو گروه (غیرعلّی): درآمد{" "}
+            {toFa(r.observed_difference.revenue.display_text)}
+            {r.observed_difference.gross_profit
+              ? `، سود ${toFa(r.observed_difference.gross_profit.display_text)}`
+              : ""}
+            {r.causal_note_fa ? ` — ${r.causal_note_fa}` : ""}
+          </p>
+        )}
 
         {/*
           سود ناخالص افزوده. دو شرط دارد و هر دو باید صریح بمانند: اثر اثبات
@@ -813,7 +838,7 @@ function CampaignDetailView({
                   : "تا اثبات اثر، تقسیم بر سفارش افزوده معنا ندارد"
               }
             />
-            {r.is_causal && r.incremental_revenue.rial != null && r.contact_cost.rial
+            {r.is_causal && r.incremental_revenue?.rial != null && r.contact_cost.rial
               ? (
                 <StatCard
                   label="بازگشت هر ریال"

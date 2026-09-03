@@ -104,6 +104,14 @@ class CampaignReport:
     # **هر دو** بازو کامل نباشد؛ جمعِ ناقص سود را بیشتر از واقع نشان می‌دهد.
     incremental_gross_profit_rial: int | None = None
     gross_profit_note_fa: str | None = None
+    # تفاوتِ **مشاهده‌شده** بین دو بازو — همیشه با نامِ خودش. برای حکمِ غیرعلّی
+    # (inconclusive) عددِ «افزوده» None می‌ماند و فقط این‌ها پر می‌شوند؛ وگرنه
+    # همان عدد با برچسبِ «افزوده» به مصرف‌کننده‌ی API می‌رسد (§۳.۶، §۲۳.۱).
+    observed_orders_diff: float | None = None
+    observed_revenue_diff_rial: int | None = None
+    observed_revenue_diff_ci: tuple[int, int] | None = None
+    observed_gross_profit_diff_rial: int | None = None
+    causal_note_fa: str | None = None
 
     @property
     def is_causal(self) -> bool:
@@ -134,6 +142,16 @@ class CampaignReport:
             "incremental_gross_profit_rial": self.incremental_gross_profit_rial,
             "gross_profit_note_fa": self.gross_profit_note_fa,
             "cost_per_incremental_order_rial": self.cost_per_incremental_order_rial,
+            "observed_difference": {
+                "orders": self.observed_orders_diff,
+                "revenue_rial": self.observed_revenue_diff_rial,
+                "revenue_ci": (
+                    list(self.observed_revenue_diff_ci)
+                    if self.observed_revenue_diff_ci else None
+                ),
+                "gross_profit_rial": self.observed_gross_profit_diff_rial,
+            },
+            "causal_note_fa": self.causal_note_fa,
         }
 
 
@@ -331,14 +349,22 @@ def _attach_gross_profit(
         )
         return
 
-    report.incremental_gross_profit_rial = round(
-        (treatment_profit - control_profit) * treatment.size
-    )
+    diff = round((treatment_profit - control_profit) * treatment.size)
+    report.observed_gross_profit_diff_rial = diff
+    # انسدادِ «پوشش بها» برداشته می‌شود (پوشش کامل است) — جدا از حکمِ علّی، تا
+    # پیامِ «بها ناقص است» با «اثر اثبات نشده» قاطی نشود.
     report.blocked_metrics.pop("incremental_gross_profit", None)
-    report.gross_profit_note_fa = (
-        "سود افزوده از تفاضل سودِ سرانه‌ی دو گروه محاسبه شد؛ بهای تمام‌شده برای "
-        "همه‌ی اعضا موجود بود."
-    )
+    if report.is_causal:
+        report.incremental_gross_profit_rial = diff
+        report.gross_profit_note_fa = (
+            "سود افزوده از تفاضل سودِ سرانه‌ی دو گروه محاسبه شد؛ بهای تمام‌شده برای "
+            "همه‌ی اعضا موجود بود."
+        )
+    else:
+        report.gross_profit_note_fa = (
+            "بهای تمام‌شده برای همه‌ی اعضا موجود بود؛ ولی تا اثباتِ اثر، تفاوتِ سودِ "
+            "دو گروه «مشاهده‌ای» است نه «افزوده»."
+        )
 
 
 def _verdict(
@@ -378,21 +404,31 @@ def _verdict(
     )
     ci = _diff_ci(treatment, control)
     revenue_ci = _revenue_diff_ci(treatment, control)
-    incremental_orders = absolute * treatment.size
-    incremental_revenue = round(
+    observed_orders = absolute * treatment.size
+    observed_revenue = round(
         (treatment.revenue_per_customer - control.revenue_per_customer) * treatment.size
     )
+    observed_revenue_ci = (
+        round(revenue_ci[0] * treatment.size), round(revenue_ci[1] * treatment.size),
+    )
+    not_causal_note = (
+        "تفاوتِ مشاهده‌شده‌ی دو گروه گزارش می‌شود ولی «افزوده» نیست: تا اثبات اثر، "
+        "هیچ عددی به‌عنوان نتیجه‌ی تماس ارائه نمی‌شود."
+    )
 
-    # ۳) گروه‌های کوچک → عدد هست ولی ادعای اثبات نه
+    # ۳) گروه‌های کوچک → تفاوت هست ولی ادعای «افزوده» نه
     if control.size < MIN_CONTROL_SIZE or treatment.size < MIN_TREATMENT_SIZE:
         return CampaignReport(
             treatment, control, VERDICT_INCONCLUSIVE,
             f"اندازه‌ی گروه‌ها کم است (آزمایش {treatment.size}، کنترل {control.size}؛ "
             f"حداقل لازم {MIN_TREATMENT_SIZE} و {MIN_CONTROL_SIZE}). "
             "اختلاف مشاهده‌شده ممکن است صرفاً نوسان باشد.",
-            absolute, relative, ci, incremental_orders, incremental_revenue,
-            (round(revenue_ci[0] * treatment.size), round(revenue_ci[1] * treatment.size)),
+            absolute, relative, ci, None, None, None,
             blocked, mde, power,
+            observed_orders_diff=observed_orders,
+            observed_revenue_diff_rial=observed_revenue,
+            observed_revenue_diff_ci=observed_revenue_ci,
+            causal_note_fa=not_causal_note,
         )
 
     # ۴) بازه‌ای که صفر را در بر می‌گیرد → اثر اثبات‌نشده
@@ -401,18 +437,24 @@ def _verdict(
             treatment, control, VERDICT_INCONCLUSIVE,
             "بازه‌ی اطمینان اثر، صفر را در بر می‌گیرد؛ یعنی با این داده "
             "نمی‌شود گفت تماس اثر داشته است.",
-            absolute, relative, ci, incremental_orders, incremental_revenue,
-            (round(revenue_ci[0] * treatment.size), round(revenue_ci[1] * treatment.size)),
+            absolute, relative, ci, None, None, None,
             blocked, mde, power,
+            observed_orders_diff=observed_orders,
+            observed_revenue_diff_rial=observed_revenue,
+            observed_revenue_diff_ci=observed_revenue_ci,
+            causal_note_fa=not_causal_note,
         )
 
     direction = "مثبت" if absolute > 0 else "منفی"
     return CampaignReport(
         treatment, control, VERDICT_PROVEN,
         f"اثر {direction} است و بازه‌ی اطمینان ۹۵٪ صفر را در بر نمی‌گیرد.",
-        absolute, relative, ci, incremental_orders, incremental_revenue,
-        (round(revenue_ci[0] * treatment.size), round(revenue_ci[1] * treatment.size)),
+        absolute, relative, ci, observed_orders, observed_revenue, observed_revenue_ci,
         blocked, mde, power,
+        observed_orders_diff=observed_orders,
+        observed_revenue_diff_rial=observed_revenue,
+        observed_revenue_diff_ci=observed_revenue_ci,
+        causal_note_fa="اثر با گروه کنترلِ تصادفی اثبات شده؛ عددِ افزوده علّی است.",
     )
 
 

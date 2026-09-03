@@ -207,8 +207,11 @@ def test_gross_profit_uses_profit_not_revenue():
     revenue_based = round(
         (1_000_000 / 100 - 500_000 / 100) * 100
     )
-    assert report.incremental_gross_profit_rial == 200_000
-    assert report.incremental_gross_profit_rial != revenue_based
+    # ۱۰۰ در برابر ۱۰۰ نفر حکمِ علّی نمی‌دهد؛ پس ریاضیِ سود روی «تفاوتِ مشاهده‌شده»
+    # سنجیده می‌شود و عددِ «افزوده» عمداً None می‌ماند.
+    assert not report.is_causal and report.incremental_gross_profit_rial is None
+    assert report.observed_gross_profit_diff_rial == 200_000
+    assert report.observed_gross_profit_diff_rial != revenue_based
 
 
 def test_gross_profit_can_be_negative_and_is_not_hidden():
@@ -219,7 +222,7 @@ def test_gross_profit_can_be_negative_and_is_not_hidden():
                        revenue_rial=500_000, cost_rial=200_000)
 
     report = analyze_campaign(treatment, control)
-    assert report.incremental_gross_profit_rial < 0
+    assert report.observed_gross_profit_diff_rial < 0
 
 
 def test_arm_without_cost_reports_none_profit_not_zero():
@@ -241,3 +244,30 @@ def test_gross_profit_survives_in_the_payload():
     payload = analyze_campaign(treatment, control).to_dict()
     assert payload["incremental_gross_profit_rial"] == 800_000
     assert payload["gross_profit_note_fa"]
+
+
+# ------------------------------------------------ حکمِ غیرعلّی، عددِ «افزوده» ندارد
+def test_inconclusive_verdict_carries_no_incremental_number_but_keeps_the_observed_diff():
+    """§۳.۶: تفاوتِ مشاهده‌شده با نامِ خودش گزارش می‌شود؛ «افزوده» فقط با اثبات."""
+    report = analyze_campaign(_arm("treatment", 1000, 201), _arm("control", 1000, 200))
+    assert report.verdict == VERDICT_INCONCLUSIVE
+
+    assert report.incremental_orders is None
+    assert report.incremental_revenue_rial is None
+    assert report.incremental_revenue_ci is None
+    assert report.observed_orders_diff == pytest.approx(1.0)
+    assert report.observed_revenue_diff_rial is not None
+    assert report.observed_revenue_diff_ci is not None
+    assert "افزوده» نیست" in (report.causal_note_fa or "")
+    payload = report.to_dict()
+    assert payload["incremental_revenue_rial"] is None
+    assert payload["observed_difference"]["orders"] == pytest.approx(1.0)
+
+
+def test_proven_verdict_reports_both_incremental_and_observed():
+    report = analyze_campaign(_arm("treatment", 500, 150), _arm("control", 500, 50))
+    assert report.is_causal
+    assert report.incremental_orders == pytest.approx(100.0)
+    assert report.observed_orders_diff == pytest.approx(100.0)
+    assert report.incremental_revenue_rial == report.observed_revenue_diff_rial
+    assert "علّی" in (report.causal_note_fa or "")

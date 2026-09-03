@@ -29,9 +29,15 @@ from mktcore.db import session_scope  # noqa: E402
 from mktcore.db.models import CampaignMember, CampaignSend, Customer  # noqa: E402
 from mktcore.execution.providers import SendResult  # noqa: E402
 
-from .conftest import poll_job  # noqa: E402
+from .conftest import poll_job, reset_contact_history  # noqa: E402
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_contact_history():
+    """هر تست از وضعیتِ «کسی تازه تماس نگرفته» شروع می‌کند (خستگیِ تماسِ کمپین)."""
+    reset_contact_history()
 
 
 @pytest.fixture(scope="module")
@@ -244,27 +250,40 @@ def test_a_member_is_never_sent_twice(analyzed, monkeypatch):
 def test_fully_delivered_campaign_refuses_a_second_send(analyzed, monkeypatch):
     """اگر همه پیام گرفته باشند، تلاش دوباره باید صریح رد شود."""
     campaign_id = _new_campaign("همه فرستاده")
+    _, treatment = _arms(campaign_id)
+    # هر عضوِ آزمایش شماره‌ی قطعی می‌گیرد تا «همه فرستاده شد» به داده‌ی نمونه
+    # وابسته نباشد؛ در پایان برگردانده می‌شود.
+    originals: dict[int, str | None] = {}
+    with session_scope() as session:
+        for index, customer_id in enumerate(treatment):
+            customer = session.get(Customer, customer_id)
+            originals[customer_id] = customer.phone_e164
+            customer.phone_e164 = customer.phone_e164 or f"+98912{7000000 + index:07d}"
     sink: list[str] = []
     _fake_panel(monkeypatch, sink)
     _enable_panel(monkeypatch)
 
-    client.post(f"/api/v1/campaigns/{campaign_id}/send", json={
-        "template": "سلام {نام}", "dry_run": False, "confirm": True,
-    })
-    with session_scope() as session:
-        statuses = {
-            row.status for row in session.scalars(
-                select(CampaignSend).where(CampaignSend.campaign_id == campaign_id)
-            ).all()
-        }
-    if statuses != {CampaignSend.STATUS_SENT}:
-        pytest.skip("بخشی از اعضا شماره نداشتند؛ این سناریو مصداق ندارد")
+    try:
+        client.post(f"/api/v1/campaigns/{campaign_id}/send", json={
+            "template": "سلام {نام}", "dry_run": False, "confirm": True,
+        })
+        with session_scope() as session:
+            statuses = {
+                row.status for row in session.scalars(
+                    select(CampaignSend).where(CampaignSend.campaign_id == campaign_id)
+                ).all()
+            }
+        assert statuses == {CampaignSend.STATUS_SENT}, statuses
 
-    second = client.post(f"/api/v1/campaigns/{campaign_id}/send", json={
-        "template": "سلام {نام}", "dry_run": False, "confirm": True,
-    })
-    assert second.status_code == 409
-    assert "قبلاً" in second.json()["detail"]
+        second = client.post(f"/api/v1/campaigns/{campaign_id}/send", json={
+            "template": "سلام {نام}", "dry_run": False, "confirm": True,
+        })
+        assert second.status_code == 409
+        assert "قبلاً" in second.json()["detail"]
+    finally:
+        with session_scope() as session:
+            for customer_id, phone in originals.items():
+                session.get(Customer, customer_id).phone_e164 = phone
 
 
 def test_send_rows_are_unique_per_member(analyzed, monkeypatch):

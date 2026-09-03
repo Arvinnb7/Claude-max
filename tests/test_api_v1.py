@@ -337,3 +337,41 @@ def test_existing_endpoints_are_untouched():
     for key in ("status", "ai_available", "model", "currency", "sms_enabled",
                 "scheduler", "data_dir", "retention"):
         assert key in body
+
+
+# ═══════════════════════════════ «کدام‌ها زود منقضی می‌شوند؟» (§۳۷ — بازبینی)
+def test_expiring_soon_filter_and_sort():
+    from datetime import date, timedelta
+
+    from mktcore.db import session_scope
+    from mktcore.db.models import Opportunity
+
+    _run_sample_analysis()
+    default = client.get("/api/v1/opportunities").json()
+    assert default["available"] and default["sort"] == "score"
+    reference = default["reference_date"]
+    assert reference, "مرجعِ «امروز» باید as_of آخرین اجرای موتور باشد"
+
+    # دو فرصتِ باز با انقضای نزدیک و دور، از دیدِ داده
+    with session_scope() as session:
+        open_rows = session.query(Opportunity).filter(Opportunity.status == "open").limit(2).all()
+        assert len(open_rows) == 2
+        soon, later = open_rows
+        soon.expires_at = (date.fromisoformat(reference) + timedelta(days=2)).isoformat()
+        later.expires_at = (date.fromisoformat(reference) + timedelta(days=40)).isoformat()
+        soon_id, later_id = soon.id, later.id
+
+    within = client.get("/api/v1/opportunities?expires_within_days=7").json()
+    ids = {row["id"] for row in within["items"]}
+    assert soon_id in ids and later_id not in ids
+    assert within["expiring_soon_count"] >= 1
+
+    sorted_out = client.get("/api/v1/opportunities?sort=expires_at&limit=200").json()
+    dates = [row["expires_at"] for row in sorted_out["items"] if row["expires_at"]]
+    assert dates == sorted(dates), "مرتب‌سازی صعودی روی انقضا"
+    assert sorted_out["items"][0]["id"] == soon_id
+
+    # پاسخِ پیش‌فرض: همان ترتیبِ ارزش، بدون فیلتر
+    again = client.get("/api/v1/opportunities").json()
+    assert [row["id"] for row in again["items"]] == [row["id"] for row in default["items"]]
+    assert again["total"] == default["total"]

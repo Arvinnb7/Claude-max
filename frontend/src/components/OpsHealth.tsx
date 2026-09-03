@@ -115,6 +115,11 @@ export default function OpsHealth() {
                       {STATUS_LABEL[job.last_run.status] ?? job.last_run.status}
                     </Badge>
                   )}
+                  {alertCount(job.last_run) > 0 && (
+                    <Badge tone="rose">
+                      {toFa(String(alertCount(job.last_run)))} هشدارِ انحراف
+                    </Badge>
+                  )}
                   <Button
                     variant="ghost"
                     disabled={busy === job.name}
@@ -197,4 +202,11 @@ export default function OpsHealth() {
       )}
     </div>
   );
+}
+
+/** شمارِ هشدارهای «تغییر معنادار» در نتیجه‌ی آخرین اجرای کارِ انحراف. */
+function alertCount(run: { result: unknown } | null): number {
+  if (!run || typeof run.result !== "object" || run.result === null) return 0;
+  const alerts = (run.result as { alerts?: unknown }).alerts;
+  return Array.isArray(alerts) ? alerts.length : 0;
 }

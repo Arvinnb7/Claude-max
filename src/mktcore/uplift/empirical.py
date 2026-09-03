@@ -148,6 +148,14 @@ class UpliftTable:
     by_kind: dict[str, float] = field(default_factory=dict)
     global_uplift: float | None = None
     n_observations: int = 0
+    # شواهدِ والدها — همان دروازه‌ای که سلول دارد، والد هم دارد (§۲۹.۵/۲۹.۶):
+    # تخمینِ نوع یا کل فقط وقتی «موجود» است که کوچک‌ترین بازویش ≥ آستانه باشد.
+    # وگرنه در `by_kind` نمی‌نشیند و `global_uplift` None می‌ماند ⇒ ضریب ۱٫۰.
+    min_observations: int = MIN_CELL_OBSERVATIONS
+    global_n: int = 0
+    global_ci: tuple[float, float] | None = None
+    by_kind_n: dict[str, int] = field(default_factory=dict)
+    by_kind_ci: dict[str, tuple[float, float]] = field(default_factory=dict)
 
     @property
     def available(self) -> bool:
@@ -172,14 +180,34 @@ class UpliftTable:
         cell = self.cells.get((kind, lifecycle_state or "—"))
         return cell if cell is not None and cell.significantly_useless else None
 
+    def evidence(self, kind: str, basis: str) -> tuple[int, tuple[float, float] | None]:
+        """کمینه‌ی بازو و بازه‌ی اطمینانِ مبنایی که `lookup` برگردانده."""
+        if basis == BASIS_KIND:
+            return self.by_kind_n.get(kind, 0), self.by_kind_ci.get(kind)
+        if basis == BASIS_GLOBAL:
+            return self.global_n, self.global_ci
+        return 0, None
+
     def to_dict(self) -> dict:
         return {
             "available": self.available,
             "n_observations": self.n_observations,
+            "min_observations": self.min_observations,
             "global_uplift": (
                 None if self.global_uplift is None else round(self.global_uplift, 4)
             ),
+            "global_n": self.global_n,
+            "global_ci": list(self.global_ci) if self.global_ci else None,
+            "global_has_enough_data": self.global_uplift is not None,
             "by_kind": {k: round(v, 4) for k, v in sorted(self.by_kind.items())},
+            "by_kind_detail": {
+                k: {
+                    "uplift": round(v, 4),
+                    "n_min": self.by_kind_n.get(k, 0),
+                    "ci": list(self.by_kind_ci[k]) if k in self.by_kind_ci else None,
+                }
+                for k, v in sorted(self.by_kind.items())
+            },
             "cells": [
                 c.to_dict() for c in sorted(
                     self.cells.values(), key=lambda x: -x.shrunk_uplift,
@@ -208,25 +236,35 @@ def compute_uplift_table(observations: list[Observation], *, min_cell_observatio
 
     تابع خالص: ورودی فهرست مشاهده، خروجی جدول. هیچ I/O و هیچ وابستگی به دیتابیس.
     """
-    table = UpliftTable(n_observations=len(observations))
+    table = UpliftTable(
+        n_observations=len(observations), min_observations=min_cell_observations,
+    )
     if not observations:
         return table
 
-    # ۱) تخمین کل (والدِ نهایی)
-    table.global_uplift = _pooled_uplift(observations)
+    # ۱) تخمین کل (والدِ نهایی) — فقط با شواهدِ کافی. تخمینِ کل از یک مشاهده در
+    # هر بازو «اثر» نیست، نوفه است؛ و اگر وارد `lookup` شود ضریبِ همه‌ی
+    # فرصت‌ها را جابه‌جا می‌کند (نشتِ دروازه‌ای که بازبینی گرفت).
+    table.global_n = _min_arm_size(observations)
+    pooled = _pooled_uplift(observations)
+    if pooled is not None and table.global_n >= min_cell_observations:
+        table.global_uplift = pooled
+        table.global_ci = _pooled_ci(observations)
 
-    # ۲) تخمین به‌ازای نوع اقدام (والدِ میانی)
+    # ۲) تخمین به‌ازای نوع اقدام (والدِ میانی) — همان دروازه
     by_kind: dict[str, list[Observation]] = {}
     for obs in observations:
         by_kind.setdefault(obs.kind, []).append(obs)
     for kind, group in by_kind.items():
         estimate = _pooled_uplift(group)
-        if estimate is not None:
+        n_min = _min_arm_size(group)
+        table.by_kind_n[kind] = n_min
+        if estimate is not None and n_min >= min_cell_observations:
             # خودِ تخمین نوع هم به‌سمت کل منقبض می‌شود
-            n_min = _min_arm_size(group)
             table.by_kind[kind] = _shrink(
                 estimate, table.global_uplift or 0.0, n_min,
             )
+            table.by_kind_ci[kind] = _pooled_ci(group)
 
     # ۳) سلول‌ها
     by_cell: dict[tuple[str, str], list[Observation]] = {}
@@ -278,6 +316,19 @@ def _pooled_uplift(observations: list[Observation]) -> float | None:
     if not n_t or not n_c:
         return None
     return c_t / n_t - c_c / n_c
+
+
+def _pooled_ci(observations: list[Observation]) -> tuple[float, float]:
+    """بازه‌ی اطمینانِ اثرِ تجمیعیِ یک گروه — همان ریاضیِ سلول."""
+    n_t = n_c = c_t = c_c = 0
+    for obs in observations:
+        if obs.arm == "control":
+            n_c += 1
+            c_c += int(obs.converted)
+        else:
+            n_t += 1
+            c_t += int(obs.converted)
+    return _diff_ci(c_t / n_t if n_t else 0.0, n_t, c_c / n_c if n_c else 0.0, n_c)
 
 
 def _min_arm_size(observations: list[Observation]) -> int:

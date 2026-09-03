@@ -51,3 +51,27 @@ def poll_job(client, job_id: str, *, timeout: float = 180.0) -> dict:
             raise AssertionError(f"job failed: {body.get('error')}")
         time.sleep(0.25)
     raise AssertionError("job timed out")
+
+
+def reset_contact_history() -> None:
+    """تاریخچه‌ی تماسِ تست‌های قبلی روی دفتر کلِ مشترک پاک می‌شود.
+
+    از دورِ «صحت و ایمنی»، خستگیِ تماس در مسیرِ کمپین هم اعمال می‌شود (۱۴ روز).
+    ماژول‌هایی که پشتِ‌سرِهم می‌فرستند و کمپین می‌سازند باید هر تست را از
+    وضعیتِ «کسی تازه تماس نگرفته» شروع کنند — وگرنه ۴۰۹ می‌گیرند که رفتارِ
+    درستِ محصول است، نه باگ. outboxِ legacy و مهرِ تماسِ اعضا هر دو پاک می‌شوند.
+    """
+    from api.persistence import store
+    from sqlalchemy import update
+
+    from mktcore.db import session_scope
+    from mktcore.db.models import CampaignMember
+
+    with store._conn() as conn:  # noqa: SLF001 - فقط در تست
+        conn.execute("DELETE FROM outbox")
+    with session_scope() as session:
+        session.execute(
+            update(CampaignMember).values(
+                exposure_at=None, exposure_date=None, exposure_channel=None,
+            )
+        )

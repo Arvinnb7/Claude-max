@@ -273,18 +273,27 @@ def test_scenario_broken_rows_are_accounted_for(tmp_path):
 
 # ----------------------------------------- ۱۰: تصمیم انسان و تحلیل مجدد
 def test_scenario_accepted_opportunity_survives_next_month_analysis(tmp_path):
-    rows = [(f"1402/0{(i % 9) + 1}/10", 400_000, 1, f"C{i % 8}", f"F{i}", "کالا", "")
-            for i in range(40)]
+    # همان داده‌ی سناریوی ۱ که اثباتاً فرصت می‌سازد — تا این گاردِ خطِ سرخ هرگز
+    # با «فرصتی ساخته نشد» بی‌صدا از اجرا نیفتد.
+    rows = []
+    for i in range(8):
+        day = 1 + i * 30
+        month, dom = divmod(day - 1, 30)
+        rows.append((f"1402/{month + 1:02d}/{dom + 1:02d}", 500_000, 1,
+                     "منظم", f"F{i}", "مواد مصرفی", "09121110000"))
+    for j in range(20):
+        rows.append((f"1402/{(j % 10) + 1:02d}/15", 200_000 + j * 1000, 1,
+                     f"C{j}", f"G{j}", "مواد مصرفی", ""))
     clean = _clean(rows)
     db = tmp_path / "app.db"
     _ingest(clean, db)
     bundle = run_analysis(clean, horizon=2, with_forecast=False)
-    run_opportunity_engine(bundle, clean, db_path=db)
+    created = run_opportunity_engine(bundle, clean, db_path=db)
+    assert created is not None and created.created > 0
 
     with session_scope(db) as session:
         first = session.scalars(select(Opportunity)).first()
-        if first is None:
-            pytest.skip("این داده فرصتی تولید نکرد")
+        assert first is not None, "این داده باید فرصت بسازد (سناریوی ۱)"
         first.status = STATUS_ACCEPTED
         first.assigned_to = "تیم فروش"
         target = first.id

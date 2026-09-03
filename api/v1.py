@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
@@ -910,6 +910,11 @@ def list_opportunities(
     value_kind: str | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
+    # §۳۷ «کدام‌ها زود منقضی می‌شوند؟» — مرتب‌سازی و فیلترِ افزودنی؛ پیش‌فرض همان
+    # ترتیبِ ارزش می‌ماند. مرجعِ «امروز» تاریخِ داده (as_of آخرین اجرای موتور) است،
+    # نه ساعتِ دیوار، تا پاسخ بازتولیدپذیر باشد.
+    sort: Literal["score", "expires_at"] = Query("score"),
+    expires_within_days: int | None = Query(None, ge=0, le=365),
 ) -> dict:
     """صندوق فرصت‌ها — به ترتیب ارزش مورد انتظار نزولی."""
     ensure_schema()
@@ -917,6 +922,8 @@ def list_opportunities(
         business_id = _business_id(session)
         if business_id is None:
             return {**_no_ledger_yet(), "items": [], "total": 0}
+
+        reference_date = _latest_as_of(session, business_id)
 
         stmt = select(Opportunity).where(Opportunity.business_id == business_id)
         if status != "all":
@@ -927,11 +934,32 @@ def list_opportunities(
             stmt = stmt.where(Opportunity.assigned_to == assigned_to)
         if value_kind:
             stmt = stmt.where(Opportunity.value_kind == value_kind)
+        if expires_within_days is not None and reference_date is not None:
+            horizon = _plus_days(reference_date, expires_within_days)
+            stmt = stmt.where(
+                Opportunity.expires_at.isnot(None), Opportunity.expires_at <= horizon,
+            )
 
         total = session.scalar(select(func.count()).select_from(stmt.subquery())) or 0
-        rows = session.scalars(
-            stmt.order_by(Opportunity.score_rial.desc()).limit(limit).offset(offset)
-        ).all()
+        if sort == "expires_at":
+            ordered = stmt.order_by(
+                Opportunity.expires_at.is_(None), Opportunity.expires_at.asc(),
+                Opportunity.score_rial.desc(),
+            )
+        else:
+            ordered = stmt.order_by(Opportunity.score_rial.desc())
+        rows = session.scalars(ordered.limit(limit).offset(offset)).all()
+
+        expiring_soon = 0
+        if reference_date is not None:
+            expiring_soon = session.scalar(
+                select(func.count()).select_from(Opportunity).where(
+                    Opportunity.business_id == business_id,
+                    Opportunity.status == "open",
+                    Opportunity.expires_at.isnot(None),
+                    Opportunity.expires_at <= _plus_days(reference_date, EXPIRING_SOON_DAYS),
+                )
+            ) or 0
 
         customer_names = _customer_names(session, {o.customer_id for o in rows if o.customer_id})
         offers = offers_by_opportunity(session, {o.id for o in rows})
@@ -974,7 +1002,34 @@ def list_opportunities(
             "است و گذاشتنِ مبلغِ حدسی رویشان، عددِ ساختگی می‌ساخت."
         ),
         "economics_note_fa": note,
+        # «امروز» از دیدِ داده — نه ساعتِ دیوار — تا «نزدیکِ انقضا» بازتولیدپذیر باشد.
+        "reference_date": reference_date,
+        "expiring_soon_days": EXPIRING_SOON_DAYS,
+        "expiring_soon_count": int(expiring_soon),
+        "sort": sort,
     }
+
+
+# افقِ «نزدیکِ انقضا» — ثابتِ مستند؛ فیلترِ `expires_within_days` برای هر افقِ دیگری.
+EXPIRING_SOON_DAYS = 7
+
+
+def _latest_as_of(session, business_id: int) -> str | None:
+    """تاریخِ مرجعِ صندوق: as_of آخرین اجرای موتور (همان تاریخی که انقضا با آن سنجیده می‌شود)."""
+    from mktcore.db.models import OpportunityRun
+
+    return session.scalar(
+        select(OpportunityRun.as_of_date)
+        .where(OpportunityRun.business_id == business_id)
+        .order_by(OpportunityRun.created_at.desc(), OpportunityRun.id.desc())
+        .limit(1)
+    )
+
+
+def _plus_days(iso_date: str, days: int) -> str:
+    from datetime import date, timedelta
+
+    return (date.fromisoformat(iso_date) + timedelta(days=days)).isoformat()
 
 
 @router.get("/opportunities/{opportunity_id}")
@@ -1103,6 +1158,109 @@ def contact_suppressions(active_only: bool = Query(True)) -> dict:
             "ارسال پیامک. حذف از فهرست تماس هرگز بی‌صدا نیست و تعدادش گزارش می‌شود."
         ),
     }
+
+
+class OptOutByPhoneRequest(BaseModel):
+    """انصراف با شماره — «لغو ۱۱» یا لیستِ سیاهِ پنل، پیش از آنکه مشتری شناخته شود."""
+
+    phone: str = Field(min_length=5, max_length=32)
+    reason_fa: str = Field(min_length=1, max_length=500)
+    source: Literal["manual", "provider", "import"] = "provider"
+    scope: str = "all"
+    actor: str | None = None
+
+
+class OptOutImportRow(BaseModel):
+    # کوتاه/نامعتبر اینجا رد نمی‌شود؛ در پاسخ به‌عنوان `rejected` گزارش می‌شود تا
+    # یک شماره‌ی خراب کلِ فایلِ لیست سیاه را برنگرداند.
+    phone: str = Field(min_length=1, max_length=64)
+    reason_fa: str | None = Field(default=None, max_length=500)
+
+
+class OptOutImportRequest(BaseModel):
+    """واردکردنِ لیستِ سیاهِ پنل (خروجیِ پنل پیامکی) — بدون webhook."""
+
+    rows: list[OptOutImportRow] = Field(min_length=1, max_length=20_000)
+    source: Literal["manual", "provider", "import"] = "provider"
+    reason_fa: str = Field(default="لغو از پنل پیامکی", min_length=1, max_length=500)
+    actor: str | None = None
+
+
+@router.post("/contact-suppressions", dependencies=[Depends(require_token)])
+def opt_out_by_phone(payload: OptOutByPhoneRequest) -> dict:
+    """ثبت انصراف با شماره — بدون نیاز به شناسه‌ی مشتری.
+
+    پاسخِ «لغو ۱۱» و لیستِ سیاهِ پنل تا امروز فقط از راهِ webhook «قابل ثبت» دانسته
+    می‌شد؛ در حالی که منطقِ شماره‌محور (`record_opt_out(phone=…)`) از قبل هست و
+    دروازه پیش از حلِ هویت شماره را می‌بیند. این مسیر همان را از HTTP باز می‌کند.
+    """
+    ensure_schema()
+    from mktcore.contact.register import record_opt_out
+
+    try:
+        result = record_opt_out(
+            phone=payload.phone, reason_fa=payload.reason_fa, reason_code=payload.source,
+            source=payload.source, scope=payload.scope, created_by=payload.actor,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        **result,
+        "phone_masked": mask_phone(payload.phone),
+        "note_fa": "از این پس هیچ مسیر تماسی این شماره را پیشنهاد یا ارسال نمی‌کند.",
+    }
+
+
+@router.post("/contact-suppressions/import", dependencies=[Depends(require_token)])
+def import_opt_outs(payload: OptOutImportRequest) -> dict:
+    """واردکردنِ چند شماره (لیستِ سیاهِ پنل). شماره‌ی نامعتبر صریح رد می‌شود، نه بی‌صدا."""
+    ensure_schema()
+    from mktcore.contact.register import record_opt_out
+
+    created = reactivated = unchanged = 0
+    rejected: list[dict] = []
+    for index, row in enumerate(payload.rows):
+        if normalize_phone(row.phone) is None:
+            rejected.append({"row": index, "phone_masked": mask_phone(row.phone),
+                             "reason_fa": "شماره‌ی نامعتبر"})
+            continue
+        try:
+            result = record_opt_out(
+                phone=row.phone, reason_fa=row.reason_fa or payload.reason_fa,
+                reason_code=payload.source, source=payload.source, created_by=payload.actor,
+            )
+        except ValueError as exc:
+            rejected.append({"row": index, "phone_masked": mask_phone(row.phone),
+                             "reason_fa": str(exc)})
+            continue
+        if result["created"]:
+            created += 1
+        elif result["reactivated"]:
+            reactivated += 1
+        else:
+            unchanged += 1
+    return {
+        "created": created,
+        "reactivated": reactivated,
+        "unchanged": unchanged,
+        "rejected": rejected,
+        "note_fa": (
+            f"{created} شماره‌ی تازه، {reactivated} فعال‌شده‌ی دوباره، {unchanged} تکراری، "
+            f"{len(rejected)} ردشده."
+        ),
+    }
+
+
+@router.delete("/contact-suppressions", dependencies=[Depends(require_token)])
+def revoke_opt_out_by_phone(phone: str = Query(min_length=5), scope: str = Query("all")) -> dict:
+    """پس گرفتن انصرافِ یک شماره. ردیف پاک نمی‌شود تا تاریخش بماند."""
+    ensure_schema()
+    from mktcore.contact.register import revoke_opt_out
+
+    if not revoke_opt_out(phone=phone, scope=scope):
+        raise HTTPException(status_code=404, detail="انصراف فعالی برای این شماره ثبت نشده است.")
+    return {"phone_masked": mask_phone(phone), "revoked": True,
+            "note_fa": "انصراف پس گرفته شد؛ سابقه‌اش برای پیگیری باقی می‌ماند."}
 
 
 @router.post("/customers/{customer_id}/opt-out", dependencies=[Depends(require_token)])

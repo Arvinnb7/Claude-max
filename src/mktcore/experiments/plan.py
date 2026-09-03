@@ -109,6 +109,9 @@ def build_experiment_plan(
             return build_plan([], None, target_effect=target_effect,
                               holdout_pct=holdout_pct)
         supplies = collect_supply(session, business_id)
+        from mktcore.settings_store import data_gate_thresholds
+
+        minimum = int(data_gate_thresholds(session, business_id)["min_cell_observations"])
 
     table = None
     try:
@@ -122,7 +125,7 @@ def build_experiment_plan(
                        exc_info=True)
 
     return build_plan(supplies, table, target_effect=target_effect,
-                      holdout_pct=holdout_pct)
+                      holdout_pct=holdout_pct, min_cell_observations=minimum)
 
 
 __all__ = ["OPEN_STATUS", "UNKNOWN_STATE", "build_experiment_plan", "collect_supply"]

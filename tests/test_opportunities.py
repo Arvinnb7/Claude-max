@@ -432,17 +432,21 @@ def test_cap_is_reported_not_silent(tmp_path, analyzed):
         assert "cap_note_fa" not in result.to_dict()
 
 
-def test_capped_candidates_do_not_churn_between_runs(tmp_path, analyzed):
+def test_capped_candidates_do_not_churn_between_runs(tmp_path, analyzed, monkeypatch):
     """فرصتی که فقط به‌خاطر سقف کنار مانده «بی‌مصداق» نیست.
 
     بدون این، هر اجرا صدها فرصت را بی‌مصداق و دوباره باز می‌کرد و تاریخچه را
     از رخدادهای بی‌معنا پر می‌کرد.
     """
+    import mktcore.opportunities.engine as engine_mod
+
     clean, bundle = analyzed
     db = _prepare(tmp_path, analyzed)
+    # سقف را آن‌قدر پایین می‌آوریم که قطعاً نامزدی بیرون بماند — تست نباید به
+    # حجمِ داده‌ی نمونه وابسته باشد.
+    monkeypatch.setattr(engine_mod, "MAX_PERSISTED_PER_RUN", 5)
     first = run_opportunity_engine(bundle, clean, db_path=db)
-    if not first.capped_out:
-        pytest.skip("این داده به سقف نخورد")
+    assert first.capped_out > 0, "با سقفِ ۵ باید نامزدی بیرون بماند"
 
     second = run_opportunity_engine(bundle, clean, db_path=db)
     assert second.superseded == 0

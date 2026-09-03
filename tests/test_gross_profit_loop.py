@@ -27,9 +27,15 @@ from api.main import app  # noqa: E402
 from mktcore.db import session_scope  # noqa: E402
 from mktcore.db.models import CampaignMember, OrderLine, Product  # noqa: E402
 
-from .conftest import poll_job  # noqa: E402
+from .conftest import poll_job, reset_contact_history  # noqa: E402
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_contact_history():
+    """هر تست از وضعیتِ «کسی تازه تماس نگرفته» شروع می‌کند (خستگیِ تماسِ کمپین)."""
+    reset_contact_history()
 
 
 @pytest.fixture(scope="module")
@@ -234,7 +240,6 @@ def test_campaign_reports_incremental_gross_profit_with_full_coverage(analyzed):
     assert "incremental_gross_profit" not in report["blocked_metrics"], (
         "با پوشش کامل، این سنجه دیگر نباید مسدود باشد"
     )
-    assert isinstance(report["incremental_gross_profit_rial"], int)
     assert report["gross_profit_note_fa"]
 
     # عدد باید همان تفاضلِ سودِ سرانه باشد، نه چیز دیگری
@@ -243,9 +248,17 @@ def test_campaign_reports_incremental_gross_profit_with_full_coverage(analyzed):
          - arms["control"]["gross_profit_rial"] / arms["control"]["size"])
         * arms["treatment"]["size"]
     )
-    assert report["incremental_gross_profit_rial"] == expected
+    observed = report["observed_difference"]
+    assert observed["gross_profit_rial"] == expected
     # سود از درآمد جدا است: با بهای مثبت، این دو نباید یکی باشند
-    assert report["incremental_gross_profit_rial"] != report["incremental_revenue_rial"]
+    assert observed["gross_profit_rial"] != observed["revenue_rial"]
+    if report["is_causal"]:
+        assert report["incremental_gross_profit_rial"] == expected
+    else:
+        # حکمِ غیرعلّی: عددِ «افزوده» نداریم، فقط تفاوتِ مشاهده‌شده با نامِ خودش
+        assert report["incremental_gross_profit_rial"] is None
+        assert report["incremental_revenue_rial"] is None
+        assert "مشاهده‌ای" in report["gross_profit_note_fa"]
 
 
 def test_incomplete_cost_coverage_blocks_the_number(analyzed):

@@ -160,7 +160,7 @@ def _job_drift_monitoring(*, correlation_id: str | None = None) -> dict:
         PointInTimeSpec,
         compute_point_in_time_features,
     )
-    from mktcore.ml.drift import measure_drift
+    from mktcore.ml.drift import LEVEL_SHIFTED, LEVEL_WARN, measure_drift
     from mktcore.ml.registry import MODEL_KEYS, promoted_run, run_to_dict
 
     # این تنها کاری است که مستقیم به دفتر کل می‌زند بی‌آنکه از راهِ تابعی
@@ -187,6 +187,7 @@ def _job_drift_monitoring(*, correlation_id: str | None = None) -> dict:
     ).date().isoformat()
 
     report: dict[str, dict] = {}
+    alerts: list[dict] = []
     for key, payload in promoted.items():
         features = compute_point_in_time_features(
             lines[lines["line_date"] < exclusive_end],
@@ -206,12 +207,25 @@ def _job_drift_monitoring(*, correlation_id: str | None = None) -> dict:
             "level": measured.get("level"),
             "note_fa": measured.get("note_fa"),
         }
-        if measured.get("level") in ("زیاد", "high"):
+        # ⚠️ تا پیش از این، شرط با رشته‌های «زیاد»/«high» مقایسه می‌شد که هیچ‌جا
+        # تولید نمی‌شوند (سطح‌ها «هشدار» و «تغییر معنادار»اند) — هشدارِ §۲۹.۷ در
+        # زمان‌بند هرگز شلیک نمی‌شد. مقایسه با خودِ ثابت‌ها.
+        level = measured.get("level")
+        if level == LEVEL_SHIFTED:
+            alerts.append({
+                "model_key": key, "run_id": payload["id"], "level": level,
+                "note_fa": measured.get("note_fa"),
+            })
             logger.warning(
-                "انحرافِ زیاد در مدل «%s» (اجرای %s): %s",
+                "انحرافِ معنادار در مدل «%s» (اجرای %s): %s",
                 key, payload["id"], measured.get("note_fa"),
             )
-    return {"models": report}
+        elif level == LEVEL_WARN:
+            logger.info(
+                "انحرافِ هشداری در مدل «%s» (اجرای %s): %s",
+                key, payload["id"], measured.get("note_fa"),
+            )
+    return {"models": report, "alerts": alerts}
 
 
 def _job_retry_sweep(*, correlation_id: str | None = None) -> dict:

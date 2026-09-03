@@ -19,9 +19,15 @@ sys.path.insert(0, str(_ROOT / "src"))
 from api.main import app  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
-from .conftest import poll_job  # noqa: E402
+from .conftest import poll_job, reset_contact_history  # noqa: E402
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_contact_history():
+    """هر تست از وضعیتِ «کسی تازه تماس نگرفته» شروع می‌کند (خستگیِ تماسِ کمپین)."""
+    reset_contact_history()
 
 
 def _analyze_sample() -> dict:
@@ -171,9 +177,16 @@ def test_report_is_present_and_always_carries_a_verdict(analyzed):
 def test_incremental_revenue_is_two_shaped_money(analyzed):
     campaign = _create("کمپین پول")
     report = client.get(f"/api/v1/campaigns/{campaign['id']}").json()["report"]
-    money = report["incremental_revenue"]
+    # عددِ «افزوده» فقط با حکمِ اثبات‌شده می‌آید؛ وگرنه تفاوتِ مشاهده‌شده با نامِ
+    # خودش. هر کدام که هست باید سه‌کلیدی باشد (هرگز float خام).
+    money = report["incremental_revenue"] if report["is_causal"] else report["observed_difference"]["revenue"]
+    if money is None:
+        assert report["verdict"] in ("not_ready", "attribution_only"), report["verdict"]
+        return
     assert set(money) == {"rial", "display_text", "display_currency"}
     assert money["rial"] is None or isinstance(money["rial"], int)
+    if not report["is_causal"]:
+        assert report["incremental_revenue"] is None
 
 
 def test_outcomes_are_computed_from_the_ledger(analyzed):

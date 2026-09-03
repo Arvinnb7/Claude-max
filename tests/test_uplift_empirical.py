@@ -198,3 +198,33 @@ def test_dict_shape_carries_evidence_for_every_cell():
                 "basis_label", "ci", "has_enough_data", "useless"):
         assert key in cell, key
     assert cell["basis_label"]
+
+
+# ------------------------------------------------- دروازه‌ی والدها (بازبینی)
+def test_parent_basis_requires_the_same_minimum_as_a_cell():
+    """یک مشاهده در هر بازو «اثر» نیست؛ نه برای نوع، نه برای کل."""
+    thin = compute_uplift_table(_obs("چرخه", "لغزش", n_t=1, n_c=1, rate_t=1.0, rate_c=0.0))
+
+    assert thin.global_uplift is None and thin.global_n == 1
+    assert thin.by_kind == {} and thin.by_kind_n == {"چرخه": 1}
+    assert thin.lookup("چرخه", "لغزش") == (0.0, BASIS_NONE)
+    assert thin.lookup("چرخه", "حالتِ دیگر") == (0.0, BASIS_NONE)
+    assert thin.to_dict()["global_has_enough_data"] is False
+
+    n = MIN_CELL_OBSERVATIONS
+    enough = compute_uplift_table(_obs("چرخه", "لغزش", n_t=n, n_c=n, rate_t=0.6, rate_c=0.2))
+    _uplift, basis = enough.lookup("چرخه", "حالتِ ندیده")
+    assert basis == BASIS_KIND
+    assert enough.global_ci is not None and enough.by_kind_ci["چرخه"][0] < enough.by_kind_ci["چرخه"][1]
+    assert enough.to_dict()["by_kind_detail"]["چرخه"]["n_min"] == n
+
+
+def test_the_gate_follows_the_configured_threshold():
+    """آستانه‌ی تنظیمی (§۲۹.۶) روی والدها هم اعمال می‌شود، نه فقط روی سلول."""
+    observations = _obs("چرخه", "لغزش", n_t=7, n_c=7, rate_t=0.6, rate_c=0.2)
+
+    strict = compute_uplift_table(observations, min_cell_observations=8)
+    lenient = compute_uplift_table(observations, min_cell_observations=5)
+
+    assert strict.global_uplift is None and strict.lookup("چرخه", "x") == (0.0, BASIS_NONE)
+    assert lenient.global_uplift is not None and lenient.lookup("چرخه", "x")[1] == BASIS_KIND

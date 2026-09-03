@@ -76,6 +76,21 @@ def _expand_identifiers(session: Session, customer_ids: set[int]) -> set[str]:
     return out
 
 
+def _customer_ids_for_phones(session: Session, business_id: int, phones: set[str]) -> set[int]:
+    wanted = sorted(phones)
+    out: set[int] = set()
+    for start in range(0, len(wanted), CHUNK):
+        out.update(
+            int(cid) for cid in session.scalars(
+                select(Customer.id).where(
+                    Customer.business_id == business_id,
+                    Customer.phone_e164.in_(wanted[start:start + CHUNK]),
+                )
+            )
+        )
+    return out
+
+
 def active_suppressions(
     session: Session, business_id: int, *, scope: str = ContactSuppression.SCOPE_ALL,
 ) -> tuple[set[int], set[str]]:
@@ -110,6 +125,51 @@ def control_arm_customer_ids(session: Session, business_id: int) -> set[int]:
     return {int(cid) for (cid,) in rows if cid is not None}
 
 
+def recent_exposures(
+    session: Session, business_id: int, *, window_days: int,
+    exclude_campaign_id: int | None = None, now: float | None = None,
+) -> set[int]:
+    """مشتریانی که در `window_days` روزِ گذشته واقعاً از یک کمپین تماس گرفته‌اند.
+
+    `exposure_at` فقط برای خروجیِ اکسل و ارسالِ واقعیِ موفق مهر می‌خورد (پیش‌نمایش
+    هرگز)، پس همین ستون «تماسِ واقعی» است. کمپینِ خودِ عضو مستثنا می‌شود تا دانلودِ
+    دوباره‌ی همان فهرست یا ارسالِ پیامکِ همان کمپین، اعضایش را «خسته» نشمارد.
+    """
+    cutoff = (now if now is not None else now_ts()) - window_days * 86400
+    stmt = (
+        select(CampaignMember.customer_id)
+        .join(Campaign, Campaign.id == CampaignMember.campaign_id)
+        .where(
+            Campaign.business_id == business_id,
+            CampaignMember.exposure_at.isnot(None),
+            CampaignMember.exposure_at >= cutoff,
+        )
+    )
+    if exclude_campaign_id is not None:
+        stmt = stmt.where(CampaignMember.campaign_id != exclude_campaign_id)
+    return {int(cid) for cid in session.scalars(stmt) if cid is not None}
+
+
+def recent_contact_keys(
+    session: Session, business_id: int, *, window_days: int,
+    exclude_campaign_id: int | None = None, legacy_raw_keys: set[str] | None = None,
+) -> set[str]:
+    """همه‌ی شناسه‌های اشخاصی که اخیراً تماس گرفته‌اند — از کمپین‌ها و از outbox.
+
+    خروجی هم `customers.id` (کلیدِ مسیرِ کمپین) و هم کلیدهای خام (کلیدِ موتورِ
+    فرصت) را دارد، پس هر دو مسیر با یک مجموعه کار می‌کنند.
+    """
+    from mktcore.db.lookup import customer_ids_by_raw_key
+
+    ids = recent_exposures(
+        session, business_id, window_days=window_days, exclude_campaign_id=exclude_campaign_id,
+    )
+    raw = {str(k) for k in (legacy_raw_keys or set()) if k}
+    if raw:
+        ids |= set(customer_ids_by_raw_key(session, business_id, raw).values())
+    return _expand_identifiers(session, ids) | raw
+
+
 def build_gate(
     session: Session,
     business_id: int,
@@ -123,6 +183,10 @@ def build_gate(
     (`outbox`) و این ماژول عمداً به آن وابسته نیست.
     """
     suppressed_ids, phones = active_suppressions(session, business_id)
+    # انصرافِ فقط-شماره («لغو ۱۱» پیش از شناختِ مشتری) باید مشتریِ شناخته‌شده‌ی
+    # همان شماره را هم بگیرد: مسیرِ کمپین با شناسه‌ی مشتری غربال می‌کند، نه شماره.
+    if phones:
+        suppressed_ids = set(suppressed_ids) | _customer_ids_for_phones(session, business_id, phones)
     control_ids = control_arm_customer_ids(session, business_id)
     return ContactGate(
         control_arm=frozenset(_expand_identifiers(session, control_ids)),
@@ -213,6 +277,14 @@ def record_opt_out(
         if customer_id is not None and normalized is None:
             normalized = session.scalar(
                 select(Customer.phone_e164).where(Customer.id == customer_id)
+            )
+        if customer_id is None and normalized is not None:
+            # شماره‌ای که همین حالا به مشتریِ شناخته‌شده‌ای تعلق دارد، به او وصل
+            # می‌شود؛ شناخته‌نشده هم با خودِ شماره در دروازه دیده می‌شود.
+            customer_id = session.scalar(
+                select(Customer.id).where(
+                    Customer.business_id == business_id, Customer.phone_e164 == normalized,
+                ).order_by(Customer.id)
             )
 
         existing = _find_row(session, business_id, customer_id, normalized, scope)
@@ -331,6 +403,8 @@ __all__ = [
     "active_suppressions",
     "build_gate",
     "control_arm_customer_ids",
+    "recent_contact_keys",
+    "recent_exposures",
     "list_suppressions",
     "load_gate",
     "record_opt_out",

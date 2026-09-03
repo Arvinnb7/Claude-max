@@ -290,3 +290,58 @@ def test_the_sweeper_prunes_old_successful_runs_but_never_the_dead(db, failing_j
     remaining = {r["job_name"] for r in recent_runs(db_path=db)}
     assert remaining == {"_test_failing"}
     assert len(dead_letter_runs(db_path=db)) == 1
+
+
+# ═══════════════════════════════════ هشدارِ انحراف (§۲۹.۷) — بازبینی: شاخه‌ی مرده
+def test_drift_job_raises_an_alert_on_a_shifted_model(tmp_path, monkeypatch, caplog):
+    """سطحِ «تغییر معنادار» باید در نتیجه‌ی کار و در لاگ دیده شود.
+
+    شرطِ قبلی با «زیاد»/«high» مقایسه می‌کرد — رشته‌هایی که هیچ‌جا تولید
+    نمی‌شوند — پس هشدارِ زمان‌بند هرگز شلیک نمی‌شد.
+    """
+    import logging
+
+    import pandas as pd
+
+    from mktcore.config import get_settings
+    from mktcore.db.engine import dispose_engine
+    from mktcore.ml import drift as drift_mod
+    from mktcore.ml import registry as ml_registry
+
+    monkeypatch.setattr(get_settings(), "mkt_data_dir", str(tmp_path), raising=False)
+    dispose_engine()
+    reset_ensure_cache()
+    try:
+        import mktcore.db.lookup as lookup_mod
+        import mktcore.features.ledger_frame as ledger_mod
+        import mktcore.features.point_in_time as pit_mod
+
+        monkeypatch.setattr(lookup_mod, "resolve_business_id", lambda *_a, **_k: 1)
+        monkeypatch.setattr(
+            ml_registry, "promoted_run",
+            lambda session, business_id, key: object() if key == "whale" else None,
+        )
+        monkeypatch.setattr(
+            ml_registry, "run_to_dict",
+            lambda run, with_model=True: {"id": 42, "params": {}, "drift_baseline": {}, "calibration": {}},
+        )
+        monkeypatch.setattr(
+            ledger_mod, "load_line_frame",
+            lambda session, business_id: pd.DataFrame({"line_date": ["2026-01-01"], "customer_id": [1]}),
+        )
+        monkeypatch.setattr(pit_mod, "compute_point_in_time_features", lambda *_a, **_k: pd.DataFrame())
+        monkeypatch.setattr(
+            drift_mod, "measure_drift",
+            lambda **_k: {"measured": True, "level": drift_mod.LEVEL_SHIFTED, "note_fa": "PSI بالا"},
+        )
+        with caplog.at_level(logging.WARNING, logger="mktcore.jobs.registry"):
+            result = run_job("drift_monitoring", db_path=tmp_path / "runs.db")
+    finally:
+        dispose_engine()
+        reset_ensure_cache()
+
+    assert result["status"] == JobRun.STATUS_SUCCEEDED, result
+    alerts = result["result"]["alerts"]
+    assert len(alerts) == 1 and alerts[0]["model_key"] == "whale"
+    assert alerts[0]["level"] == drift_mod.LEVEL_SHIFTED
+    assert any("whale" in rec.getMessage() for rec in caplog.records if rec.levelno >= logging.WARNING)

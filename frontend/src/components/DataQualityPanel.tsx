@@ -7,6 +7,7 @@ import {
   getDataQuality,
   getImport,
   getQuarantine,
+  importOptOuts,
   listImports,
   resolveQuarantineRow,
   type DataQuality,
@@ -248,6 +249,8 @@ export default function DataQualityPanel() {
         </Card>
       )}
 
+      <OptOutImportCard />
+
       <Card>
         <SectionTitle
           title="شکاف‌های داده"
@@ -396,5 +399,71 @@ export default function DataQualityPanel() {
         )}
       </Card>
     </div>
+  );
+}
+
+/** «لغو ۱۱» و لیستِ سیاهِ پنل — ورودِ دستی، بدون webhook. */
+function OptOutImportCard() {
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const phones = text
+    .split(/[\s,;،]+/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+
+  return (
+    <Card>
+      <SectionTitle
+        title="لغو تماس با شماره («لغو ۱۱» / لیست سیاه پنل)"
+        subtitle="شماره‌ها را از خروجی پنل پیامکی بچسبانید؛ از این پس هیچ مسیر تماسی آن‌ها را پیشنهاد یا ارسال نمی‌کند. ردیف پاک نمی‌شود، فقط علامت می‌خورد."
+      />
+      <textarea
+        className="w-full rounded-xl border border-ink-200 bg-transparent p-2 text-sm dark:border-ink-700"
+        rows={3}
+        dir="ltr"
+        placeholder="0912xxxxxxx, 0935xxxxxxx"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+      />
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <Button
+          disabled={busy || phones.length === 0}
+          onClick={() => {
+            setBusy(true);
+            setError(null);
+            void importOptOuts(phones, "لغو از پنل پیامکی")
+              .then((r) => {
+                setResult(r.note_fa);
+                setText("");
+              })
+              .catch((e: unknown) =>
+                setError(
+                  e instanceof UnauthorizedError
+                    ? `${e.message} توکن را در نوار بالای صفحه وارد کنید.`
+                    : e instanceof Error
+                      ? e.message
+                      : "ثبت انصراف انجام نشد",
+                ),
+              )
+              .finally(() => setBusy(false));
+          }}
+        >
+          ثبت {phones.length ? toFa(String(phones.length)) : ""} شماره
+        </Button>
+        {result && (
+          <span className="text-xs" style={{ color: "var(--muted)" }}>
+            {toFa(result)}
+          </span>
+        )}
+      </div>
+      {error && (
+        <div className="mt-2">
+          <Alert tone="warn">{error}</Alert>
+        </div>
+      )}
+    </Card>
   );
 }

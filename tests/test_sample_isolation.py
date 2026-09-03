@@ -157,8 +157,7 @@ def test_running_the_sample_again_shows_the_sample_not_a_mixture():
 
 def test_opportunities_follow_the_same_business():
     body = client.get("/api/v1/opportunities?limit=200").json()
-    if not body.get("available"):
-        pytest.skip("فرصتی ساخته نشد")
+    assert body.get("available"), "داده‌ی نمونه فرصت می‌سازد؛ این گارد نباید بی‌صدا رد شود"
     # هیچ فرصتی از کسب‌وکار دیگری نشت نکرده باشد
     with session_scope() as session:
         sample_id = session.scalar(
