@@ -97,10 +97,16 @@ class ImportWriteResult:
     orders_written: int
     reconcile_status: str
     checks: list[ReconcileCheck] = field(default_factory=list)
+    # §۸.۵ — `False` یعنی دسته ثبت شد ولی هیچ خطی به دفتر کل نرفت؛ دلیلش در
+    # `blocked_by` است و همان در `ImportBatch.notes_json` هم می‌ماند.
+    posted: bool = True
+    blocked_by: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
             "batch_id": self.batch_id,
+            "posted": self.posted,
+            "blocked_by": list(self.blocked_by),
             "business_id": self.business_id,
             "dataset_key": self.dataset_key,
             "revision": self.revision,
@@ -775,6 +781,7 @@ def write_import(
     file_currency: str | None = None,
     kpis: Any | None = None,
     validation_status: str | None = None,
+    posting_blockers: list[dict] | None = None,
     business_slug: str = DEFAULT_BUSINESS_SLUG,
     db_path: Path | None = None,
 ) -> ImportWriteResult:
@@ -782,6 +789,11 @@ def write_import(
 
     `clean` همان فریمی است که تحلیل دیده — **بعد از** تبدیل واحد پول — پس
     مبالغ در واحد نمایش‌اند و اینجا یک بار به ریال صحیح تبدیل می‌شوند.
+
+    `posting_blockers` (§۸.۵): اگر ناخالی باشد، فقط ردیفِ دسته با وضعیتِ
+    `BLOCKED` و دلیل‌ها ثبت می‌شود — به‌علاوه‌ی ردیف‌های خام و قرنطینه تا
+    اپراتور ببیند چه چیزی رد شد — و **هیچ** خط، سفارش، مشتری یا کالایی نوشته
+    نمی‌شود. تحلیل و داشبوردِ همان نشست دست‌نخورده می‌مانند.
     """
     ensure_schema(db_path)
     key = dataset_key or frame_dataset_key(clean)
@@ -814,6 +826,12 @@ def write_import(
         )
         session.add(batch)
         session.flush()
+
+        if posting_blockers:
+            return _record_blocked_batch(
+                session, batch, clean, blockers=list(posting_blockers),
+                key=key, revision=revision,
+            )
 
         customer_ids, customers_created = _resolve_customers(session, business.id, combined)
         product_ids, products_created = _resolve_products(session, business.id, combined)
@@ -908,8 +926,67 @@ def write_import(
     return result
 
 
+RECONCILE_BLOCKED = "BLOCKED"
+
+
+def _record_blocked_batch(
+    session: Session, batch: ImportBatch, clean: pd.DataFrame, *,
+    blockers: list[dict], key: str, revision: int,
+) -> ImportWriteResult:
+    """دسته‌ی مسدود (§۸.۵): شواهد می‌ماند، دفتر کل دست نمی‌خورد."""
+    from mktcore.config import get_settings
+    from mktcore.ingest.cleaning import get_exclusions
+
+    exclusions = get_exclusions(clean)
+    rejected_total = 0 if exclusions is None or exclusions.empty else len(exclusions)
+    quarantined = _write_quarantine(session, batch.business_id, batch.id, exclusions)
+    raw_capture = _write_raw_rows(
+        session, batch.business_id, batch.id, clean, exclusions,
+        cap=get_settings().mkt_raw_rows_cap,
+    )
+    batch.lines_inserted = 0
+    batch.lines_updated = 0
+    batch.reconcile_status = RECONCILE_BLOCKED
+    batch.notes_json = json.dumps(
+        {
+            "posted": False,
+            "blocked_by": blockers,
+            "quarantined_rows": quarantined,
+            "quarantine_detail_truncated": quarantined < rejected_total,
+            "rejected_rows_total": rejected_total,
+            "raw_rows_captured": raw_capture["captured"],
+            "raw_rows_skipped": raw_capture["skipped"],
+            "raw_capture_note_fa": raw_capture["note_fa"],
+            "has_doc_type_column": "doc_type" in clean.columns,
+            "has_branch_column": "branch" in clean.columns,
+            "n_returns": int(clean.attrs.get("n_returns") or 0),
+        },
+        ensure_ascii=False,
+    )
+    logger.warning(
+        "دفتر کل: دسته %s (نسخه %s) مسدود شد — %s",
+        batch.id, revision, "، ".join(b.get("check_id", "?") for b in blockers),
+    )
+    return ImportWriteResult(
+        batch_id=batch.id,
+        business_id=batch.business_id,
+        dataset_key=key,
+        revision=revision,
+        lines_inserted=0,
+        lines_updated=0,
+        customers_created=0,
+        products_created=0,
+        orders_written=0,
+        reconcile_status=RECONCILE_BLOCKED,
+        checks=[],
+        posted=False,
+        blocked_by=blockers,
+    )
+
+
 __all__ = [
     "DEFAULT_BUSINESS_SLUG",
+    "RECONCILE_BLOCKED",
     "SAMPLE_BUSINESS_SLUG",
     "ImportWriteResult",
     "ReconcileCheck",

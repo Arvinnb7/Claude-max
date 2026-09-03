@@ -56,6 +56,42 @@ class ValidationReport:
             self.status = PASS
 
 
+# ---------------------------------------------------------------- گاردِ ثبت
+# §۸.۵: «خطاهای مالیِ خطرناک — واحدِ پولِ نامعلوم، علامتِ وارونه، جمعِ ناممکن —
+# باید ثبت در دفتر کل را تا رفع متوقف کنند.» فقط همین سه؛ بقیه‌ی کنترل‌ها
+# هشدار می‌مانند (تصمیمِ کاربر: «فقط خطاهای مالیِ خطرناک»).
+POSTING_BLOCKERS: frozenset[str] = frozenset({"C04", "C05"})
+KNOWN_MONEY_UNITS: frozenset[str] = frozenset({"ریال", "تومان"})
+UNKNOWN_MONEY_UNIT_ID = "C00"
+
+
+def posting_block_reasons(
+    report: ValidationReport | None, *, file_currency: str | None,
+) -> list[dict]:
+    """دلایلی که ثبت در دفتر کل را متوقف می‌کنند؛ خالی یعنی ثبت مجاز است.
+
+    تابعِ خالص است و خودِ `run_validation` را دست نمی‌زند: کنترل‌ها همچنان فقط
+    گزارش می‌دهند؛ این تابع می‌گوید کدام گزارش‌ها «مسدودکننده»اند. هر دلیل
+    `check_id`، `title` و `detail` دارد تا اپراتور بداند چه چیزی را درست کند.
+    """
+    reasons: list[dict] = []
+    if file_currency is not None and file_currency not in KNOWN_MONEY_UNITS:
+        reasons.append({
+            "check_id": UNKNOWN_MONEY_UNIT_ID,
+            "title": "واحد پول فایل مشخص است",
+            "detail": f"واحدِ «{file_currency}» شناخته نیست؛ مبالغ بدون واحدِ معلوم ثبت نمی‌شوند.",
+        })
+    if report is not None:
+        for check in report.checks:
+            if check.check_id in POSTING_BLOCKERS and check.status == FAIL:
+                reasons.append({
+                    "check_id": check.check_id,
+                    "title": check.title,
+                    "detail": check.detail,
+                })
+    return reasons
+
+
 def _close(a: float, b: float) -> bool:
     return abs(a - b) <= max(_TOL_ABS, _TOL_REL * max(abs(a), abs(b)))
 

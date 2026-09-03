@@ -304,13 +304,30 @@ export default function DataQualityPanel() {
                     <div className="flex flex-wrap items-center gap-2">
                       <b className="truncate">{b.filename ?? "بدون نام"}</b>
                       {b.revision > 1 && <Badge tone="gray">نسخه {toFa(String(b.revision))}</Badge>}
-                      <Badge tone={b.reconcile_status === "MISMATCH" ? "rose" : "green"}>
-                        {b.reconcile_status === "MISMATCH" ? "اختلاف در آشتی" : "آشتی‌شده"}
-                      </Badge>
+                      {b.posted === false ? (
+                        <Badge tone="rose">ثبت در دفتر کل متوقف شد</Badge>
+                      ) : (
+                        <Badge tone={b.reconcile_status === "MISMATCH" ? "rose" : "green"}>
+                          {b.reconcile_status === "MISMATCH" ? "اختلاف در آشتی" : "آشتی‌شده"}
+                        </Badge>
+                      )}
                       {b.validation_status === "FAIL" && (
                         <Badge tone="rose">کنترل‌های کیفیت رد شده</Badge>
                       )}
                     </div>
+                    {b.posted === false && (
+                      <ul className="mt-1 space-y-0.5 text-xs" style={{ color: "var(--muted)" }}>
+                        {(b.blocked_by ?? []).map((reason) => (
+                          <li key={reason.check_id}>
+                            {reason.title}: {reason.detail}
+                          </li>
+                        ))}
+                        <li>
+                          هیچ خطی وارد دفتر کل نشد. نگاشتِ ستون‌ها (به‌ویژه «نوع سند» و واحد پول)
+                          را اصلاح و فایل را دوباره تحلیل کنید.
+                        </li>
+                      </ul>
+                    )}
                     <div
                       className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs tnum"
                       style={{ color: "var(--muted)" }}

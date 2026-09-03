@@ -48,9 +48,15 @@ def record_analysis(
     if not canonical_enabled():
         return None
     try:
+        from mktcore.analysis.validation import posting_block_reasons
         from mktcore.db.repo_import import DEFAULT_BUSINESS_SLUG, write_import
 
         slug = business_slug or DEFAULT_BUSINESS_SLUG
+        # §۸.۵ — خطاهای مالیِ خطرناک ثبت را متوقف می‌کنند؛ تحلیلِ همین نشست
+        # (که پیش از این هوک ذخیره شده) دست‌نخورده می‌ماند.
+        blockers = posting_block_reasons(
+            getattr(bundle, "validation", None), file_currency=file_currency,
+        )
         result = write_import(
             clean,
             business_slug=slug,
@@ -62,9 +68,25 @@ def record_analysis(
             file_currency=file_currency,
             kpis=getattr(bundle, "kpis", None),
             validation_status=getattr(getattr(bundle, "validation", None), "status", None),
+            posting_blockers=blockers,
         )
         payload = result.to_dict()
         payload["ok"] = True
+        if not result.posted:
+            payload["note_fa"] = (
+                "ثبت در دفتر کل متوقف شد (§۸.۵): "
+                + "؛ ".join(f"{b['title']} — {b['detail']}" for b in result.blocked_by)
+                + ". تحلیل و داشبوردِ همین نشست دست‌نخورده‌اند، ولی هیچ خطی وارد "
+                "دفتر کل نشد و هیچ ویژگی، مدل یا فرصتی از آن ساخته نمی‌شود. "
+                "نگاشتِ ستون‌ها (به‌ویژه «نوع سند» و واحد پول) را اصلاح و فایل را "
+                "دوباره تحلیل کنید."
+            )
+            payload["features_written"] = 0
+            payload["models"] = None
+            payload["opportunities"] = None
+            payload["campaign_outcomes"] = None
+            payload["uplift"] = None
+            return payload
         payload["note_fa"] = (
             "این تحلیل در دفتر کل ثبت شد؛ مشتریان و کالاها بین بارگذاری‌ها به هم وصل می‌شوند."
         )

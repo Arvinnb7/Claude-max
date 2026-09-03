@@ -221,6 +221,9 @@ def _batch_summary(batch: ImportBatch) -> dict:
         "display_currency": batch.display_currency,
         "validation_status": batch.validation_status,
         "reconcile_status": batch.reconcile_status,
+        # §۸.۵ — دسته‌ی مسدود ثبت شده ولی هیچ خطی از آن به دفتر کل نرفته.
+        "posted": batch.reconcile_status != "BLOCKED",
+        "blocked_by": list(_batch_notes(batch).get("blocked_by") or []),
     }
 
 

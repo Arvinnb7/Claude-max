@@ -58,6 +58,9 @@ export type ImportBatch = {
   display_currency: string | null;
   validation_status: string | null;
   reconcile_status: string | null;
+  /** §۸.۵ — false یعنی دسته ثبت شد ولی هیچ خطی از آن به دفتر کل نرفت. */
+  posted?: boolean;
+  blocked_by?: { check_id: string; title: string; detail: string }[];
 };
 
 export type ReconcileCheck = {
