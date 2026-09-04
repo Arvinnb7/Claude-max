@@ -199,8 +199,8 @@ def test_migration_17_rekeys_lines_and_merges_cross_batch_duplicates(tmp_path):
         assert len(lines) == 3, "تکراریِ میان‌دسته‌ای ادغام شد، خطِ واقعی و خطِ بی‌فاکتور ماندند"
         assert "old-4" in lines, "خطِ بی‌فاکتور با کلیدِ قدیمی می‌ماند"
         expected = {
-            line_uid_for_order(1, "F1", "کالا", False, 0): (1_000_000, 2),  # جدیدترین دسته ماند
-            line_uid_for_order(1, "F1", "کالا", False, 1): (2_500_000, 1),
+            line_uid_for_order(1, "F1", "کالا", False, 0, period="2024"): (1_000_000, 2),  # جدیدترین دسته ماند
+            line_uid_for_order(1, "F1", "کالا", False, 1, period="2024"): (2_500_000, 1),
         }
         for uid, (revenue, batch_id) in expected.items():
             assert uid in lines, "کلیدِ تازه با همان قاعده‌ی نوشتن ساخته می‌شود"
@@ -211,3 +211,79 @@ def test_migration_17_rekeys_lines_and_merges_cross_batch_duplicates(tmp_path):
     # اجرای دوباره چیزی عوض نمی‌کند
     ensure_schema(db, force=True)
     assert _ledger_totals(db) == (3, 4_200_000)
+
+
+# ═══════════════════════════════ یافته‌های بازبینی: ترتیب، دوره، نرمال‌سازی
+def test_migration_17_merge_is_order_independent_with_repeated_lines(tmp_path):
+    """دو خطِ واقعیِ هم‌مبلغ در یک فاکتور، از دو صادرات: باید دقیقاً دو خط بماند —
+    مستقل از اینکه کدام صادرات شماره‌ی ردیفِ کوچک‌تری دارد."""
+    db = tmp_path / "v16.db"
+    engine = get_engine(db)
+    with engine.begin() as conn:
+        conn.execute(text(_MIGRATION_TABLE_DDL))
+        for version, name, fn in _MIGRATIONS:
+            if version > 16:
+                break
+            fn(conn)
+            conn.execute(
+                text(f"INSERT INTO {_MIGRATION_TABLE} (version, name, applied_at) "
+                     "VALUES (:v, :n, :t)"),
+                {"v": version, "n": name, "t": 0.0},
+            )
+        _insert_minimal(conn, "businesses", slug="default", name="آزمون",
+                        display_currency="تومان", created_at=0.0)
+        for key in ("A", "B"):
+            _insert_minimal(conn, "import_batches", business_id=1, dataset_key=key,
+                            revision=1, created_at=0.0)
+        _insert_minimal(conn, "orders", business_id=1, order_key="F1", order_date="2024-01-05",
+                        gross_rial=0, returns_rial=0, net_rial=0, line_count=0, batch_id=1,
+                        created_at=0.0, updated_at=0.0)
+        # صادراتِ قدیمی (دسته ۱) ردیف‌های ۱۰ و ۱۱؛ صادراتِ تازه (دسته ۲) همان دو خط در ۵۱۰ و ۵۱۱
+        for uid, batch, src in (("o-1", 1, 10), ("o-2", 1, 11), ("n-1", 2, 510), ("n-2", 2, 511)):
+            _insert_minimal(
+                conn, "order_lines", line_uid=uid, business_id=1, batch_id=batch, order_id=1,
+                raw_product_name="کالا", revenue_rial=1_000_000, quantity_milli=1000,
+                source_row=src, line_date="2024-01-05", is_return=0, revision=1,
+                created_at=0.0, updated_at=0.0,
+            )
+
+    ensure_schema(db, force=True)
+    with session_scope(db) as session:
+        lines = session.scalars(select(OrderLine)).all()
+        order = session.scalar(select(Order).where(Order.order_key == "F1"))
+        assert sorted(line.batch_id for line in lines) == [2, 2], "دسته‌ی جدیدتر با هر دو تکرارش می‌ماند"
+        assert {line.line_uid for line in lines} == {
+            line_uid_for_order(1, "F1", "کالا", False, 0, period="2024"),
+            line_uid_for_order(1, "F1", "کالا", False, 1, period="2024"),
+        }
+        assert (order.gross_rial, order.line_count) == (2_000_000, 2)
+
+
+def test_reused_invoice_number_in_another_year_is_a_different_line(tmp_path):
+    db = tmp_path / "app.db"
+    year1 = _clean([("1402/01/05", 100_000, 1, "C1", "F1", "کالا", "")])
+    year2 = _clean([("1403/01/05", 250_000, 1, "C1", "F1", "کالا", "")])
+    _ingest(year1, db, dataset_key="y1")
+    second = _ingest(year2, db, dataset_key="y2")
+
+    assert (second.lines_inserted, second.lines_updated) == (1, 0)
+    assert _ledger_totals(db) == (2, (100_000 + 250_000) * 10)
+
+
+def test_order_key_is_normalised_before_identity(tmp_path):
+    """«۱۲۳۴»، «1234» و «1234.0» یک فاکتورند."""
+    from mktcore.db.repo_import import normalize_order_key
+
+    assert normalize_order_key("۱۲۳۴") == normalize_order_key(" 1234 ") == normalize_order_key("1234.0") == "1234"
+    assert normalize_order_key(None) is None
+
+    db = tmp_path / "app.db"
+    a = _clean([("1402/01/05", 100_000, 1, "C1", "۱۲۳۴", "کالا", "")])
+    b = _clean([("1402/01/05", 120_000, 1, "C1", "1234.0", "کالا", "")])
+    _ingest(a, db, dataset_key="a")
+    second = _ingest(b, db, dataset_key="b")
+
+    assert (second.lines_inserted, second.lines_updated) == (0, 1)
+    with session_scope(db) as session:
+        assert session.scalar(select(func.count()).select_from(Order)) == 1
+        assert session.scalar(select(Order.order_key)) == "1234"

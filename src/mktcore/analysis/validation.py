@@ -117,12 +117,21 @@ def run_validation(bundle, df: pd.DataFrame) -> ValidationReport:
                 f"{n_bad} ردیف ناسازگار بین «نوع سند» و علامت مبلغ.",
                 critical=n_bad / n_all > 0.10)
 
-    # C05 — فروش خالص = ناخالص − برگشت
+    # C05 — فروش خالص = ناخالص − برگشت، **از خودِ فریم** حساب می‌شود نه از KPI:
+    # KPISet خالص را با همین تفریق می‌سازد، پس مقایسه‌ی KPI با KPI هرگز رد
+    # نمی‌شد. اینجا ناخالص و برگشت مستقیم از ردیف‌ها جمع می‌شود و با خالصِ
+    # گزارش‌شده مقایسه؛ اختلاف یعنی یا جمعِ ناممکن است یا KPI خراب.
     gross = getattr(k, "gross_sales", k.total_revenue)
     rets = getattr(k, "returns_total", 0.0)
     net = getattr(k, "net_sales", k.total_revenue)
-    rep.add("C05", "فروش خالص = فروش ناخالص − برگشت", _close(net, gross - rets),
-            f"خالص={net:,.0f}، ناخالص={gross:,.0f}، برگشت={rets:,.0f}")
+    frame_gross = float(df[_REVENUE].sum()) if _REVENUE in df.columns else gross
+    frame_returns = (
+        float(-returns[_REVENUE].sum()) if returns is not None and _REVENUE in returns.columns else 0.0
+    )
+    rep.add("C05", "فروش خالص = فروش ناخالص − برگشت", _close(net, frame_gross - frame_returns),
+            f"خالص={net:,.0f}، ناخالصِ ردیف‌ها={frame_gross:,.0f}، برگشتِ ردیف‌ها={frame_returns:,.0f}"
+            + ("" if _close(gross, frame_gross) and _close(rets, frame_returns)
+               else f" (KPI: ناخالص={gross:,.0f}، برگشت={rets:,.0f})"))
 
     # C06 — آشتی شعب با کل (شامل سطل «بدون شعبه»)
     if bundle.performance.has_branch:

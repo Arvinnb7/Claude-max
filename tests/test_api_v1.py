@@ -173,8 +173,14 @@ def test_opportunity_inbox_lists_ranked_items():
     assert body["items"]
     _assert_money(body["open_pipeline"])
 
+    # ترتیبِ صندوق روی امتیاز است (ارزش × ضریبِ اثر). وقتی هنوز یادگیری‌ای
+    # نیست، امتیاز = ارزش و ترتیبِ ارزش هم برقرار است؛ با داده‌ی آزمایشیِ کافی
+    # (تست‌های کمپین در همین فرایند) این دو می‌توانند فرق کنند.
+    scores = [i["score_rial"] for i in body["items"]]
+    assert scores == sorted(scores, reverse=True)
     values = [i["expected_value"]["rial"] for i in body["items"]]
-    assert values == sorted(values, reverse=True)
+    if scores == values:
+        assert values == sorted(values, reverse=True)
 
     top = body["items"][0]
     assert top["status"] == "open"

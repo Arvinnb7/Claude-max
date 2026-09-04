@@ -182,13 +182,15 @@ def test_report_is_present_and_always_carries_a_verdict(analyzed):
 
 def test_incremental_revenue_is_two_shaped_money(analyzed):
     campaign = _create("کمپین پول")
+    # خروجی + بازخوانی تا حکمی واقعی (نه «هنوز آماده نیست») ساخته شود
+    assert client.get(f"/api/v1/campaigns/{campaign['id']}/export").status_code == 200
+    assert client.post(f"/api/v1/campaigns/{campaign['id']}/refresh").status_code == 200
     report = client.get(f"/api/v1/campaigns/{campaign['id']}").json()["report"]
+    assert report["verdict"] not in ("not_ready", "attribution_only"), report["verdict"]
     # عددِ «افزوده» فقط با حکمِ اثبات‌شده می‌آید؛ وگرنه تفاوتِ مشاهده‌شده با نامِ
     # خودش. هر کدام که هست باید سه‌کلیدی باشد (هرگز float خام).
     money = report["incremental_revenue"] if report["is_causal"] else report["observed_difference"]["revenue"]
-    if money is None:
-        assert report["verdict"] in ("not_ready", "attribution_only"), report["verdict"]
-        return
+    assert money is not None
     assert set(money) == {"rial", "display_text", "display_currency"}
     assert money["rial"] is None or isinstance(money["rial"], int)
     if not report["is_causal"]:

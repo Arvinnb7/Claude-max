@@ -187,3 +187,29 @@ def test_fixing_the_mapping_lets_the_same_file_post(isolated_ledger):
     assert posted["posted"] is True and posted["revision"] == blocked["revision"] + 1
     with session_scope() as session:
         assert _count(session, OrderLine) == 115
+
+
+def test_scheduled_opportunity_job_skips_a_blocked_session(monkeypatch):
+    """گاردِ §۸.۵ ویژگیِ داده است، نه یک مسیر: زمان‌بند هم از نشستِ مسدود فرصت نمی‌سازد."""
+    from types import SimpleNamespace
+
+    from api.persistence import store
+
+    from mktcore.jobs.registry import JobSkipped, _latest_analysis
+
+    sessions = {
+        "blocked": SimpleNamespace(analysis={"canonical": {"posted": False}}),
+        "older-ok": SimpleNamespace(analysis={"canonical": {"posted": True}}),
+    }
+    monkeypatch.setattr(store, "sessions_with_analysis", lambda limit=20: ["blocked", "older-ok"])
+    monkeypatch.setattr(store, "get_session", lambda sid: sessions[sid])
+    picked: list[str] = []
+    monkeypatch.setattr(store, "load_bundle", lambda sid: picked.append(sid) or object())
+    monkeypatch.setattr(store, "load_clean", lambda sid: object())
+
+    _latest_analysis()
+    assert picked == ["older-ok"], "نشستِ مسدود باید رد شود و نشستِ ثبت‌شده‌ی قبلی انتخاب"
+
+    monkeypatch.setattr(store, "sessions_with_analysis", lambda limit=20: ["blocked"])
+    with pytest.raises(JobSkipped):
+        _latest_analysis()

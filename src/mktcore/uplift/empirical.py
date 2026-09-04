@@ -156,6 +156,8 @@ class UpliftTable:
     global_ci: tuple[float, float] | None = None
     by_kind_n: dict[str, int] = field(default_factory=dict)
     by_kind_ci: dict[str, tuple[float, float]] = field(default_factory=dict)
+    # تخمینِ **خامِ** نوع (پیش از انقباض) — همان چیزی که بازه‌ی by_kind_ci برای آن است
+    by_kind_raw: dict[str, float] = field(default_factory=dict)
 
     @property
     def available(self) -> bool:
@@ -181,12 +183,20 @@ class UpliftTable:
         return cell if cell is not None and cell.significantly_useless else None
 
     def evidence(self, kind: str, basis: str) -> tuple[int, tuple[float, float] | None]:
-        """کمینه‌ی بازو و بازه‌ی اطمینانِ مبنایی که `lookup` برگردانده."""
+        """کمینه‌ی بازو و بازه‌ی اطمینانِ **خامِ** مبنایی که `lookup` برگردانده."""
         if basis == BASIS_KIND:
             return self.by_kind_n.get(kind, 0), self.by_kind_ci.get(kind)
         if basis == BASIS_GLOBAL:
             return self.global_n, self.global_ci
         return 0, None
+
+    def measured(self, kind: str, basis: str) -> float | None:
+        """تخمینِ خامِ اندازه‌گیری‌شده‌ی مبنا (بی‌انقباض) — برای علامتِ حکم."""
+        if basis == BASIS_KIND:
+            return self.by_kind_raw.get(kind)
+        if basis == BASIS_GLOBAL:
+            return self.global_uplift
+        return None
 
     def to_dict(self) -> dict:
         return {
@@ -260,6 +270,7 @@ def compute_uplift_table(observations: list[Observation], *, min_cell_observatio
         n_min = _min_arm_size(group)
         table.by_kind_n[kind] = n_min
         if estimate is not None and n_min >= min_cell_observations:
+            table.by_kind_raw[kind] = estimate
             # خودِ تخمین نوع هم به‌سمت کل منقبض می‌شود
             table.by_kind[kind] = _shrink(
                 estimate, table.global_uplift or 0.0, n_min,
@@ -297,7 +308,10 @@ def compute_uplift_table(observations: list[Observation], *, min_cell_observatio
         else:
             # نمونه‌ی ناکافی → کاملاً به والد واگذار می‌شود
             cell.shrunk_uplift = parent
-            cell.basis = BASIS_KIND if kind in table.by_kind else BASIS_GLOBAL
+            cell.basis = (
+                BASIS_KIND if kind in table.by_kind
+                else (BASIS_GLOBAL if table.global_uplift is not None else BASIS_NONE)
+            )
         table.cells[(kind, state)] = cell
 
     return table

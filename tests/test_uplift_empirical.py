@@ -228,3 +228,18 @@ def test_the_gate_follows_the_configured_threshold():
 
     assert strict.global_uplift is None and strict.lookup("چرخه", "x") == (0.0, BASIS_NONE)
     assert lenient.global_uplift is not None and lenient.lookup("چرخه", "x")[1] == BASIS_KIND
+
+
+def test_thin_cell_basis_matches_what_lookup_uses():
+    """سلولِ نازک بدون هیچ والدِ موجود، مبنای «کل» نمی‌گیرد — چون کلی وجود ندارد."""
+    thin = compute_uplift_table(_obs("چرخه", "لغزش", n_t=2, n_c=2, rate_t=1.0, rate_c=0.0))
+    cell = thin.cells[("چرخه", "لغزش")]
+    assert cell.basis == BASIS_NONE and thin.lookup("چرخه", "لغزش") == (0.0, BASIS_NONE)
+
+    n = MIN_CELL_OBSERVATIONS
+    with_parent = compute_uplift_table(
+        _obs("چرخه", "لغزش", n_t=n, n_c=n, rate_t=0.6, rate_c=0.2)
+        + _obs("چرخه", "نازک", n_t=2, n_c=2, rate_t=0.0, rate_c=0.0)
+    )
+    assert with_parent.cells[("چرخه", "نازک")].basis == BASIS_KIND
+    assert with_parent.by_kind_raw["چرخه"] == with_parent.measured("چرخه", BASIS_KIND)

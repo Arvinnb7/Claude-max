@@ -21,6 +21,7 @@ import hashlib
 import json
 import logging
 import math
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -32,6 +33,7 @@ from mktcore.catalog import normalize_product_name, parse_pack_size
 from mktcore.identity import normalize_phone
 from mktcore.ingest.currency import rial_per_unit
 from mktcore.ingest.schema import SOURCE_ROW
+from mktcore.locale_fa import normalize_digits
 from mktcore.money import to_basis_points, to_quantity_milli, to_rial_int
 
 from .base import now_ts
@@ -153,25 +155,48 @@ def line_uid(business_id: int, dataset_key: str, sheet: str, source_row: object)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-LINE_IDENTITY_VERSION = "v2"
+LINE_IDENTITY_VERSION = "v3"
+
+
+def normalize_order_key(raw: object) -> str | None:
+    """شماره‌ی فاکتور به شکلِ قطعی: ارقامِ لاتین، بدون فاصله‌ی اضافه، بدون «.0»ِ اکسل.
+
+    همان شماره در دو صادرات می‌تواند «۱۲۳۴»، «1234» یا «1234.0» بیاید؛ اگر کلیدِ
+    هویت روی رشته‌ی خام بنشیند، همان فاکتور دوبار شمرده می‌شود.
+    """
+    text = _text_or_none(raw)
+    if text is None:
+        return None
+    text = normalize_digits(text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if re.fullmatch(r"\d+\.0+", text):
+        text = text.split(".", 1)[0]
+    return text or None
 
 
 def line_uid_for_order(
     business_id: int, order_key: str, product_norm: str, is_return: bool, ordinal: int,
+    *, period: str = "",
 ) -> str:
     """هویتِ پایدارِ خطِ فاکتور (§۸.۴ لایه‌های ۲–۴).
 
-    کلید = کسب‌وکار + شماره‌ی فاکتور + کالای نرمال‌شده + نوع (فروش/برگشت) +
-    ترتیبِ خط در همین گروه. **مبلغ و مقدار عمداً در کلید نیستند**: صادراتِ
-    دوباره‌ی همان دوره با یک مبلغِ اصلاح‌شده باید همان خط را به‌روز کند، نه
-    اینکه خطِ تازه بسازد و قدیمی را کنارش بگذارد (دوبارشماری). با کلیدِ قبلی
-    (هشِ فایل + شماره‌ی ردیف) هر بایتِ تفاوتِ فایل همه‌ی خطوط را تازه می‌کرد.
+    کلید = کسب‌وکار + دوره (سالِ تاریخِ خط) + شماره‌ی فاکتورِ نرمال‌شده + کالای
+    نرمال‌شده + نوع (فروش/برگشت) + ترتیبِ خط در همین گروه. **مبلغ و مقدار عمداً
+    در کلید نیستند**: صادراتِ دوباره‌ی همان دوره با یک مبلغِ اصلاح‌شده باید همان
+    خط را به‌روز کند، نه اینکه خطِ تازه بسازد و قدیمی را کنارش بگذارد. «دوره»
+    برای ERPهایی است که شماره‌ی فاکتور را هر سال از نو شروع می‌کنند: فاکتورِ ۱۲
+    امسال نباید روی فاکتورِ ۱۲ پارسال بنویسد.
     """
     raw = (
-        f"{LINE_IDENTITY_VERSION}|{business_id}|o|{order_key}|{product_norm}"
+        f"{LINE_IDENTITY_VERSION}|{business_id}|o|{period}|{order_key}|{product_norm}"
         f"|{int(bool(is_return))}|{ordinal}"
     )
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def identity_period(iso_date: str | None) -> str:
+    """دوره‌ی هویتِ خط: سالِ میلادیِ تاریخِ خط (ISO). بدون تاریخ، خالی."""
+    return (iso_date or "")[:4]
 
 
 # ------------------------------------------------------------- کمکی‌های داده
@@ -450,7 +475,7 @@ def _build_line_payloads(
     payloads: list[dict] = []
     # ترتیبِ خط درونِ گروهِ (فاکتور، کالا، نوع) — به ترتیبِ ردیفِ فایل. دو خطِ
     # هم‌کالا در یک فاکتور با همین عدد از هم جدا می‌شوند.
-    ordinals: dict[tuple[str, str, bool], int] = {}
+    ordinals: dict[tuple[str, str, str, bool], int] = {}
     for i in range(len(frame)):
         iso = _iso_date(dates[i]) if dates is not None else None
         if iso is None:
@@ -468,14 +493,16 @@ def _build_line_payloads(
         raw_product = _text_or_none(products[i]) if products is not None else None
         product_norm = normalize_product_name(raw_product) if raw_product else None
 
-        raw_order = _text_or_none(orders[i]) if orders is not None else None
+        raw_order = normalize_order_key(orders[i]) if orders is not None else None
         is_return_flag = bool(is_returns[i]) if is_returns is not None else False
         if raw_order is not None:
-            group = (raw_order, product_norm or "", is_return_flag)
+            period = identity_period(iso)
+            group = (period, raw_order, product_norm or "", is_return_flag)
             ordinal = ordinals.get(group, 0)
             ordinals[group] = ordinal + 1
             uid = line_uid_for_order(
                 business_id, raw_order, product_norm or "", is_return_flag, ordinal,
+                period=period,
             )
         else:
             uid = line_uid(business_id, dataset_key, sheet,
@@ -1120,6 +1147,7 @@ __all__ = [
     "frame_dataset_key",
     "line_uid",
     "line_uid_for_order",
+    "normalize_order_key",
     "write_import",
 ]
 

@@ -252,17 +252,27 @@ def filter_uplift(candidate: OpportunityCandidate, ctx: dict) -> OpportunityFact
 def _uplift_detail_fa(table, kind: str, uplift: float, basis: str) -> str:
     from mktcore.uplift.empirical import BASIS_CELL, BASIS_LABELS_FA
 
-    if uplift > 0:
+    # حکم از علامتِ تخمینِ **اندازه‌گیری‌شده** می‌آید، نه تخمینِ منقبض‌شده‌ای که
+    # برای رتبه به‌کار می‌رود؛ بازه هم بازه‌ی همان اندازه‌گیریِ خام است.
+    measured = uplift
+    if basis != BASIS_CELL and hasattr(table, "measured"):
+        raw = table.measured(kind, basis)
+        measured = uplift if raw is None else raw
+    if measured > 0:
         verdict = "اندازه‌گیری نشان می‌دهد تماس با این گروه اثر مثبت دارد؛ رتبه بالاتر می‌رود"
     else:
         verdict = "اندازه‌گیری اثرِ مثبتی نشان نمی‌دهد؛ رتبه پایین‌تر می‌رود ولی حذف نمی‌شود"
     if basis == BASIS_CELL:
         return f"{verdict} (مبنا: همین ترکیبِ اقدام و حالت)."
     n_min, ci = table.evidence(kind, basis) if hasattr(table, "evidence") else (0, None)
-    ci_text = f"، بازه {round(ci[0] * 100, 1)} تا {round(ci[1] * 100, 1)} واحد درصد" if ci else ""
+    ci_text = (
+        f"، بازه‌ی اندازه‌گیریِ خام {round(ci[0] * 100, 1)} تا {round(ci[1] * 100, 1)} واحد درصد"
+        if ci else ""
+    )
     return (
         f"{verdict} — تخمینِ عاریتی از «{BASIS_LABELS_FA.get(basis, basis)}» "
-        f"(کمینه‌ی بازو {n_min}{ci_text})؛ نه اندازه‌گیریِ همین گروه."
+        f"(کمینه‌ی بازو {n_min}{ci_text}؛ ضریبِ رتبه از تخمینِ منقبض‌شده {round(uplift * 100, 1)} "
+        "واحد درصد)؛ نه اندازه‌گیریِ همین گروه."
     )
 
 

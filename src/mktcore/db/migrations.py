@@ -300,11 +300,34 @@ def _migration_0017_order_line_identity(conn: Connection) -> None:
     3. سرِ فاکتورهای لمس‌شده را از خطوطِ واقعی‌شان بازمحاسبه می‌کند.
     """
     from mktcore.catalog import normalize_product_name
-    from mktcore.db.repo_import import line_uid_for_order
+    from mktcore.db.repo_import import (
+        identity_period,
+        line_uid_for_order,
+        normalize_order_key,
+    )
+
+    # ۰) شماره‌ی فاکتورِ سرِ سفارش نرمال می‌شود (ارقام، فاصله، «.0»)؛ اگر دو سفارش
+    # به یک کلید برسند، هر دو دست‌نخورده می‌مانند و لاگ می‌شود (نادر).
+    orders = conn.exec_driver_sql(
+        "SELECT id, business_id, order_key FROM orders"
+    ).fetchall()
+    normalized: dict[int, str] = {}
+    taken: set[tuple[int, str]] = {(b, k) for _i, b, k in orders}
+    for order_id, business_id, key in orders:
+        norm = normalize_order_key(key) or key
+        if norm == key:
+            continue
+        if (business_id, norm) in taken:
+            logger.warning("مهاجرت ۱۷: فاکتور «%s» بعد از نرمال‌سازی با «%s» یکی می‌شد؛ دست نخورد", key, norm)
+            continue
+        taken.add((business_id, norm))
+        normalized[order_id] = norm
+    for order_id, norm in normalized.items():
+        conn.execute(text("UPDATE orders SET order_key = :k WHERE id = :i"), {"k": norm, "i": order_id})
 
     rows = conn.exec_driver_sql(
         "SELECT ol.id, ol.business_id, o.order_key, ol.raw_product_name, ol.is_return, "
-        "ol.source_row, ol.batch_id, ol.order_id, ol.revenue_rial, ol.quantity_milli "
+        "ol.source_row, ol.batch_id, ol.order_id, ol.revenue_rial, ol.quantity_milli, ol.line_date "
         "FROM order_lines ol JOIN orders o ON o.id = ol.order_id "
         "WHERE ol.order_id IS NOT NULL "
         "ORDER BY ol.business_id, ol.order_id, ol.source_row, ol.id"
@@ -313,39 +336,42 @@ def _migration_0017_order_line_identity(conn: Connection) -> None:
     groups: dict[tuple, list[tuple]] = {}
     for row in rows:
         (_line_id, business_id, order_key, raw_product, is_return, *_rest) = row
-        key = (business_id, order_key, normalize_product_name(raw_product) if raw_product else "",
-               bool(is_return))
+        key = (
+            business_id, identity_period(row[10]), order_key,
+            normalize_product_name(raw_product) if raw_product else "", bool(is_return),
+        )
         groups.setdefault(key, []).append(row)
 
     to_delete: list[int] = []
     uid_updates: list[dict] = []
     touched_orders: set[int] = set()
     for key, members in groups.items():
-        business_id, order_key, product_norm, is_return = key
-        # ادغامِ تکراری‌های میان‌دسته‌ای: همان (مبلغ، مقدار) از دسته‌ای دیگر
-        survivors: list[tuple] = []
-        seen: dict[tuple, tuple] = {}
+        business_id, period, order_key, product_norm, is_return = key
+        # ادغامِ تکراری‌های میان‌دسته‌ای — **مستقل از ترتیب**: به‌ازای هر اثرِ
+        # انگشت (مبلغ، مقدار)، دسته‌ی جدیدتر با همه‌ی تکرارهایش می‌ماند و ردیف‌های
+        # دسته‌های دیگر با همان اثر انگشت حذف می‌شوند. مقایسه‌ی جفت‌جفت (نسخه‌ی
+        # قبلی) بسته به جای‌گیریِ source_row، یک تکراری را زنده می‌گذاشت.
+        by_fp: dict[tuple, dict[int, list[tuple]]] = {}
         for row in members:
-            (line_id, _b, _o, _p, _r, _src, batch_id, order_id, revenue, qty) = row
-            fingerprint = (revenue, qty)
-            previous = seen.get(fingerprint)
-            if previous is not None and previous[6] != batch_id:
-                # جدیدترین می‌ماند (دسته‌ی بزرگ‌تر، سپس شناسه‌ی بزرگ‌تر)
-                keep, drop = (row, previous) if (batch_id, line_id) > (previous[6], previous[0]) else (previous, row)
-                to_delete.append(drop[0])
-                touched_orders.add(drop[7])
-                survivors = [r for r in survivors if r[0] != drop[0]]
-                seen[fingerprint] = keep
-                if keep is row:
-                    survivors.append(row)
-                continue
-            seen[fingerprint] = row
-            survivors.append(row)
+            fingerprint = (row[8], row[9])
+            by_fp.setdefault(fingerprint, {}).setdefault(row[6], []).append(row)
+        survivors: list[tuple] = []
+        for _fp, per_batch in by_fp.items():
+            winner = max(per_batch)
+            survivors.extend(per_batch[winner])
+            for batch_id, batch_rows in per_batch.items():
+                if batch_id == winner:
+                    continue
+                for row in batch_rows:
+                    to_delete.append(row[0])
+                    touched_orders.add(row[7])
         survivors.sort(key=lambda r: ((r[5] if r[5] is not None else 1 << 60), r[0]))
         for ordinal, row in enumerate(survivors):
             uid_updates.append({
                 "id": row[0],
-                "uid": line_uid_for_order(business_id, order_key, product_norm, is_return, ordinal),
+                "uid": line_uid_for_order(
+                    business_id, order_key, product_norm, is_return, ordinal, period=period,
+                ),
             })
 
     for start in range(0, len(to_delete), 500):

@@ -292,6 +292,8 @@ export type Opportunity = {
   customer_name: string | null;
   product_id: number | null;
   expected_value: Money;
+  /** امتیازِ رتبه‌بندی = ارزش × ضریبِ اثر (وقتی شواهد کافی است)؛ ترتیبِ صندوق روی همین است */
+  score_rial?: number;
   value_kind: string;
   probability: number | null;
   confidence: string | null;

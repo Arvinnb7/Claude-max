@@ -83,27 +83,34 @@ def _business_id(session) -> int | None:
     return active_business_id(session)
 
 
-def _campaign_gate(session, business_id: int, *, exclude_campaign_id: int | None = None):
-    """دروازه‌ی مجوز تماس برای مسیرِ کمپین — با خستگیِ تماس (§۲۷.۵).
+def _campaign_gate(session, business_id: int, *, with_fatigue: bool):
+    """دروازه‌ی مجوز تماس برای مسیرِ کمپین.
 
-    تا پیش از این، سه مسیرِ کمپین `build_gate` را بدون تاریخچه‌ی تماس می‌ساختند و
-    خستگی «بررسی نشد» بود: عضوی که همین هفته از کمپین «الف» پیامک گرفته بود، در
-    کمپین «ب» دوباره تماس می‌گرفت. پنجره همان ۱۴ روزِ موتور فرصت است (تصمیمِ
-    کاربر)؛ منبع: مهرِ تماسِ کمپین‌ها + outboxِ legacy. کمپینِ خودِ عضو مستثناست.
+    خستگیِ تماس (§۲۷.۵) فقط در **ساخت** اعمال می‌شود — پیش از تصادفی‌سازی. اگر در
+    خروجی/ارسال هم اعمال شود، فقط بازوی آزمایش را می‌تراشد و تعادلِ دو بازو (و
+    اثرِ اندازه‌گیری‌شده) را خراب می‌کند؛ خروجی و ارسال فقط رضایت و گروه کنترل
+    را می‌سنجند، همان‌طور که پیش از این بود. پنجره همان ۱۴ روزِ موتور فرصت است؛
+    منبع: مهرِ تماسِ کمپین‌ها + outboxِ legacy. اگر outbox خوانده نشد، خستگی
+    «بررسی‌نشده» گزارش می‌شود نه «قبول».
     """
+    if not with_fatigue:
+        return build_gate(session, business_id)
+    legacy: set[str] | None
     try:
         from api.persistence import store
 
         legacy = set(store.recent_contact_customer_ids(DEFAULT_FATIGUE_WINDOW_DAYS))
     except Exception:  # noqa: BLE001 - نبودِ تاریخچه‌ی legacy نباید کمپین را بخواباند
-        legacy = set()
+        logger.warning("outboxِ legacy خوانده نشد؛ خستگیِ تماس ناقص بررسی می‌شود", exc_info=True)
+        legacy = None
     recent = recent_contact_keys(
         session, business_id, window_days=DEFAULT_FATIGUE_WINDOW_DAYS,
-        exclude_campaign_id=exclude_campaign_id, legacy_raw_keys=legacy,
+        legacy_raw_keys=legacy or set(),
     )
     return build_gate(
         session, business_id,
-        fatigue_window_days=DEFAULT_FATIGUE_WINDOW_DAYS, recently_contacted=recent,
+        fatigue_window_days=DEFAULT_FATIGUE_WINDOW_DAYS if legacy is not None else None,
+        recently_contacted=recent,
     )
 
 
@@ -151,7 +158,7 @@ def create_campaign(req: CreateCampaignRequest) -> dict:
         # مهم‌ترین موردش هم‌پوشانیِ کمپین‌هاست: مشتری‌ای که در کمپینِ فعالِ «الف»
         # گروه کنترل است، نباید در کمپین «ب» تماس بگیرد — وگرنه گروه کنترلِ «الف»
         # دیگر کنترل نیست و اثرِ اندازه‌گیری‌شده‌ی هر دو کمپین بی‌اعتبار می‌شود.
-        gate = _campaign_gate(session, business_id)
+        gate = _campaign_gate(session, business_id, with_fatigue=True)
         eligible = gate.partition(
             opportunities, key=lambda o: str(o.customer_id),
         )
@@ -355,7 +362,7 @@ def export_campaign(campaign_id: int, request: Request):
         # دروازه‌ی مجوز تماس روی بازوی آزمایش. مشتریِ منصرف نباید در فایل بیاید،
         # **و مهرِ تماس هم نباید بخورد** — وگرنه سنجش، تماسی را می‌شمارد که هرگز
         # انجام نشده و اثر را کمتر از واقع نشان می‌دهد.
-        gate = _campaign_gate(session, campaign.business_id, exclude_campaign_id=campaign.id)
+        gate = _campaign_gate(session, campaign.business_id, with_fatigue=False)
         screened = gate.partition(members, key=lambda m: str(m.customer_id))
         members = screened.allowed
         if not members:
@@ -499,7 +506,7 @@ def send_campaign_sms(campaign_id: int, req: SendCampaignRequest) -> dict:
             )
 
         # دروازه‌ی مجوز تماس — همان گاردی که خروجی اکسل هم از آن رد می‌شود
-        gate = _campaign_gate(session, campaign.business_id, exclude_campaign_id=campaign.id)
+        gate = _campaign_gate(session, campaign.business_id, with_fatigue=False)
         screened = gate.partition(pending, key=lambda m: str(m.customer_id))
         pending = screened.allowed[:req.limit]
         if not pending:

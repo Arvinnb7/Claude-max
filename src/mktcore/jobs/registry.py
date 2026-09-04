@@ -77,9 +77,21 @@ def _latest_analysis() -> tuple[Any, Any]:
     """
     from api.persistence import store
 
-    session_id = store.latest_session_with_analysis()
+    session_id = None
+    for candidate in store.sessions_with_analysis(limit=20):
+        # §۸.۵: نشستی که ثبتش در دفتر کل مسدود شده (علامتِ وارونه، جمعِ ناممکن)
+        # نباید از راهِ زمان‌بند فرصت بسازد — دروازه ویژگیِ داده است، نه یک مسیر.
+        analysis = getattr(store.get_session(candidate), "analysis", None) or {}
+        canonical = analysis.get("canonical") or {}
+        if canonical.get("posted") is False:
+            continue
+        session_id = candidate
+        break
     if session_id is None:
-        raise JobSkipped("هیچ نشست تحلیل‌شده‌ای وجود ندارد؛ چیزی برای پردازش نیست.")
+        raise JobSkipped(
+            "هیچ نشستِ تحلیل‌شده‌ی ثبت‌شده‌ای وجود ندارد؛ آخرین بارگذاری‌ها با گاردِ "
+            "§۸.۵ مسدود شده‌اند یا نشستی نیست."
+        )
     bundle = store.load_bundle(session_id)
     clean = store.load_clean(session_id)
     if bundle is None or clean is None:

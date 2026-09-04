@@ -241,12 +241,28 @@ def data_quality() -> dict:
         if business_id is None:
             return _no_ledger_yet()
 
-        latest = session.scalars(
+        newest = session.scalars(
             select(ImportBatch)
             .where(ImportBatch.business_id == business_id)
             .order_by(ImportBatch.created_at.desc())
             .limit(1)
         ).first()
+        # ابعادِ کیفیت از آخرین بارگذاریِ **ثبت‌شده** خوانده می‌شوند؛ دسته‌ی مسدود
+        # (§۸.۵) هیچ خطی در دفتر کل ندارد و اعدادش کیفیتِ دفتر کل نیست.
+        latest = session.scalars(
+            select(ImportBatch)
+            .where(
+                ImportBatch.business_id == business_id,
+                ImportBatch.reconcile_status != "BLOCKED",
+            )
+            .order_by(ImportBatch.created_at.desc())
+            .limit(1)
+        ).first()
+        latest_blocked = (
+            None if newest is None or newest.reconcile_status != "BLOCKED"
+            else {"batch_id": newest.id, "filename": newest.filename,
+                  "blocked_by": list(_batch_notes(newest).get("blocked_by") or [])}
+        )
 
         totals = session.execute(
             select(
@@ -397,6 +413,7 @@ def data_quality() -> dict:
              "actual": m.actual_text, "detail": m.detail_fa}
             for m in mismatches
         ],
+        "latest_import_blocked": latest_blocked,
         "gaps": gaps,
         "economics_note_fa": ECONOMICS_NOTE_FA,
     }
@@ -1921,6 +1938,9 @@ def _opportunity_row(
         "customer_name": customer_names.get(opportunity.customer_id or -1),
         "product_id": opportunity.product_id,
         "expected_value": _money(opportunity.expected_value_rial),
+        # امتیازِ رتبه‌بندی = ارزش × ضریبِ اثرِ اندازه‌گیری‌شده (وقتی شواهد کافی است)؛
+        # ترتیبِ صندوق روی همین است، نه روی ارزشِ خام.
+        "score_rial": opportunity.score_rial,
         "value_kind": opportunity.value_kind,
         "probability": (
             None if opportunity.probability_bp is None

@@ -376,6 +376,37 @@ def test_exposed_members_are_fatigued_for_the_next_campaign(session_id, monkeypa
     assert "خستگی تماس" in body.get("contact_gate_note_fa", "")
 
 
+def test_fatigue_does_not_trim_the_treatment_arm_after_randomisation(session_id):
+    """خستگی فقط در ساخت اعمال می‌شود؛ خروجی/ارسال بازوی آزمایش را نمی‌تراشند (تعادلِ بازوها)."""
+    from mktcore.db.base import now_ts
+
+    reset_contact_history()
+    a = client.post("/api/v1/campaigns", json={"name": "الف۲", "holdout_pct": 20, "limit": 40})
+    assert a.status_code == 200, a.text
+    b = client.post("/api/v1/campaigns", json={"name": "ب۲", "holdout_pct": 20, "limit": 40})
+    assert b.status_code == 200, b.text
+    # عضوِ آزمایشِ «ب» همین حالا از کمپینِ دیگری تماس می‌گیرد (مهرِ تماس روی «الف»)
+    b_treatment = _campaign_members(b.json()["id"]).get(ARM_TREATMENT, [])
+    assert b_treatment
+    with session_scope() as session:
+        members = session.scalars(
+            select(CampaignMember).where(
+                CampaignMember.campaign_id == a.json()["id"],
+                CampaignMember.customer_id.in_(b_treatment[:5]),
+            )
+        ).all()
+        stamped = 0
+        for member in members:
+            member.exposure_at = now_ts()
+            member.exposure_channel = "excel_export"
+            stamped += 1
+    assert stamped, "دست‌کم یک عضوِ آزمایشِ «ب» باید در «الف» هم باشد تا مهر بخورد"
+    export = client.get(f"/api/v1/campaigns/{b.json()['id']}/export")
+    assert export.status_code == 200
+    # فقط رضایت و گروه کنترل در خروجی سنجیده می‌شوند؛ مهرِ خستگی هیچ‌کس را کنار نمی‌گذارد
+    assert export.headers.get("X-Contact-Suppressed") == "0", export.headers.get("X-Contact-Suppressed")
+
+
 def test_recent_exposures_ignore_previews_and_the_campaign_itself(session_id):
     from mktcore.contact.register import recent_exposures
     from mktcore.db.lookup import active_business_id

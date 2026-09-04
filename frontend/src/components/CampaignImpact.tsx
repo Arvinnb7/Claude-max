@@ -785,11 +785,11 @@ function CampaignDetailView({
               ) : undefined
             }
             hint={
-              r.incremental_gross_profit_rial == null
-                ? "بدون پوششِ کاملِ بها، عددِ ناقص گزارش نمی‌شود"
-                : r.is_causal
-                  ? "درآمد افزوده منهای بهای تمام‌شده‌ی همان خرید"
-                  : "تا اثبات اثر، عدد ارائه نمی‌شود"
+              !r.is_causal
+                ? "تا اثبات اثر، عدد ارائه نمی‌شود"
+                : r.incremental_gross_profit_rial == null
+                  ? (r.gross_profit_note_fa ?? "بدون پوششِ کاملِ بها، عددِ ناقص گزارش نمی‌شود")
+                  : "درآمد افزوده منهای بهای تمام‌شده‌ی همان خرید"
             }
           />
           {t.profit_per_customer && c.profit_per_customer && (

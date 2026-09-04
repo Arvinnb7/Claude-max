@@ -390,6 +390,16 @@ class PersistentStore:
         r = self.run_retention()
         return r["deleted"]
 
+    def sessions_with_analysis(self, limit: int = 20) -> list[str]:
+        """نشست‌های تحلیل‌شده، از تازه به قدیم (برای گذر از نشستِ مسدودشده)."""
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT id FROM sessions WHERE analysis_json IS NOT NULL "
+                "ORDER BY COALESCE(last_opened_at, created_at) DESC LIMIT ?",
+                (int(limit),),
+            ).fetchall()
+        return [r["id"] for r in rows]
+
     def latest_session_with_analysis(self) -> str | None:
         """جدیدترین نشستی که تحلیل کامل دارد (برای زمان‌بند و بازیابی خودکار)."""
         with self._conn() as c:

@@ -245,8 +245,9 @@ def build_context(
     if recently_contacted_extra:
         # تماسِ کمپین (اکسل/پیامک) هم تماس است — تا دیروز فیلترِ خستگی فقط outbox
         # را می‌دید و عضوِ تازه‌تماس‌گرفته‌ی کمپین دوباره فرصت می‌ساخت.
+        # مهرِ کمپین اضافه می‌شود ولی «بررسی شد» فقط وقتی outbox هم خوانده شده؛
+        # وگرنه فیلتر همچنان «بررسی نشد» ثبت می‌کند (نیمه‌بررسی قبول نیست).
         recent = set(recent) | set(recently_contacted_extra)
-        window = window if window is not None else fatigue_window_days
     has_cost = bool(
         "cost" in clean.columns and clean["cost"].notna().any()
     )
