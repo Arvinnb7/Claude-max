@@ -202,3 +202,22 @@ def test_uplift_label_follows_the_sign_and_names_a_borrowed_basis():
     borrowed = filter_uplift(_candidate(), {"uplift_table": negative, "lifecycle_of": {"C1": "حالتِ ندیده"}})
     assert borrowed.outcome == "filter_pass"
     assert "عاریتی" in (borrowed.detail_fa or "") and "کمینه‌ی بازو" in (borrowed.detail_fa or "")
+
+
+def test_cell_verdict_uses_the_groups_own_measurement_not_the_blend():
+    """سلولِ روی مرزِ دروازه: تخمینِ منقبض ۵/۶ والد است؛ حکم باید از اندازه‌گیریِ خودِ گروه بیاید."""
+    from mktcore.uplift.empirical import MIN_CELL_OBSERVATIONS
+
+    n = MIN_CELL_OBSERVATIONS
+    observations = (
+        _obs("چرخه", "منفی", n=n, rate_t=0.2, rate_c=0.5)          # خودِ گروه: −۳۰ واحد
+        + _obs("چرخه", "بزرگ", n=400, rate_t=0.5, rate_c=0.2)       # والدِ نوع: مثبتِ قوی
+    )
+    table = compute_uplift_table(observations)
+    cell = table.cells[("چرخه", "منفی")]
+    assert cell.raw_uplift < 0 < cell.shrunk_uplift, "پیش‌شرطِ سناریو: انقباض علامت را برگردانده"
+
+    note = filter_uplift(_candidate(key="C9"), {"uplift_table": table, "lifecycle_of": {"C9": "منفی"}})
+    assert note.outcome == "filter_pass"
+    assert "اثرِ مثبتی نشان نمی‌دهد" in (note.detail_fa or "")
+    assert "اندازه‌گیریِ خودِ گروه" in (note.detail_fa or "") and "منقبض" in (note.detail_fa or "")

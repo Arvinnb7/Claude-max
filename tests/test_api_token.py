@@ -46,6 +46,8 @@ GUARDED = [
     ("post", "/api/v1/customers/1/opt-out", {"reason_fa": "دلیل"}),
     ("delete", "/api/v1/customers/1/opt-out", None),
     ("post", "/api/v1/opportunities/1/dismiss", {}),
+    # خواندنی ولی PII: دفترِ «تماس نگیر» فهرستِ افرادِ مشخص است
+    ("get", "/api/v1/contact-suppressions", None),
 ]
 
 # مسیرهای خواندنی که باید باز بمانند
@@ -56,7 +58,6 @@ OPEN_READS = [
     "/api/v1/data-quality",
     "/api/v1/uplift",
     "/api/v1/experiment-plan",
-    "/api/v1/contact-suppressions",
 ]
 
 

@@ -412,6 +412,9 @@ def test_recent_exposures_ignore_previews_and_the_campaign_itself(session_id):
     from mktcore.db.lookup import active_business_id
     from mktcore.db.models import Campaign
 
+    # مهرهای واقعیِ تست‌های قبلی (زمانِ حال) از پنجره‌ی ساختگیِ این تست «جدیدتر»ند؛
+    # پس اول پاک می‌شوند تا فقط همین یک مهر سنجیده شود.
+    reset_contact_history()
     with session_scope() as session:
         business_id = active_business_id(session)
         campaign = session.scalar(
@@ -434,3 +437,45 @@ def test_recent_exposures_ignore_previews_and_the_campaign_itself(session_id):
     assert member.customer_id not in old
     assert member.customer_id in fresh
     assert member.customer_id not in own
+
+
+def test_legacy_send_path_sees_campaign_exposures(session_id, monkeypatch):
+    """/api/sms/send تا امروز فقط outbox را می‌دید؛ تماسِ کمپین هم تماس است."""
+    from mktcore.db.base import now_ts
+
+    reset_contact_history()
+    created = client.post("/api/v1/campaigns", json={"name": "الف۳", "holdout_pct": 0, "limit": 60})
+    assert created.status_code == 200, created.text
+    treatment = _campaign_members(created.json()["id"]).get(ARM_TREATMENT, [])
+    assert treatment
+    with session_scope() as session:
+        rows = session.scalars(
+            select(CampaignMember).where(CampaignMember.campaign_id == created.json()["id"])
+        ).all()
+        for member in rows:
+            member.exposure_at = now_ts()
+            member.exposure_channel = "excel_export"
+        raw_keys = {
+            str(k) for k in session.scalars(
+                select(Customer.canonical_key).where(Customer.id.in_(treatment))
+            )
+        }
+
+    sent_to: list[str] = []
+
+    def _fake_send(messages, **_kwargs):
+        from mktcore.execution.providers import SendResult
+
+        sent_to.extend(m.customer_id for m in messages)
+        return SendResult(total=len(messages), sent=len(messages), failed=0,
+                          dry_run=True, provider="mock", details=[])
+
+    monkeypatch.setattr("api.main.send_campaign", _fake_send)
+    r = client.post("/api/sms/send", json={
+        "session_id": session_id, "kind": "پیشنهاد_شخصی", "template": "سلام {نام}",
+        "limit": 500, "dry_run": True,
+    })
+    assert r.status_code == 200, r.text
+    assert not (set(sent_to) & raw_keys), "عضوِ تازه‌تماس‌گرفته‌ی کمپین نباید از مسیرِ legacy پیام بگیرد"
+    reasons = {row["دلیل"]: row["تعداد"] for row in r.json().get("دلایل_مسدودی", [])}
+    assert reasons.get("خستگی تماس (تماس اخیر)", 0) >= 1

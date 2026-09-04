@@ -81,3 +81,18 @@ def test_quarantine_listing_requires_the_token_when_one_is_configured(quarantine
     assert client.get("/api/v1/quarantine").status_code == 401
     ok = client.get("/api/v1/quarantine", headers={HEADER_NAME: TOKEN})
     assert ok.status_code == 200
+
+
+def test_phone_shaped_values_are_masked_even_under_other_keys(quarantined_row):
+    """نگاشت شماره را در ستونِ customer_id هم کپی می‌کند؛ شماره‌ی بدشکل/غیرایرانی هم شکلِ شماره دارد."""
+    from api.v1 import _mask_raw_row
+
+    masked = _mask_raw_row({"customer_id": 9121234567, "order_id": "F12", "note": "0044 7700 900123",
+                            "amount": 1250000, "qty": 3, "date": "1402/01/05",
+                            "amount_text": "1,250,000", "iso": "2024-01-05"})
+    assert masked["customer_id"] != 9121234567 and str(masked["customer_id"]).endswith("4567")
+    assert masked["note"] != "0044 7700 900123" and "*" in masked["note"]
+    assert masked["order_id"] == "F12", "شناسه‌ی کوتاهِ غیرشماره‌ای دست نمی‌خورد"
+    assert masked["amount"] == 1250000 and masked["qty"] == 3, "مبلغ زیرِ ستونِ غیرشناسه ماسک نمی‌شود"
+    assert masked["date"] == "1402/01/05" and masked["iso"] == "2024-01-05"
+    assert masked["amount_text"] == "1,250,000", "مبلغِ با جداکننده‌ی هزارگان شماره نیست"

@@ -244,18 +244,24 @@ def filter_uplift(candidate: OpportunityCandidate, ctx: dict) -> OpportunityFact
     # و تخمینِ عاریتی از نوع/کل خودش را «اندازه‌گیریِ همین گروه» جا نمی‌زند.
     return OpportunityFactorNote(
         "uplift", FILTER_CODES["uplift"], OUTCOME_PASS,
-        _uplift_detail_fa(table, candidate.kind, uplift, basis),
+        _uplift_detail_fa(table, candidate.kind, uplift, basis, state=state),
         value_text=f"{round(uplift * 100, 1)} واحد درصد",
     )
 
 
-def _uplift_detail_fa(table, kind: str, uplift: float, basis: str) -> str:
+def _uplift_detail_fa(table, kind: str, uplift: float, basis: str, *, state: str | None = None) -> str:
     from mktcore.uplift.empirical import BASIS_CELL, BASIS_LABELS_FA
 
     # حکم از علامتِ تخمینِ **اندازه‌گیری‌شده** می‌آید، نه تخمینِ منقبض‌شده‌ای که
-    # برای رتبه به‌کار می‌رود؛ بازه هم بازه‌ی همان اندازه‌گیریِ خام است.
+    # برای رتبه به‌کار می‌رود؛ بازه هم بازه‌ی همان اندازه‌گیریِ خام است. برای
+    # سلولِ خودِ گروه هم همین: در مرزِ دروازه، تخمینِ منقبض تا ۵/۶ والد است.
     measured = uplift
-    if basis != BASIS_CELL and hasattr(table, "measured"):
+    cell = None
+    if basis == BASIS_CELL and hasattr(table, "cells"):
+        cell = table.cells.get((kind, state or "—"))
+        if cell is not None:
+            measured = cell.raw_uplift
+    elif basis != BASIS_CELL and hasattr(table, "measured"):
         raw = table.measured(kind, basis)
         measured = uplift if raw is None else raw
     if measured > 0:
@@ -263,7 +269,17 @@ def _uplift_detail_fa(table, kind: str, uplift: float, basis: str) -> str:
     else:
         verdict = "اندازه‌گیری اثرِ مثبتی نشان نمی‌دهد؛ رتبه پایین‌تر می‌رود ولی حذف نمی‌شود"
     if basis == BASIS_CELL:
-        return f"{verdict} (مبنا: همین ترکیبِ اقدام و حالت)."
+        if cell is None:
+            return f"{verdict} (مبنا: همین ترکیبِ اقدام و حالت)."
+        ci_text = (
+            f"، بازه {round(cell.ci[0] * 100, 1)} تا {round(cell.ci[1] * 100, 1)} واحد درصد"
+            if cell.ci else ""
+        )
+        return (
+            f"{verdict} (مبنا: همین ترکیبِ اقدام و حالت — اندازه‌گیریِ خودِ گروه "
+            f"{round(cell.raw_uplift * 100, 1)} واحد درصد{ci_text}؛ ضریبِ رتبه از تخمینِ "
+            f"منقبض‌شده به‌سمت والد {round(uplift * 100, 1)} واحد درصد)."
+        )
     n_min, ci = table.evidence(kind, basis) if hasattr(table, "evidence") else (0, None)
     ci_text = (
         f"، بازه‌ی اندازه‌گیریِ خام {round(ci[0] * 100, 1)} تا {round(ci[1] * 100, 1)} واحد درصد"

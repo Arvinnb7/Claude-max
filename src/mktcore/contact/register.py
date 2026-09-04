@@ -34,7 +34,7 @@ from mktcore.db.models import (
     Customer,
     CustomerKey,
 )
-from mktcore.identity.phone import normalize_phone
+from mktcore.identity.phone import mask_phone, normalize_phone
 
 from .permission import DEFAULT_FATIGUE_WINDOW_DAYS, ContactGate
 
@@ -227,10 +227,18 @@ def load_gate(
                     has_suppression_data=True,
                     has_campaign_data=True,
                 )
+            merged = recently_contacted
+            if recently_contacted is not None and fatigue_window_days is not None:
+                # تماسِ کمپین (اکسل/پیامک) هم تماس است: مسیرِ legacy تا اینجا فقط
+                # outbox را می‌دید و عضوِ تازه‌تماس‌گرفته‌ی کمپین دوباره پیام می‌گرفت.
+                merged = recent_contact_keys(
+                    session, business_id, window_days=fatigue_window_days,
+                    legacy_raw_keys=set(recently_contacted),
+                )
             return build_gate(
                 session, business_id,
                 fatigue_window_days=fatigue_window_days,
-                recently_contacted=recently_contacted,
+                recently_contacted=merged,
             )
     except Exception:  # noqa: BLE001 - نبودِ دفتر نباید ارسال را بخواباند
         logger.warning("دفترِ مجوز تماس در دسترس نبود؛ بررسی‌ها انجام نشد", exc_info=True)
@@ -268,11 +276,66 @@ def record_opt_out(
         raise ValueError("دلیل انصراف اجباری است.")
 
     normalized = normalize_phone(phone) if phone else None
+    if customer_id is None and normalized is None:
+        # ردیفی که نه شناسه دارد نه شماره‌ی نرمال‌شدنی، هیچ‌کس را مسدود نمی‌کند؛
+        # «موفق» گزارش‌کردنش یعنی شخصی که «نه» گفته همچنان پیام می‌گیرد.
+        raise ValueError("شماره‌ی نامعتبر است؛ انصراف بدون شناسه یا شماره‌ی معتبر ثبت نمی‌شود.")
     ensure_schema(db_path)
     with write_lock, session_scope(db_path) as session:
         business_id = _business_id(session, business_slug)
         if business_id is None:
             raise ValueError("کسب‌وکاری ثبت نشده است؛ اول داده بارگذاری کنید.")
+        return _record_opt_out_in_session(
+            session, business_id, customer_id=customer_id, normalized=normalized,
+            reason_fa=reason_fa, reason_code=reason_code, source=source, scope=scope,
+            created_by=created_by,
+        )
+
+
+def record_opt_outs_bulk(
+    rows: list[dict], *, reason_fa: str, reason_code: str = "provider", source: str = "provider",
+    scope: str = ContactSuppression.SCOPE_ALL, created_by: str | None = None,
+    business_slug: str = "default", db_path: Path | None = None,
+) -> dict:
+    """ثبتِ چند انصراف با شماره در **یک** تراکنش (لیستِ سیاهِ پنل).
+
+    هر ردیف `{"phone", "reason_fa"?}`؛ شماره‌ی نامعتبر صریح در `rejected` گزارش
+    می‌شود، نه بی‌صدا. یک قفلِ نوشتن، یک نشست — نه یکی به‌ازای هر ردیف.
+    """
+    created = reactivated = unchanged = 0
+    rejected: list[dict] = []
+    ensure_schema(db_path)
+    with write_lock, session_scope(db_path) as session:
+        business_id = _business_id(session, business_slug)
+        if business_id is None:
+            raise ValueError("کسب‌وکاری ثبت نشده است؛ اول داده بارگذاری کنید.")
+        for index, row in enumerate(rows):
+            normalized = normalize_phone(row.get("phone"))
+            if normalized is None:
+                rejected.append({"row": index, "phone_masked": mask_phone(row.get("phone")),
+                                 "reason_fa": "شماره‌ی نامعتبر"})
+                continue
+            result = _record_opt_out_in_session(
+                session, business_id, customer_id=None, normalized=normalized,
+                reason_fa=(row.get("reason_fa") or reason_fa), reason_code=reason_code,
+                source=source, scope=scope, created_by=created_by,
+            )
+            if result["created"]:
+                created += 1
+            elif result["reactivated"]:
+                reactivated += 1
+            else:
+                unchanged += 1
+    return {"created": created, "reactivated": reactivated, "unchanged": unchanged,
+            "rejected": rejected}
+
+
+def _record_opt_out_in_session(
+    session: Session, business_id: int, *, customer_id: int | None, normalized: str | None,
+    reason_fa: str, reason_code: str, source: str, scope: str, created_by: str | None,
+) -> dict:
+    """بدنه‌ی ثبت، درونِ نشستی که صدازننده باز کرده (تک یا انبوه)."""
+    if True:  # تورفتگیِ بدنه‌ی قبلی حفظ شده تا دیف خوانا بماند
 
         if customer_id is not None and normalized is None:
             normalized = session.scalar(
@@ -358,7 +421,8 @@ def list_suppressions(
                 "id": row.id,
                 "customer_id": row.customer_id,
                 "customer_name": display_name,
-                "phone": row.phone_e164,
+                # شماره در نمای API ماسک می‌شود؛ دفتر همان E.164 کامل را دارد.
+                "phone": mask_phone(row.phone_e164) if row.phone_e164 else None,
                 "scope": row.scope,
                 "source": row.source,
                 "reason_fa": row.reason_fa,
@@ -405,6 +469,7 @@ __all__ = [
     "control_arm_customer_ids",
     "recent_contact_keys",
     "recent_exposures",
+    "record_opt_outs_bulk",
     "list_suppressions",
     "load_gate",
     "record_opt_out",

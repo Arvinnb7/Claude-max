@@ -91,3 +91,34 @@ def test_provider_blacklist_import_reports_rejects_and_keeps_numbers_out_of_camp
     revoked = client.delete(f"/api/v1/contact-suppressions?phone={phone}")
     assert revoked.status_code == 200 and revoked.json()["revoked"] is True
     assert client.delete(f"/api/v1/contact-suppressions?phone={phone}").status_code == 404
+
+
+# ═══════════════════════════════ یافته‌های بازبینی: اعتبارِ شماره، ماسک، گارد
+def test_unparseable_phone_is_rejected_instead_of_a_silent_no_op(analyzed):
+    r = client.post("/api/v1/contact-suppressions", json={"phone": "abcdefg", "reason_fa": "x"})
+    assert r.status_code == 400 and "نامعتبر" in r.json()["detail"]
+    from mktcore.contact.register import record_opt_out
+
+    with pytest.raises(ValueError):
+        record_opt_out(phone="abcdefg", reason_fa="x")
+
+
+def test_suppression_listing_masks_phones_and_needs_the_token(analyzed, monkeypatch):
+    from mktcore.config import get_settings
+    from mktcore.security import HEADER_NAME
+
+    client.post("/api/v1/contact-suppressions", json={"phone": "0912 888 8888", "reason_fa": "لغو"})
+    listing = client.get("/api/v1/contact-suppressions").json()
+    phones = [item["phone"] for item in listing["items"] if item.get("phone")]
+    assert phones and all("*" in phone for phone in phones), "شماره‌ها در نمای API ماسک‌اند"
+    assert "8888888" not in json_dumps(listing)
+
+    monkeypatch.setattr(get_settings(), "mkt_api_token", "t-ledger", raising=False)
+    assert client.get("/api/v1/contact-suppressions").status_code == 401
+    assert client.get("/api/v1/contact-suppressions", headers={HEADER_NAME: "t-ledger"}).status_code == 200
+
+
+def json_dumps(payload) -> str:
+    import json
+
+    return json.dumps(payload, ensure_ascii=False)

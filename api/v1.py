@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -521,6 +522,28 @@ def resolve_quarantine(row_id: int, payload: ResolveQuarantineRequest) -> dict:
 
 
 _PHONE_LIKE_KEYS = ("موبایل", "تلفن", "همراه", "شماره", "phone", "mobile", "tel")
+# ستون‌های نقشِ شناسه که نگاشت ممکن است شماره را در آن‌ها کپی کند
+_IDENTIFIER_KEYS = ("customer_id", "phone", "email", "mobile", "مشتری")
+_NON_DIGIT = re.compile(r"\D+")
+# تاریخ (۱۴۰۲/۰۱/۰۵، 2024-01-05) و مبلغِ با جداکننده‌ی هزارگان (1,250,000) شماره نیستند
+_DATE_LIKE = re.compile(r"^\s*\d{2,4}[/\-.]\d{1,2}[/\-.]\d{1,4}(\s+\d{1,2}:\d{2}(:\d{2})?)?\s*$")
+_THOUSANDS = re.compile(r"^\s*[+-]?\d{1,3}([,٬،]\d{3})+(\.\d+)?\s*$")
+
+
+def _phone_shaped(key_text: str, value: object) -> bool:
+    """آیا مقدار شکلِ شماره دارد؟ رشته‌ی ۷ تا ۱۵ رقمی (با هر جداکننده‌ای) — حتی اگر
+    نرمال‌سازِ ایرانی ردش کند. عددِ خام فقط زیرِ ستونِ شناسه شماره تلقی می‌شود، وگرنه
+    مبلغِ هفت‌رقمی هم ماسک می‌شد."""
+    if isinstance(value, bool) or value is None:
+        return False
+    if isinstance(value, str):
+        if _DATE_LIKE.match(value) or _THOUSANDS.match(value):
+            return False
+        digits = _NON_DIGIT.sub("", value)
+        return 7 <= len(digits) <= 15 and len(digits) >= len(value.strip()) * 0.6
+    if isinstance(value, (int, float)):
+        return key_text in _IDENTIFIER_KEYS and 7 <= len(str(int(value))) <= 15
+    return False
 
 
 def _mask_raw_row(raw: dict | None) -> dict | None:
@@ -537,7 +560,13 @@ def _mask_raw_row(raw: dict | None) -> dict | None:
     for key, value in raw.items():
         key_text = str(key).lower()
         looks_like_phone_column = any(token in key_text for token in _PHONE_LIKE_KEYS)
-        if value is not None and (looks_like_phone_column or normalize_phone(value) is not None):
+        # ماسک روی **شکل** شماره، نه فقط نرمال‌شدنش: شماره‌ی بدشکل یا غیرایرانی هم
+        # داده‌ی شخصی است و نباید به‌خاطر ردشدن از نرمال‌ساز عیناً بیرون برود
+        # (نگاشت، شماره را در ستونِ customer_id هم کپی می‌کند).
+        if value is not None and (
+            looks_like_phone_column or _phone_shaped(key_text, value)
+            or normalize_phone(value) is not None
+        ):
             out[key] = mask_phone(value)
         else:
             out[key] = value
@@ -1214,6 +1243,8 @@ def opt_out_by_phone(payload: OptOutByPhoneRequest) -> dict:
     ensure_schema()
     from mktcore.contact.register import record_opt_out
 
+    if normalize_phone(payload.phone) is None:
+        raise HTTPException(status_code=400, detail="شماره‌ی نامعتبر است؛ انصراف ثبت نشد.")
     try:
         result = record_opt_out(
             phone=payload.phone, reason_fa=payload.reason_fa, reason_code=payload.source,
@@ -1230,40 +1261,23 @@ def opt_out_by_phone(payload: OptOutByPhoneRequest) -> dict:
 
 @router.post("/contact-suppressions/import", dependencies=[Depends(require_token)])
 def import_opt_outs(payload: OptOutImportRequest) -> dict:
-    """واردکردنِ چند شماره (لیستِ سیاهِ پنل). شماره‌ی نامعتبر صریح رد می‌شود، نه بی‌صدا."""
+    """واردکردنِ چند شماره (لیستِ سیاهِ پنل) در یک تراکنش. شماره‌ی نامعتبر صریح رد می‌شود."""
     ensure_schema()
-    from mktcore.contact.register import record_opt_out
+    from mktcore.contact.register import record_opt_outs_bulk
 
-    created = reactivated = unchanged = 0
-    rejected: list[dict] = []
-    for index, row in enumerate(payload.rows):
-        if normalize_phone(row.phone) is None:
-            rejected.append({"row": index, "phone_masked": mask_phone(row.phone),
-                             "reason_fa": "شماره‌ی نامعتبر"})
-            continue
-        try:
-            result = record_opt_out(
-                phone=row.phone, reason_fa=row.reason_fa or payload.reason_fa,
-                reason_code=payload.source, source=payload.source, created_by=payload.actor,
-            )
-        except ValueError as exc:
-            rejected.append({"row": index, "phone_masked": mask_phone(row.phone),
-                             "reason_fa": str(exc)})
-            continue
-        if result["created"]:
-            created += 1
-        elif result["reactivated"]:
-            reactivated += 1
-        else:
-            unchanged += 1
+    try:
+        result = record_opt_outs_bulk(
+            [{"phone": row.phone, "reason_fa": row.reason_fa} for row in payload.rows],
+            reason_fa=payload.reason_fa, reason_code=payload.source, source=payload.source,
+            created_by=payload.actor,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {
-        "created": created,
-        "reactivated": reactivated,
-        "unchanged": unchanged,
-        "rejected": rejected,
+        **result,
         "note_fa": (
-            f"{created} شماره‌ی تازه، {reactivated} فعال‌شده‌ی دوباره، {unchanged} تکراری، "
-            f"{len(rejected)} ردشده."
+            f"{result['created']} شماره‌ی تازه، {result['reactivated']} فعال‌شده‌ی دوباره، "
+            f"{result['unchanged']} تکراری، {len(result['rejected'])} ردشده."
         ),
     }
 
