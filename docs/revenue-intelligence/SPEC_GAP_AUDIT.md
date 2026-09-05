@@ -74,17 +74,17 @@
 | قلم سند | وضعیت | شاهد / آنچه کم است |
 |---|---|---|
 | canonical orders/order_lines/customers/products | `done` | `db/models.py` — گرینِ خط سفارش، یکتا بر `line_uid` |
-| identity and product resolution | `partial` | ترتیبِ قطعی (تلفن → کلید خام) هست؛ ولی `merged_into_customer_id`، تاریخچه‌ی ادغام و صف بازبینی **نیست**، و `confidence_bp` همه‌جا ۱۰۰۰۰ هاردکد است — یعنی «اطمینان» عملاً متغیر نیست |
+| identity and product resolution | `partial` | ترتیبِ قطعی (تلفن → کلید خام) هست و ایمیل به‌عنوان کلیدِ ذخیره‌شده نوشته می‌شود؛ **نامزدهای ادغام** در L13 و `notes_json.merge_candidates` دیدنی‌اند (بدون ادغامِ خودکار). `merged_into_customer_id`، تاریخچه‌ی ادغام و صفِ بازبینی هنوز **نیست**، و `confidence_bp` همه‌جا ۱۰۰۰۰ است |
 | returns | `done` | خطوط برگشتی با `is_return` ماندگارند — `test_returns_are_in_the_ledger_not_dropped` |
 | discounts | `done` | `discount_rial` / `discount_rate_bp` |
 | cost | `done` | ستون فایل فروش **یا** مسیر ورودِ جدا (`POST /api/v1/costs` → `product_cost_history`). انتساب بر پایه‌ی **تاریخ خط** با سه سطح اطمینان `from_file`/`history_exact`/`history_imputed` (§۳.۴) |
 | **margin / gross profit** | `done` | `order_lines.gross_profit_rial` در دفتر کل می‌نشیند (بها `NULL` ⇒ سود `NULL`، هرگز صفر). حاشیه‌ی هر کالا از همان‌جا: `costs/register.py::margin_lookup` — `test_gross_profit_loop.py` |
-| reconciliation | `done` | `ImportReconciliation`، کنترل‌های L01–L07 — `test_reconciliation_rows_are_persisted` |
-| Customer 360 feature snapshots | `partial` | `as_of_date` و `feature_version` هست؛ **watermark منبع** و **نسخه‌ی کد** (§۱۰.۴) نیست — ۲ از ۴ |
+| reconciliation | `done` | `ImportReconciliation`، کنترل‌های L01–L13 (هر شش موردِ §۸.۶؛ حتی برای دسته‌ی مسدود) — `test_reconciliation_rows_are_persisted`, `test_reconcile_controls` |
+| Customer 360 feature snapshots | `partial` | `as_of_date` و `feature_version` هست؛ عکس هنوز از فریمِ آپلود است و **مدعیِ دفترکلی در سایه** (`features/basis_diff.py`, `GET /api/v1/feature-basis-diff`) اختلافش را گزارش می‌کند — ارتقا پس از دیدنِ diff روی دفترِ واقعی. **watermark منبع** و **نسخه‌ی کد** (§۱۰.۴) نیست |
 | Immutable imports (`import_rows_raw` §۷.۱) | ✅ **بسته شد (S4)** | تا سقفِ `MKT_RAW_ROWS_CAP` ذخیره می‌شود؛ بالاتر از سقف صریحاً «ذخیره نشد» ثبت می‌شود |
 | Quarantine (`import_quarantine` §۷.۱) | ✅ **بسته شد (S4)** | جدولِ `import_quarantine` در دفتر کل، با کدِ دلیل و راهِ اصلاح؛ تستی که بقایش را بعد از هرس اثبات می‌کند |
-| Versioned per-source mappings (§۸.۲) | `missing` | `mapping_profiles` با هشِ سرستون کلید می‌خورد، بدون `version` و بدون `source_system` |
-| data-quality UI/API (§۸.۵ — ۹ بُعد) | ✅ **بسته شد (S5)** | هر نُه بُعد؛ بُعدی که مبنایش نیست `None` («سنجیده نشد») می‌گیرد، نه صفر |
+| Versioned per-source mappings (§۸.۲) | `partial` — **برشِ اول (F5)** | `mapping_profile_versions` (مهاجرت ۱۹) هر نگاشتِ متفاوت را نسخه می‌دهد و `import_batches.mapping_version` می‌گوید هر دسته با کدام ساخته شد؛ `GET /api/v1/source-mappings`. هنوز بدون `source_system`، قواعدِ تبدیلِ نسخه‌دار و گردشِ تأیید (`SOURCE_MAPPING_GUIDE.md`) |
+| data-quality UI/API (§۸.۵ — ۹ بُعد) | ✅ **بسته شد (S5, F3)** | هر نُه بُعد؛ بُعدی که مبنایش نیست `None` («سنجیده نشد») می‌گیرد، نه صفر؛ از F3 **به‌ازای هر بارگذاری** هم ثبت و نمایش داده می‌شود |
 
 ### جدول‌های §۷.۱/§۷.۵ که اصلاً وجود ندارند
 
@@ -101,8 +101,9 @@
 لازم ندیدم).
 
 **دروازه‌ی پذیرش فاز ۱** («بارگذاری دوباره idempotent و آشتی با مجموع مبدأ»):
-✅ **می‌گذرد** — `test_reimport_is_idempotent` + کنترل‌های L01–L07.
-یعنی دروازه پاس می‌شود ولی نیمی از اقلامِ تحویلی ساخته نشده.
+✅ **می‌گذرد** — `test_reimport_is_idempotent`، `test_line_identity` (صادراتِ هم‌پوشان و
+شماره‌ی بازاستفاده‌شده در دو سال) + کنترل‌های L01–L13 با تلرانسِ مستند، حتی برای
+دسته‌ی مسدود. اقلامِ باز: ارتقای پرونده‌ی ۳۶۰ به دفتر کل، ادغامِ هویت، و بقیه‌ی §۸.۲.
 
 ---
 
@@ -222,11 +223,11 @@ top-K economic metrics.»*
 
 ---
 
-## اسناد الزامی (§۳۶): ۱۰ از ۱۵
+## اسناد الزامی (§۳۶): ۱۳ از ۱۵
 
 | موجود | غایب |
 |---|---|
-| `CURRENT_SYSTEM_AUDIT` · `TARGET_ARCHITECTURE` · `FINANCIAL_CALCULATION_RULES` · `IMPLEMENTATION_STATUS` · `MODEL_CARDS` · `FEATURE_CATALOG` · `EXPERIMENTATION_GUIDE` · `OPERATIONS_RUNBOOK` · `SECURITY_AND_PRIVACY` · `RELEASE_NOTES` | `DATA_DICTIONARY` · `SOURCE_MAPPING_GUIDE` · `IDENTITY_RESOLUTION` · `OPPORTUNITY_ENGINE` · `API_GUIDE` |
+| `CURRENT_SYSTEM_AUDIT` · `TARGET_ARCHITECTURE` · `FINANCIAL_CALCULATION_RULES` · `IMPLEMENTATION_STATUS` · `MODEL_CARDS` · `FEATURE_CATALOG` · `EXPERIMENTATION_GUIDE` · `OPERATIONS_RUNBOOK` · `SECURITY_AND_PRIVACY` · `RELEASE_NOTES` · `DATA_DICTIONARY` · `SOURCE_MAPPING_GUIDE` · `API_GUIDE` (سه‌تای آخر از کد تولید می‌شوند) | `IDENTITY_RESOLUTION` · `OPPORTUNITY_ENGINE` |
 
 `PRESERVE_CONTRACT.md` و `ROLLBACK.md` و همین فایل، **افزون بر** فهرست سندند.
 

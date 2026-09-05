@@ -266,7 +266,67 @@ def test_spec_gap_docs_table_matches_the_disk():
         "RELEASE_NOTES",
     ]
     present = sum(1 for name in required if (docs_dir / f"{name}.md").exists())
-    assert f"## اسناد الزامی (§۳۶): {present} از ۱۵" in text.replace("۱۰", "10").replace("۱۵", "15") or (
-        f"{present}" in text.split("## اسناد الزامی (§۳۶):")[1].split("\n")[0]
-        .replace("۱۰", "10").replace("۱۵", "15")
+    fa = "۰۱۲۳۴۵۶۷۸۹"
+    heading = text.split("## اسناد الزامی (§۳۶):")[1].split("\n")[0]
+    normalised = "".join(str(fa.index(ch)) if ch in fa else ch for ch in heading)
+    assert normalised.strip().startswith(f"{present} از 15"), (
+        f"سند شکاف می‌گوید «{heading.strip()}»؛ روی دیسک {present} سند هست"
     )
+
+
+# ═══════════════════════════ سه سندِ کدمحورِ §۳۶ (تولیدشده از کد؛ نامه‌ها پین‌اند)
+_DATA_DICTIONARY = _ROOT / "docs" / "revenue-intelligence" / "DATA_DICTIONARY.md"
+_SOURCE_MAPPING = _ROOT / "docs" / "revenue-intelligence" / "SOURCE_MAPPING_GUIDE.md"
+_API_GUIDE = _ROOT / "docs" / "revenue-intelligence" / "API_GUIDE.md"
+
+
+def test_data_dictionary_lists_every_canonical_table_and_column():
+    text = _DATA_DICTIONARY.read_text(encoding="utf-8")
+    missing = []
+    for name, table in Base.metadata.tables.items():
+        section = text.split(f"### `{name}`")
+        if len(section) < 2:
+            missing.append(name)
+            continue
+        body = section[1].split("\n### ")[0]
+        missing += [f"{name}.{c.name}" for c in table.columns if f"| `{c.name}` |" not in body]
+    assert not missing, f"در فرهنگِ داده نیستند: {missing}"
+    for legacy in ("sessions", "jobs", "outbox", "mapping_profiles", "app_meta", "schema_migrations"):
+        assert f"### `{legacy}`" in text, legacy
+
+
+def test_source_mapping_guide_lists_every_role_and_the_required_ones():
+    from mktcore.ingest.schema import REQUIRED_ROLES, ColumnRole
+
+    text = _SOURCE_MAPPING.read_text(encoding="utf-8")
+    for role in ColumnRole:
+        assert f"| `{role.value}` |" in text, role.value
+    for role in REQUIRED_ROLES:
+        assert f"| `{role.value}` |" in text and "✓" in text.split(f"| `{role.value}` |")[1].split("\n")[0]
+    assert "نسخه‌دار (برشِ اول)" in text
+    assert "mapping_profile_versions" in text and "/api/v1/source-mappings" in text
+
+
+def test_api_guide_lists_every_route_with_its_guard():
+    from mktcore.security import EXTRA_GUARDED_ROUTES, OPEN_WRITE_ROUTES, WRITE_METHODS, route_key
+    from tests.test_route_guards import ALL_PAIRS  # noqa: PLC0415
+
+    text = _API_GUIDE.read_text(encoding="utf-8")
+    missing = [f"{m} {p}" for m, p, _ in ALL_PAIRS if f"| `{m}` | `{p}` |" not in text]
+    assert not missing, f"در راهنمای API نیستند: {missing}"
+    for method, path, _ in ALL_PAIRS:
+        row = text.split(f"| `{method}` | `{path}` |")[1].split("\n")[0]
+        key = route_key(method, path)
+        guarded = (method in WRITE_METHODS or key in EXTRA_GUARDED_ROUTES) and key not in OPEN_WRITE_ROUTES
+        assert ("🔒" in row) is guarded, f"گاردِ {key} در سند با کد نمی‌خواند"
+
+
+def test_generated_docs_are_not_behind_the_code():
+    """`tools/gen_reference_docs.py --check` — سند تولیدشده باید بیت‌به‌بیت با کدِ امروز بخواند."""
+    import subprocess
+
+    result = subprocess.run(
+        [sys.executable, str(_ROOT / "tools" / "gen_reference_docs.py"), "--check"],
+        capture_output=True, text=True, cwd=str(_ROOT), check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
