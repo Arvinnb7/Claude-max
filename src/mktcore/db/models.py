@@ -98,6 +98,38 @@ class ImportBatch(Base):
     # RECONCILED / RECONCILED_WITH_WARNINGS / MISMATCH / BLOCKED — نتیجه‌ی آشتی نوشتن (مستقل از دروازه‌ی تحلیل)
     reconcile_status: Mapped[str | None] = mapped_column(String(32))
     notes_json: Mapped[str | None] = mapped_column(Text)
+    # §۸.۲ نگاشتِ نسخه‌دار (مهاجرت ۱۹): کدام نسخه‌ی نگاشتِ این امضای سرستون این
+    # دسته را ساخت. NULL = بارگذاریِ قدیمی‌تر از این قابلیت یا بدون امضا.
+    mapping_signature: Mapped[str | None] = mapped_column(String(64), index=True)
+    mapping_version: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[float] = mapped_column(Float, default=now_ts, index=True)
+
+
+class MappingProfileVersion(Base):
+    """تاریخچه‌ی نگاشتِ ستون‌ها به‌ازای امضای سرستون (§۸.۲) — **افزودنی**.
+
+    جدولِ legacy `mapping_profiles` فقط آخرین نگاشت را با upsert نگه می‌دارد؛ اینجا
+    هر نگاشتِ متفاوتی که روی یک امضا نهایی شد یک ردیفِ نسخه‌دار می‌گیرد و
+    `import_batches.mapping_version` می‌گوید هر بارگذاری با کدام نسخه ساخته شد.
+    تحلیلِ دوباره با همان نگاشت نسخه‌ی تازه نمی‌سازد (`mapping_hash`).
+    """
+
+    __tablename__ = "mapping_profile_versions"
+    __table_args__ = (
+        UniqueConstraint("business_id", "signature", "version"),
+        UniqueConstraint("business_id", "signature", "mapping_hash"),
+        Index("ix_mapping_profile_versions_sig", "business_id", "signature"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    business_id: Mapped[int] = mapped_column(ForeignKey("businesses.id"), index=True)
+    signature: Mapped[str] = mapped_column(String(64))
+    version: Mapped[int] = mapped_column(Integer)
+    mapping_hash: Mapped[str] = mapped_column(String(64))
+    columns_json: Mapped[str] = mapped_column(Text)
+    mapping_json: Mapped[str] = mapped_column(Text)
+    file_currency: Mapped[str | None] = mapped_column(String(16))
+    display_currency: Mapped[str | None] = mapped_column(String(16))
     created_at: Mapped[float] = mapped_column(Float, default=now_ts, index=True)
 
 

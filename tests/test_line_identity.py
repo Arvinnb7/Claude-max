@@ -191,7 +191,7 @@ def test_migration_17_rekeys_lines_and_merges_cross_batch_duplicates(tmp_path):
     db = tmp_path / "v16.db"
     _build_v16_with_duplicates(db)
 
-    assert ensure_schema(db, force=True) == CANONICAL_SCHEMA_VERSION == 18
+    assert ensure_schema(db, force=True) == CANONICAL_SCHEMA_VERSION == 19
     with session_scope(db) as session:
         lines = {line.line_uid: line for line in session.scalars(select(OrderLine)).all()}
         order = session.scalar(select(Order).where(Order.order_number == "F1"))
@@ -349,7 +349,7 @@ def test_migration_18_splits_merged_multi_year_headers(tmp_path):
     db = tmp_path / "v17.db"
     _build_v17_with_merged_header(db)
 
-    assert ensure_schema(db, force=True) == CANONICAL_SCHEMA_VERSION == 18
+    assert ensure_schema(db, force=True) == CANONICAL_SCHEMA_VERSION == 19
     with session_scope(db) as session:
         orders = {o.order_key: o for o in session.scalars(select(Order)).all()}
         assert set(orders) == {"2023/F1", "2024/F1", "2024/F2"}, "سرِ ادغام‌شده به دو سرِ دوره‌دار تفکیک شد"

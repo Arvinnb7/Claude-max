@@ -1266,10 +1266,15 @@ def write_import(
     kpis: Any | None = None,
     validation_status: str | None = None,
     posting_blockers: list[dict] | None = None,
+    mapping_profile: dict | None = None,
     business_slug: str = DEFAULT_BUSINESS_SLUG,
     db_path: Path | None = None,
 ) -> ImportWriteResult:
     """نوشتن یک فریم تمیز در دفتر کل و برگرداندن نتیجه‌ی آشتی.
+
+    `mapping_profile` (§۸.۲): `{"signature", "columns", "mapping", "file_currency",
+    "display_currency"}` — نگاشتی که این فایل با آن خوانده شد؛ نسخه‌اش (موجود یا
+    تازه) روی دسته ثبت می‌شود، حتی برای دسته‌ی مسدود.
 
     `clean` همان فریمی است که تحلیل دیده — **بعد از** تبدیل واحد پول — پس
     مبالغ در واحد نمایش‌اند و اینجا یک بار به ریال صحیح تبدیل می‌شوند.
@@ -1310,6 +1315,20 @@ def write_import(
         )
         session.add(batch)
         session.flush()
+
+        if mapping_profile and mapping_profile.get("signature"):
+            from .repo_mappings import record_mapping_version
+
+            version = record_mapping_version(
+                session, business.id,
+                signature=str(mapping_profile["signature"]),
+                columns=list(mapping_profile.get("columns") or []),
+                mapping=dict(mapping_profile.get("mapping") or {}),
+                file_currency=mapping_profile.get("file_currency", file_currency),
+                display_currency=mapping_profile.get("display_currency", display_currency),
+            )
+            batch.mapping_signature = version.signature
+            batch.mapping_version = version.version
 
         if posting_blockers:
             return _record_blocked_batch(

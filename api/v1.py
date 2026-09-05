@@ -148,7 +148,7 @@ def list_imports(limit: int = Query(50, ge=1, le=200)) -> dict:
             .order_by(ImportBatch.created_at.desc())
             .limit(limit)
         ).all()
-        items = [{**_batch_summary(b), **_batch_quality(b)} for b in batches]
+        items = [{**_batch_summary(b), **_batch_quality(b), **_batch_mapping(b)} for b in batches]
         note = _economics_note(_cost_coverage(session, business_id))
     return {"available": True, "items": items, "economics_note_fa": note}
 
@@ -166,7 +166,7 @@ def get_import(batch_id: int) -> dict:
             .where(ImportReconciliation.batch_id == batch_id)
             .order_by(ImportReconciliation.check_id)
         ).all()
-        payload = {**_batch_summary(batch), **_batch_quality(batch)}
+        payload = {**_batch_summary(batch), **_batch_quality(batch), **_batch_mapping(batch)}
         payload["checks"] = [
             {
                 "id": c.check_id,
@@ -210,6 +210,32 @@ def _batch_quality(batch: ImportBatch) -> dict:
         "quality_dimensions": list(dimensions) if isinstance(dimensions, list) else None,
         "quality_summary": notes.get("quality_summary") or None,
     }
+
+
+def _batch_mapping(batch: ImportBatch) -> dict:
+    """§۸.۲ — نگاشتِ نسخه‌داری که این بارگذاری با آن خوانده شد (NULL برای بارگذاریِ قدیمی)."""
+    return {
+        "mapping_signature": batch.mapping_signature,
+        "mapping_version": batch.mapping_version,
+    }
+
+
+@router.get("/source-mappings")
+def source_mappings(signature: str | None = Query(None, max_length=64)) -> dict:
+    """نگاشت‌های نسخه‌دارِ منبع (§۸.۲): هر امضای سرستون با تاریخچه‌ی نسخه‌هایش.
+
+    نگاشت فقط «نقش → نامِ ستون» است (بدون داده). جدولِ legacy `mapping_profiles`
+    همچنان پیش‌فرضِ خودکارِ نگاشت را می‌دهد؛ این مسیر تاریخچه را نشان می‌دهد.
+    """
+    from mktcore.db.repo_mappings import mapping_history
+
+    ensure_schema()
+    with session_scope() as session:
+        business_id = _business_id(session)
+        if business_id is None:
+            return {**_no_ledger_yet(), "items": []}
+        items = mapping_history(session, business_id, signature=signature)
+    return {"available": True, "items": items}
 
 
 def _batch_summary(batch: ImportBatch) -> dict:

@@ -39,8 +39,14 @@ def record_analysis(
     display_currency: str = "تومان",
     file_currency: str | None = None,
     business_slug: str | None = None,
+    mapping: dict | None = None,
+    header_signature: str | None = None,
+    source_columns: list[str] | None = None,
 ) -> dict | None:
     """نوشتن نتیجه‌ی همین تحلیل در دفتر کل. خطا → `None` + لاگ.
+
+    `mapping` / `header_signature` / `source_columns` (§۸.۲): نگاشتی که فایل با آن
+    خوانده شد؛ نسخه‌اش کنارِ دسته ثبت می‌شود (افزودنی؛ جدولِ legacy دست نمی‌خورد).
 
     خروجی برای کلید `payload["canonical"]` است: **کلیدی افزودنی و شرطی**، پس
     هیچ مصرف‌کننده‌ی فعلی‌ای آن را نمی‌بیند مگر بخواهد.
@@ -69,6 +75,16 @@ def record_analysis(
             kpis=getattr(bundle, "kpis", None),
             validation_status=getattr(getattr(bundle, "validation", None), "status", None),
             posting_blockers=blockers,
+            mapping_profile=(
+                {
+                    "signature": header_signature,
+                    "columns": list(source_columns or []),
+                    "mapping": dict(mapping),
+                    "file_currency": file_currency,
+                    "display_currency": display_currency,
+                }
+                if header_signature and mapping else None
+            ),
         )
         payload = result.to_dict()
         payload["ok"] = True

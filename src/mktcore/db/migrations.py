@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("mktcore.db.migrations")
 
 # نسخه‌ی جاری طرح‌واره‌ی canonical. با افزودن هر مهاجرت، یک عدد بالا می‌رود.
-CANONICAL_SCHEMA_VERSION = 18
+CANONICAL_SCHEMA_VERSION = 19
 
 _MIGRATION_TABLE = "schema_migrations"
 
@@ -503,6 +503,30 @@ def _migration_0018_order_header_period(conn: Connection) -> None:
     logger.info("مهاجرت ۱۸: %s سرِ فاکتور دوره‌دار شد، %s سرِ ادغام‌شده تفکیک شد", len(orders), split)
 
 
+def _migration_0019_mapping_profile_versions(conn: Connection) -> None:
+    """نگاشتِ نسخه‌دار §۸.۲ (برشِ اول): جدولِ تازه + دو ستونِ nullable روی دسته.
+
+    جدولِ legacy `mapping_profiles` دست نمی‌خورد (پیش‌فرضِ خودکارِ نگاشت همان می‌ماند).
+    """
+    from mktcore.db import models  # noqa: F401 - ثبت مدل‌ها در metadata
+
+    Base.metadata.create_all(bind=conn, checkfirst=True)
+    added_columns = (
+        ("import_batches", "mapping_signature", "VARCHAR(64)"),
+        ("import_batches", "mapping_version", "INTEGER"),
+    )
+    for table, column, ddl_type in added_columns:
+        existing = {
+            row[1] for row in conn.exec_driver_sql(f"PRAGMA table_info({table})")
+        }
+        if column not in existing:
+            conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {column} {ddl_type}")
+    conn.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_import_batches_mapping_signature "
+        "ON import_batches (mapping_signature)"
+    )
+
+
 _MIGRATIONS: tuple[tuple[int, str, Callable[[Connection], None]], ...] = (
     (1, "create_canonical_tables", _migration_0001_create_canonical_tables),
     (2, "create_opportunity_tables", _migration_0002_create_opportunity_tables),
@@ -522,6 +546,7 @@ _MIGRATIONS: tuple[tuple[int, str, Callable[[Connection], None]], ...] = (
     (16, "offer_margin_basis", _migration_0016_offer_margin_basis),
     (17, "order_line_identity", _migration_0017_order_line_identity),
     (18, "order_header_period", _migration_0018_order_header_period),
+    (19, "mapping_profile_versions", _migration_0019_mapping_profile_versions),
 )
 
 

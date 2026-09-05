@@ -27,7 +27,7 @@ _CANONICAL_TABLES = {
     "customers", "customer_keys", "products", "product_aliases",
     "orders", "order_lines", "customer_features",
     "opportunities", "opportunity_factors", "opportunity_events", "opportunity_runs",
-    "customer_lifecycle_events",
+    "customer_lifecycle_events", "mapping_profile_versions",
     "campaigns", "campaign_members", "campaign_opportunities", "campaign_outcomes",
 }
 

@@ -475,6 +475,9 @@ def analyze(req: AnalyzeRequest) -> dict:
             sheet_name=(cp.get("sheets") or [""])[0] or "",
             display_currency=req.display_currency,
             file_currency=req.file_currency,
+            mapping={r.value: c for r, c in mapping.items()},
+            header_signature=cp.get("header_signature"),
+            source_columns=list(cp.get("columns") or []),
         )
         if canonical is not None:
             payload["canonical"] = canonical

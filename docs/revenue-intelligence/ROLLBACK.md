@@ -75,6 +75,7 @@ customer_lifecycle_events · schema_migrations · job_leases · job_runs
 |---|---|
 | `product_cost_history` | با ورودِ دوباره‌ی فایل بها (`POST /api/v1/costs`). تا آن لحظه پوششِ بها صفر است و سود ناخالص و «سود افزوده‌ی کمپین» گزارش نمی‌شوند — نه اینکه صفر گزارش شوند |
 | `app_settings` | با تعیین دوباره‌ی کف حاشیه (`PUT /api/v1/margin-floor`). تا آن لحظه `filter_margin_floor` صادقانه «بررسی نشد» ثبت می‌کند و هیچ پیشنهادی را رد نمی‌کند |
+| `mapping_profile_versions` | تاریخچه‌ی نگاشتِ ستون‌ها به‌ازای امضای سرستون (§۸.۲، مهاجرت ۱۹). با هر تحلیلِ بعدی نسخه‌ی تازه ثبت می‌شود، ولی **تاریخچه‌ی قبلی** برنمی‌گردد: جدولِ legacy `mapping_profiles` فقط آخرین نگاشت را دارد. ستون‌های `import_batches.mapping_signature/mapping_version` هم از همین مهاجرت‌اند |
 
 ستون `order_lines.gross_profit_rial` هم در همین دسته است: با
 `POST /api/v1/costs` (که خودش انتساب را اجرا می‌کند) دوباره پر می‌شود.
