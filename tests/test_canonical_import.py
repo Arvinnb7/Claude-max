@@ -304,7 +304,7 @@ def test_reconciliation_rows_are_persisted(tmp_path: Path):
             )
         ).all()
     ids = {r.check_id for r in rows}
-    assert {f"L{i:02d}" for i in range(1, 13)} <= ids, "§۸.۶: هر شش مورد + کنترل‌های نوشتن"
+    assert {f"L{i:02d}" for i in range(1, 14)} <= ids, "§۸.۶: هر شش مورد + کنترل‌های نوشتن"
     assert all(r.status in ("OK", "WARN", "MISMATCH", "SKIPPED") for r in rows)
     assert not [r for r in rows if r.status == "MISMATCH"]
     by_id = {r.check_id: r for r in rows}

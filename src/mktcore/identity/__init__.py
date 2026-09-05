@@ -6,6 +6,7 @@
 جانمانده‌ی یک پیوند فقط یعنی «هنوز وصل نشده».
 """
 
+from .email import normalize_email
 from .phone import (
     is_mobile,
     mask_phone,
@@ -13,4 +14,4 @@ from .phone import (
     phone_identity_key,
 )
 
-__all__ = ["is_mobile", "mask_phone", "normalize_phone", "phone_identity_key"]
+__all__ = ["is_mobile", "mask_phone", "normalize_email", "normalize_phone", "phone_identity_key"]

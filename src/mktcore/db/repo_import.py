@@ -30,7 +30,7 @@ import pandas as pd
 from sqlalchemy import case, func, insert, select, update
 
 from mktcore.catalog import normalize_product_name, parse_pack_size
-from mktcore.identity import normalize_phone
+from mktcore.identity import normalize_email, normalize_phone
 from mktcore.ingest.currency import rial_per_unit
 from mktcore.ingest.schema import SOURCE_ROW
 from mktcore.locale_fa import normalize_digits
@@ -260,6 +260,20 @@ def _get_or_create_business(session: Session, slug: str, display_currency: str) 
 
 
 # ------------------------------------------------------------- حل هویت مشتری
+@dataclass
+class MergeCandidate:
+    """دو مشتریِ جدا که یک شاهدِ هویت (ایمیل/شماره/کلید خام) مشترک دارند (L13).
+
+    **ادغام نمی‌شود** — سند می‌گوید ادغام برگشت‌پذیر و با بازبینی لازم است. اینجا
+    فقط دیدنی می‌شود تا صفِ بازبینیِ آینده از همین‌جا شروع کند.
+    """
+
+    key_type: str
+    raw_key: str
+    resolved_customer_id: int
+    other_customer_id: int
+
+
 def _resolve_customers(
     session: Session, business_id: int, frame: pd.DataFrame,
 ) -> tuple[dict[str, int], int]:
@@ -267,10 +281,19 @@ def _resolve_customers(
 
     ترتیب: موبایل نرمال‌شده (قوی‌ترین شاهد) و سپس کلید خامِ فایل. تطبیق فازیِ
     نام عمداً انجام نمی‌شود؛ ادغام غلط دو مشتری واقعی برگشت‌ناپذیرتر از
-    نپیوستن است.
+    نپیوستن است. ایمیل (§۹.۱ بند ۲) به‌عنوان کلید **نوشته** می‌شود ولی برای
+    پیوند به‌کار نمی‌رود؛ ایمیلی که مشتریِ دیگری دارد «نامزدِ ادغام» (L13) است.
     """
+    mapping, created, _ = resolve_customers_with_candidates(session, business_id, frame)
+    return mapping, created
+
+
+def resolve_customers_with_candidates(
+    session: Session, business_id: int, frame: pd.DataFrame,
+) -> tuple[dict[str, int], int, list[MergeCandidate]]:
+    """همان `_resolve_customers` به‌علاوه‌ی نامزدهای ادغام (بدون هیچ ادغامی)."""
     if "customer_id" not in frame.columns:
-        return {}, 0
+        return {}, 0, []
 
     profile: dict[str, dict[str, Any]] = {}
     phone_series = frame["phone"] if "phone" in frame.columns else None
@@ -286,8 +309,7 @@ def _resolve_customers(
         if entry["phone"] is None and phone_series is not None:
             entry["phone"] = normalize_phone(phone_series.iat[pos])
         if entry["email"] is None and email_series is not None:
-            email = _text_or_none(email_series.iat[pos])
-            entry["email"] = email.lower() if email else None
+            entry["email"] = normalize_email(email_series.iat[pos])
         if date_series is not None:
             iso = _iso_date(date_series.iat[pos])
             if iso:
@@ -295,11 +317,12 @@ def _resolve_customers(
                 entry["last"] = iso if entry["last"] is None else max(entry["last"], iso)
 
     if not profile:
-        return {}, 0
+        return {}, 0, []
 
     # کلیدهای موجود را یک‌جا می‌خوانیم (نه یک query به‌ازای مشتری)
     wanted_values = set(profile)
     wanted_values |= {v["phone"] for v in profile.values() if v["phone"]}
+    wanted_values |= {v["email"] for v in profile.values() if v["email"]}
     existing: dict[tuple[str, str], int] = {}
     values = sorted(wanted_values)
     for start in range(0, len(values), CHUNK):
@@ -315,13 +338,20 @@ def _resolve_customers(
 
     mapping: dict[str, int] = {}
     created = 0
+    candidates: list[MergeCandidate] = []
     for raw_key, info in profile.items():
         phone = info["phone"]
+        email = info["email"]
         customer_id = None
         if phone:
             customer_id = existing.get(("phone", phone))
         if customer_id is None:
             customer_id = existing.get(("raw_key", raw_key))
+        elif existing.get(("raw_key", raw_key), customer_id) != customer_id:
+            # شماره به مشتریِ دیگری رسید ولی همین کلیدِ خام قبلاً مشتریِ دیگری بود
+            candidates.append(MergeCandidate(
+                "raw_key", raw_key, customer_id, existing[("raw_key", raw_key)],
+            ))
 
         if customer_id is None:
             customer = Customer(
@@ -352,18 +382,24 @@ def _resolve_customers(
                                      or info["last"] > customer.last_order_date):
                     customer.last_order_date = info["last"]
 
-        for key_type, key_value in (("raw_key", raw_key), ("phone", phone)):
-            if key_value and (key_type, key_value) not in existing:
+        for key_type, key_value in (("raw_key", raw_key), ("phone", phone), ("email", email)):
+            if not key_value:
+                continue
+            owner = existing.get((key_type, key_value))
+            if owner is None:
                 session.add(CustomerKey(
                     business_id=business_id, customer_id=customer_id,
                     key_type=key_type, key_value=key_value,
                 ))
                 existing[(key_type, key_value)] = customer_id
+            elif owner != customer_id and key_type == "email":
+                # ایمیلِ مشترک بین دو مشتریِ جدا: نامزدِ ادغام (L13)، نه ادغام
+                candidates.append(MergeCandidate("email", raw_key, customer_id, owner))
 
         mapping[raw_key] = customer_id
 
     session.flush()
-    return mapping, created
+    return mapping, created, candidates
 
 
 # ----------------------------------------------------------- حل هویت محصول
@@ -928,6 +964,7 @@ def _reconcile(
     discount_is_amount: bool = False,
     file_currency: str | None = None,
     blocked: bool = False,
+    merge_candidates: list[MergeCandidate] | None = None,
 ) -> tuple[str, list[ReconcileCheck]]:
     """مقایسه‌ی «آنچه تحلیل گفت» با «آنچه در دفتر نشست».
 
@@ -1114,6 +1151,27 @@ def _reconcile(
         "L12", "مبلغ ردیف‌های کنارگذاشته (قرنطینه)", q_amount,
         None if blocked else q_amount, 0, "WARN" if blocked else "OK", q_detail,
     ))
+
+    # L13 — نامزدهای ادغامِ هویت (§۹.۱): دو مشتریِ جدا با یک شاهدِ مشترک. اطلاع
+    # است، نه خطا، و هیچ ادغامی انجام نمی‌شود — نخستین پله‌ی صفِ بازبینی.
+    candidates = list(merge_candidates or [])
+    if blocked:
+        checks.append(ReconcileCheck("L13", "نامزدهای ادغام هویت", None, None, 0, "WARN"))
+    else:
+        pairs = sorted({
+            (c.key_type, min(c.resolved_customer_id, c.other_customer_id),
+             max(c.resolved_customer_id, c.other_customer_id))
+            for c in candidates
+        })
+        shown = "، ".join(f"{kind}: #{a}↔#{b}" for kind, a, b in pairs[:10])
+        checks.append(ReconcileCheck(
+            "L13", "نامزدهای ادغام هویت", len(pairs), len(pairs), 0, "OK",
+            None if not pairs else (
+                f"{len(pairs)} جفت مشتریِ جدا با شاهدِ هویتِ مشترک ({shown}"
+                + ("، …" if len(pairs) > 10 else "")
+                + "). ادغام نشد — نیاز به بازبینی دارد."
+            ),
+        ))
 
     if blocked:
         for i, check in enumerate(checks):
@@ -1338,7 +1396,9 @@ def write_import(
                 discount_is_amount=discount_is_amount,
             )
 
-        customer_ids, customers_created = _resolve_customers(session, business.id, combined)
+        customer_ids, customers_created, merge_candidates = resolve_customers_with_candidates(
+            session, business.id, combined,
+        )
         product_ids, products_created = _resolve_products(session, business.id, combined)
 
         payloads = _build_line_payloads(
@@ -1374,6 +1434,7 @@ def write_import(
             exclusions=exclusions,
             discount_is_amount=discount_is_amount,
             file_currency=file_currency,
+            merge_candidates=merge_candidates,
         )
 
         batch.lines_inserted = inserted
@@ -1406,6 +1467,12 @@ def write_import(
                 "raw_capture_note_fa": raw_capture["note_fa"],
                 "customers_created": customers_created,
                 "products_created": products_created,
+                # L13 — نامزدهای ادغام با شناسه، برای صفِ بازبینیِ آینده (ادغام نشده)
+                "merge_candidates": [
+                    {"key_type": c.key_type, "resolved_customer_id": c.resolved_customer_id,
+                     "other_customer_id": c.other_customer_id}
+                    for c in merge_candidates
+                ],
                 # ستون‌هایی که واقعاً در فایل بودند — لازمِ سنجه‌های §۸.۵.
                 # بدون این، «شفافیتِ برگشتی» بعداً قابل بازسازی نیست: فریمِ خام
                 # دیگر در دسترس نخواهد بود.
@@ -1449,7 +1516,7 @@ def _record_blocked_batch(
     """دسته‌ی مسدود (§۸.۵): شواهد می‌ماند، دفتر کل دست نمی‌خورد.
 
     ردیف‌های آشتی هم نوشته می‌شوند (همه WARN، سمتِ دفتر خالی) تا هر بارگذاریِ
-    تاریخی — حتی مسدود — ردِ آشتیِ L01–L12 داشته باشد.
+    تاریخی — حتی مسدود — ردِ آشتیِ L01–L13 داشته باشد.
     """
     from mktcore.config import get_settings
     from mktcore.ingest.cleaning import get_exclusions
@@ -1522,6 +1589,7 @@ __all__ = [
     "BLOCKED_CHECK_DETAIL_FA",
     "CHECK_SKIPPED",
     "DEFAULT_BUSINESS_SLUG",
+    "MergeCandidate",
     "RECONCILE_BLOCKED",
     "SAMPLE_BUSINESS_SLUG",
     "ImportWriteResult",
@@ -1531,6 +1599,7 @@ __all__ = [
     "line_uid_for_order",
     "normalize_order_key",
     "order_header_key",
+    "resolve_customers_with_candidates",
     "write_import",
 ]
 

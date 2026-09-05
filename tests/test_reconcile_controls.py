@@ -6,7 +6,7 @@
 * L11 فقط وقتی ستونِ تخفیف **مبلغی** است سنجیده می‌شود؛ بدون ستون یا نسبتی ⇒ SKIPPED
   («سنجیده نشد») که برچسبِ آشتیِ دسته را عوض **نمی‌کند**.
 * L12 اطلاع است: مبلغِ ردیف‌های کنارگذاشته تا «کلِ مبدأ» = دفتر + قرنطینه بازسازی‌پذیر بماند.
-* دسته‌ی مسدود (§۸.۵) هم ردیف‌های L01–L12 می‌گیرد: همه WARN با سمتِ دفترِ خالی.
+* دسته‌ی مسدود (§۸.۵) هم ردیف‌های L01–L13 می‌گیرد: همه WARN با سمتِ دفترِ خالی.
 """
 
 from __future__ import annotations
@@ -228,10 +228,10 @@ def test_blocked_batch_gets_reconciliation_rows_all_warn(tmp_path):
         posting_blockers=[{"check_id": "C04", "title": "قرارداد علامت", "detail": "مبهم"}],
     )
     assert result.reconcile_status == RECONCILE_BLOCKED and result.posted is False
-    assert {c.check_id for c in result.checks} == {f"L{i:02d}" for i in range(1, 13)}
+    assert {c.check_id for c in result.checks} == {f"L{i:02d}" for i in range(1, 14)}
 
     checks = _checks(db, result.batch_id)
-    assert set(checks) == {f"L{i:02d}" for i in range(1, 13)}
+    assert set(checks) == {f"L{i:02d}" for i in range(1, 14)}
     for check_id, row in checks.items():
         assert row.actual_text is None, check_id
         if check_id == "L11":
