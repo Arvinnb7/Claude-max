@@ -46,16 +46,18 @@ const DIMENSION_TONE: Record<string, "green" | "accent" | "rose" | "gray"> = {
   known_limitation: "gray",
 };
 
-const CHECK_TONE: Record<ReconcileCheck["status"], "green" | "accent" | "rose"> = {
+const CHECK_TONE: Record<ReconcileCheck["status"], "green" | "accent" | "rose" | "gray"> = {
   OK: "green",
   WARN: "accent",
   MISMATCH: "rose",
+  SKIPPED: "gray",
 };
 
 const CHECK_LABEL: Record<ReconcileCheck["status"], string> = {
   OK: "آشتی",
   WARN: "بدون مرجع مقایسه",
   MISMATCH: "اختلاف",
+  SKIPPED: "سنجیده نشد",
 };
 
 export default function DataQualityPanel() {

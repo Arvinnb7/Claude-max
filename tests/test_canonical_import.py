@@ -304,9 +304,15 @@ def test_reconciliation_rows_are_persisted(tmp_path: Path):
             )
         ).all()
     ids = {r.check_id for r in rows}
-    assert {"L01", "L02", "L03", "L04", "L05", "L06", "L07"} <= ids
-    assert all(r.status in ("OK", "WARN", "MISMATCH") for r in rows)
+    assert {f"L{i:02d}" for i in range(1, 13)} <= ids, "§۸.۶: هر شش مورد + کنترل‌های نوشتن"
+    assert all(r.status in ("OK", "WARN", "MISMATCH", "SKIPPED") for r in rows)
     assert not [r for r in rows if r.status == "MISMATCH"]
+    by_id = {r.check_id: r for r in rows}
+    # نمونه ستون تخفیف ندارد ⇒ L11 «سنجیده نشد» و برچسبِ دسته دست‌نخورده می‌ماند
+    assert by_id["L11"].status == "SKIPPED" and by_id["L11"].actual_text is None
+    assert by_id["L10"].status == "OK" and by_id["L10"].expected_text == by_id["L10"].actual_text
+    assert by_id["L12"].status == "OK"
+    assert result.reconcile_status == "RECONCILED"
 
 
 def test_batch_row_accounting_matches_frame_attrs(tmp_path: Path):

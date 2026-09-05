@@ -80,7 +80,7 @@ class ReconcileCheck:
     expected: float | int | None
     actual: float | int | None
     tolerance: float
-    status: str  # OK / WARN / MISMATCH
+    status: str  # OK / WARN / MISMATCH / SKIPPED
     detail_fa: str | None = None
 
 
@@ -816,6 +816,103 @@ def _add_customer_count_check(
     checks.append(ReconcileCheck("L06", label, expected, actual, 0, status, detail))
 
 
+RECONCILE_BLOCKED = "BLOCKED"
+
+CHECK_SKIPPED = "SKIPPED"
+"""وضعیتِ «سنجیده نشد»: فایل اصلاً چیزی برای این کنترل ندارد (مثلاً ستونِ تخفیف).
+
+با `WARN` فرق دارد: WARN یعنی داده بود ولی مرجعِ مقایسه نبود و برچسبِ آشتیِ دسته
+را به «با هشدار» می‌برد؛ SKIPPED برچسب را **تغییر نمی‌دهد** — نبودِ ستونِ اختیاری
+اشکال نیست.
+"""
+
+BLOCKED_CHECK_DETAIL_FA = (
+    "دسته مسدود شد (§۸.۵)؛ چیزی در دفتر کل نوشته نشد. مقدارِ موردِ انتظار از تحلیل "
+    "ثبت شد تا این بارگذاری هم ردِ آشتی داشته باشد."
+)
+
+
+def _add_product_count_check(
+    checks: list[ReconcileCheck], expected: int | None, actual: int | None,
+    lines_without_product: int | None, *, has_column: bool,
+) -> None:
+    """کنترل L10 — شمار کالای یکتا، با همان قاعده‌ی نامتقارنِ L06.
+
+    نامِ نرمال‌شده‌ای که به کالای موجود (مترادف/alias) وصل می‌شود، شمارِ دفتر را
+    کمتر از شمارِ فایل می‌کند و این مطلوب است. تنها حالتِ خراب، بیشتر بودنِ
+    شمارِ دفتر است: یک نام نباید به دو کالا تبدیل شود.
+    """
+    label = "شمار کالای یکتا"
+    if not has_column:
+        checks.append(ReconcileCheck(
+            "L10", label, None, None, 0, CHECK_SKIPPED, "فایل ستون کالا ندارد؛ سنجیده نشد.",
+        ))
+        return
+    if expected is None or actual is None:
+        checks.append(ReconcileCheck(
+            "L10", label, expected, actual, 0, "WARN", "مرجعی برای مقایسه‌ی شمار کالا وجود نداشت.",
+        ))
+        return
+    if actual > expected:
+        status = "MISMATCH"
+        detail = "شمار کالای دفتر بیش از فایل است؛ یک نام به چند کالا تبدیل شده."
+    elif lines_without_product:
+        status = "WARN"
+        detail = (
+            f"{lines_without_product} خط نامِ کالا ندارد و به هیچ کالایی وصل نشد؛ "
+            "شمارِ کالا برای بقیه‌ی خطوط درست است."
+        )
+    elif actual == expected:
+        status, detail = "OK", "شمار کالای دفتر با فایل یکی است."
+    else:
+        status = "OK"
+        detail = (
+            f"{expected - actual} نامِ نرمال‌شده به کالای موجود وصل شد (مترادف/alias) — "
+            "این نتیجه‌ی مطلوبِ یکسان‌سازیِ کاتالوگ است، نه اشکال."
+        )
+    checks.append(ReconcileCheck("L10", label, expected, actual, 0, status, detail))
+
+
+def _distinct_product_norms(frame: pd.DataFrame | None) -> int | None:
+    """شمار نامِ نرمال‌شده‌ی یکتای کالا در فریم — همان قاعده‌ای که `_resolve_products` دارد."""
+    if frame is None or "product" not in frame.columns:
+        return None
+    norms: set[str] = set()
+    for raw in frame["product"].to_numpy():
+        name = _text_or_none(raw)
+        if name is None:
+            continue
+        norm = normalize_product_name(name)
+        if norm:
+            norms.add(norm)
+    return len(norms)
+
+
+def _quarantined_amount(
+    exclusions: pd.DataFrame | None, *, file_currency: str | None, display_currency: str,
+) -> tuple[int, int | None, int, dict[str, int]]:
+    """(شمار ردیف، جمعِ مبلغِ خواندنی به ریال، شمار ردیفِ بی‌مبلغ، شمار به‌ازای کد دلیل).
+
+    ردیف‌های کنارگذاشته عمداً با مبلغِ **اصلیِ فایل** می‌مانند (`currency.py`)، پس
+    اینجا با واحدِ فایل به ریال می‌روند؛ اگر واحدِ فایل ثبت نشده، همان واحدِ نمایش است.
+    """
+    if exclusions is None or exclusions.empty:
+        return 0, 0, 0, {}
+    n = int(len(exclusions))
+    reasons: dict[str, int] = {}
+    if "کد دلیل" in exclusions.columns:
+        for code, count in exclusions["کد دلیل"].fillna("unknown").astype(str).value_counts().items():
+            reasons[str(code)] = int(count)
+    if "revenue" not in exclusions.columns:
+        return n, None, n, reasons
+    amounts = pd.to_numeric(exclusions["revenue"], errors="coerce")
+    unreadable = int(amounts.isna().sum())
+    readable = amounts.dropna()
+    unit = file_currency or display_currency
+    total = to_rial_int(float(readable.sum()), unit) if len(readable) else 0
+    return n, total, unreadable, reasons
+
+
 def _reconcile(
     session: Session,
     *,
@@ -826,26 +923,40 @@ def _reconcile(
     display_currency: str,
     kpis: Any | None,
     overlap_lines: int = 0,
+    frame: pd.DataFrame | None = None,
+    exclusions: pd.DataFrame | None = None,
+    discount_is_amount: bool = False,
+    file_currency: str | None = None,
+    blocked: bool = False,
 ) -> tuple[str, list[ReconcileCheck]]:
     """مقایسه‌ی «آنچه تحلیل گفت» با «آنچه در دفتر نشست».
 
     نتیجه عمداً به `bundle.validation.checks` اضافه **نمی‌شود**: آن دروازه
     درباره‌ی کیفیت داده‌ی ورودی است و بستنش تولید استراتژی را مسدود می‌کند.
     این‌ها شواهد نوشتن‌اند.
+
+    `blocked=True` (§۸.۵): دسته مسدود شده و هیچ خطی نوشته نشده؛ سمتِ «دفتر» همه‌ی
+    کنترل‌ها `None` است و همه WARN می‌شوند — ولی سمتِ «انتظار» ثبت می‌شود تا هر
+    بارگذاریِ تاریخی ردِ آشتی داشته باشد. برچسبِ دسته همان `BLOCKED` می‌ماند.
     """
     checks: list[ReconcileCheck] = []
-    n_lines = len(payloads)
+    n_lines = n_source_rows if blocked else len(payloads)
     tolerance = max(TOLERANCE_PER_LINE_RIAL, math.ceil(n_lines / 2))
+    columns = set(frame.columns) if frame is not None else None
 
-    ledger = session.execute(
-        select(OrderLine.is_return, OrderLine.revenue_rial).where(
-            OrderLine.batch_id == batch_id, OrderLine.business_id == business_id,
-        )
-    ).all()
-    ledger_gross = sum(r for is_ret, r in ledger if not is_ret)
-    ledger_returns = -sum(r for is_ret, r in ledger if is_ret)
-    ledger_net = ledger_gross - ledger_returns
-    ledger_lines = len(ledger)
+    if blocked:
+        ledger: list = []
+        ledger_gross = ledger_returns = ledger_net = ledger_lines = None
+    else:
+        ledger = session.execute(
+            select(OrderLine.is_return, OrderLine.revenue_rial).where(
+                OrderLine.batch_id == batch_id, OrderLine.business_id == business_id,
+            )
+        ).all()
+        ledger_gross = sum(r for is_ret, r in ledger if not is_ret)
+        ledger_returns = -sum(r for is_ret, r in ledger if is_ret)
+        ledger_net = ledger_gross - ledger_returns
+        ledger_lines = len(ledger)
 
     def add(check_id: str, label: str, expected, actual, tol: float, detail: str | None = None):
         if expected is None or actual is None:
@@ -867,10 +978,10 @@ def _reconcile(
         add("L04", "فروش خالص دفتر با KPI", expected_net, ledger_net, tolerance)
 
         expected_returns_count = getattr(kpis, "returns_count", None)
-        actual_returns_count = sum(1 for is_ret, _ in ledger if is_ret)
+        actual_returns_count = None if blocked else sum(1 for is_ret, _ in ledger if is_ret)
         add("L05", "شمار خطوط برگشتی", expected_returns_count, actual_returns_count, 0)
 
-        actual_customers = session.scalar(
+        actual_customers = None if blocked else session.scalar(
             select(func.count(func.distinct(OrderLine.customer_id))).where(
                 OrderLine.batch_id == batch_id,
                 OrderLine.customer_id.isnot(None),
@@ -878,23 +989,35 @@ def _reconcile(
         )
         _add_customer_count_check(checks, getattr(kpis, "n_customers", None), actual_customers)
 
-    add("L07", "هیچ ردیفی در مسیر نوشتن گم نشده است", n_source_rows, n_lines, 0,
+    add("L07", "هیچ ردیفی در مسیر نوشتن گم نشده است", n_source_rows,
+        None if blocked else n_lines, 0,
         "اختلاف یعنی خطی به دفتر کل نرسیده است (تاریخ یا مبلغ نامعتبر)")
 
     # L08 — هم‌پوشانی با فایل‌های پیشین: اطلاع است، نه خطا. خطِ هم‌پوشان به‌روز
     # می‌شود نه دوبار شمرده؛ ولی عددش باید دیده شود.
-    checks.append(ReconcileCheck(
-        "L08", "هم‌پوشانی با بارگذاری‌های پیشین", overlap_lines, overlap_lines, 0, "OK",
-        None if not overlap_lines else (
-            f"{overlap_lines} خطِ این فایل قبلاً از فایلِ دیگری وارد شده بود و به‌روز شد، "
-            "نه دوبار شمرده (هویتِ خط = فاکتور + کالا + ترتیب)."
-        ),
-    ))
+    if blocked:
+        checks.append(ReconcileCheck(
+            "L08", "هم‌پوشانی با بارگذاری‌های پیشین", None, None, 0, "WARN",
+        ))
+    else:
+        checks.append(ReconcileCheck(
+            "L08", "هم‌پوشانی با بارگذاری‌های پیشین", overlap_lines, overlap_lines, 0, "OK",
+            None if not overlap_lines else (
+                f"{overlap_lines} خطِ این فایل قبلاً از فایلِ دیگری وارد شده بود و به‌روز شد، "
+                "نه دوبار شمرده (هویتِ خط = فاکتور + کالا + ترتیب)."
+            ),
+        ))
 
     # L09 — شمار سفارش (§۸.۶): همان تعریفِ KPI — فاکتورهای با جمعِ خالصِ مثبت.
     if kpis is not None:
         expected_orders = getattr(kpis, "n_orders", None)
-        if any(p["has_order_key"] for p in payloads):
+        has_order_column = (
+            "order_id" in columns if columns is not None
+            else any(p["has_order_key"] for p in payloads)
+        )
+        if has_order_column and blocked:
+            add("L09", "شمار سفارش با KPI", expected_orders, None, 0)
+        elif has_order_column and any(p["has_order_key"] for p in payloads):
             # با **شماره‌ی خام** شمرده می‌شود نه کلیدِ دوره‌دار — همان تعریفِ KPI
             # (kpis.n_orders دوره نمی‌شناسد)؛ وگرنه شماره‌ی بازاستفاده‌شده در دو سال
             # اینجا دو و در KPI یک شمرده می‌شد.
@@ -912,6 +1035,94 @@ def _reconcile(
                 "فایل ستون فاکتور ندارد؛ تحلیل هر خط را یک سفارش می‌شمارد.",
             ))
 
+    # L10 — شمار کالای یکتا (§۸.۶): نامِ نرمال‌شده‌ی فایل در برابر کالای دفتر.
+    has_product_column = (
+        "product" in columns if columns is not None
+        else any(p["product_id"] is not None for p in payloads)
+    )
+    if blocked:
+        _add_product_count_check(
+            checks, _distinct_product_norms(frame), None, None, has_column=has_product_column,
+        )
+    else:
+        actual_products = int(session.scalar(
+            select(func.count(func.distinct(OrderLine.product_id))).where(
+                OrderLine.batch_id == batch_id, OrderLine.product_id.isnot(None),
+            )
+        ) or 0)
+        without_product = int(session.scalar(
+            select(func.count()).select_from(OrderLine).where(
+                OrderLine.batch_id == batch_id, OrderLine.product_id.is_(None),
+            )
+        ) or 0)
+        expected_products = (
+            _distinct_product_norms(frame) if frame is not None
+            else len({p["product_id"] for p in payloads if p["product_id"] is not None})
+        )
+        _add_product_count_check(
+            checks, expected_products, actual_products, without_product,
+            has_column=has_product_column,
+        )
+
+    # L11 — جمعِ تخفیف (§۸.۶): فقط وقتی ستونِ تخفیف **مبلغی** است؛ نسبتی جمع‌پذیر
+    # نیست و بدون ستون چیزی برای سنجیدن نیست (SKIPPED، نه WARN).
+    has_discount_column = (
+        "discount" in columns if columns is not None
+        else any(p["discount_rial"] is not None for p in payloads)
+    )
+    if not has_discount_column:
+        checks.append(ReconcileCheck(
+            "L11", "جمع تخفیف با KPI", None, None, tolerance, CHECK_SKIPPED,
+            "فایل ستون تخفیف ندارد؛ سنجیده نشد.",
+        ))
+    elif not discount_is_amount:
+        checks.append(ReconcileCheck(
+            "L11", "جمع تخفیف با KPI", None, None, tolerance, CHECK_SKIPPED,
+            "ستون تخفیف نسبتی است و جمع‌پذیر نیست؛ سنجیده نشد.",
+        ))
+    else:
+        expected_discount = (
+            None if kpis is None
+            else to_rial_int(getattr(kpis, "discount_total", None) or 0.0, display_currency)
+        )
+        # همان تعریفِ KPI: تخفیفِ ردیف‌های فروش (نه برگشت)
+        actual_discount = None if blocked else int(session.scalar(
+            select(func.coalesce(func.sum(OrderLine.discount_rial), 0)).where(
+                OrderLine.batch_id == batch_id, OrderLine.is_return.is_(False),
+            )
+        ) or 0)
+        add("L11", "جمع تخفیف با KPI", expected_discount, actual_discount, tolerance,
+            None if kpis is not None else "مرجعی (KPI) برای جمع تخفیف وجود نداشت.")
+
+    # L12 — مبلغِ ردیف‌های کنارگذاشته (قرنطینه): اطلاع است تا «کلِ مبدأ» با
+    # جمعِ دفتر + قرنطینه بازسازی‌پذیر بماند. مثل L08 همیشه OK.
+    q_rows, q_amount, q_unreadable, q_reasons = _quarantined_amount(
+        exclusions, file_currency=file_currency, display_currency=display_currency,
+    )
+    if q_rows:
+        reasons_fa = "، ".join(f"{code}: {n}" for code, n in sorted(q_reasons.items()))
+        q_detail = (
+            f"{q_rows} ردیف کنار گذاشته شد"
+            + (f"؛ جمعِ مبلغِ خواندنی {q_amount:,} ریال" if q_amount is not None else "")
+            + (f" ({q_unreadable} ردیف بی‌مبلغ)" if q_unreadable else "")
+            + (f"؛ دلایل: {reasons_fa}" if reasons_fa else "")
+            + "."
+        )
+    else:
+        q_detail = None
+    checks.append(ReconcileCheck(
+        "L12", "مبلغ ردیف‌های کنارگذاشته (قرنطینه)", q_amount,
+        None if blocked else q_amount, 0, "WARN" if blocked else "OK", q_detail,
+    ))
+
+    if blocked:
+        for i, check in enumerate(checks):
+            if check.status == "WARN":
+                checks[i] = ReconcileCheck(
+                    check.check_id, check.label_fa, check.expected, None,
+                    check.tolerance, "WARN", BLOCKED_CHECK_DETAIL_FA,
+                )
+
     for check in checks:
         session.add(ImportReconciliation(
             batch_id=batch_id,
@@ -928,12 +1139,14 @@ def _reconcile(
             detail_fa=check.detail_fa,
         ))
 
-    if any(c.status == "MISMATCH" for c in checks):
+    if blocked:
+        status = RECONCILE_BLOCKED
+    elif any(c.status == "MISMATCH" for c in checks):
         status = "MISMATCH"
     elif any(c.status == "WARN" for c in checks):
         status = "RECONCILED_WITH_WARNINGS"
     else:
-        status = "RECONCILED"
+        status = "RECONCILED"  # SKIPPED («سنجیده نشد») برچسب را عوض نمی‌کند
     return status, checks
 
 
@@ -998,7 +1211,9 @@ def write_import(
         if posting_blockers:
             return _record_blocked_batch(
                 session, batch, clean, blockers=list(posting_blockers),
-                key=key, revision=revision,
+                key=key, revision=revision, combined=combined, kpis=kpis,
+                display_currency=display_currency, file_currency=file_currency,
+                discount_is_amount=discount_is_amount,
             )
 
         customer_ids, customers_created = _resolve_customers(session, business.id, combined)
@@ -1020,6 +1235,10 @@ def write_import(
         inserted, updated = _upsert_lines(session, payloads)
         orders_written = _write_orders(session, business.id, batch.id, payloads)
 
+        from mktcore.config import get_settings
+        from mktcore.ingest.cleaning import get_exclusions
+
+        exclusions = get_exclusions(clean)
         reconcile_status, checks = _reconcile(
             session,
             batch_id=batch.id,
@@ -1029,6 +1248,10 @@ def write_import(
             display_currency=display_currency,
             kpis=kpis,
             overlap_lines=overlap_lines,
+            frame=combined,
+            exclusions=exclusions,
+            discount_is_amount=discount_is_amount,
+            file_currency=file_currency,
         )
 
         batch.lines_inserted = inserted
@@ -1042,10 +1265,6 @@ def write_import(
             batch.net_sales_rial = sum(p["revenue_rial"] for p in payloads)
         # §۷.۱ — پیش از هر چیز، ردیف‌هایی که وارد دفتر کل نشدند نگه داشته
         # می‌شوند. این تنها جایی بود که داده فعالانه از بین می‌رفت.
-        from mktcore.config import get_settings
-        from mktcore.ingest.cleaning import get_exclusions
-
-        exclusions = get_exclusions(clean)
         rejected_total = 0 if exclusions is None or exclusions.empty else len(exclusions)
         quarantined = _write_quarantine(session, business.id, batch.id, exclusions)
         raw_capture = _write_raw_rows(
@@ -1096,20 +1315,39 @@ def write_import(
     return result
 
 
-RECONCILE_BLOCKED = "BLOCKED"
-
-
 def _record_blocked_batch(
     session: Session, batch: ImportBatch, clean: pd.DataFrame, *,
     blockers: list[dict], key: str, revision: int,
+    combined: pd.DataFrame | None = None, kpis: Any | None = None,
+    display_currency: str = "تومان", file_currency: str | None = None,
+    discount_is_amount: bool = False,
 ) -> ImportWriteResult:
-    """دسته‌ی مسدود (§۸.۵): شواهد می‌ماند، دفتر کل دست نمی‌خورد."""
+    """دسته‌ی مسدود (§۸.۵): شواهد می‌ماند، دفتر کل دست نمی‌خورد.
+
+    ردیف‌های آشتی هم نوشته می‌شوند (همه WARN، سمتِ دفتر خالی) تا هر بارگذاریِ
+    تاریخی — حتی مسدود — ردِ آشتیِ L01–L12 داشته باشد.
+    """
     from mktcore.config import get_settings
     from mktcore.ingest.cleaning import get_exclusions
 
     exclusions = get_exclusions(clean)
     rejected_total = 0 if exclusions is None or exclusions.empty else len(exclusions)
     quarantined = _write_quarantine(session, batch.business_id, batch.id, exclusions)
+    frame = combined if combined is not None else _combined_frame(clean)
+    _, checks = _reconcile(
+        session,
+        batch_id=batch.id,
+        business_id=batch.business_id,
+        payloads=[],
+        n_source_rows=len(frame),
+        display_currency=display_currency,
+        kpis=kpis,
+        frame=frame,
+        exclusions=exclusions,
+        discount_is_amount=discount_is_amount,
+        file_currency=file_currency,
+        blocked=True,
+    )
     raw_capture = _write_raw_rows(
         session, batch.business_id, batch.id, clean, exclusions,
         cap=get_settings().mkt_raw_rows_cap,
@@ -1148,13 +1386,15 @@ def _record_blocked_batch(
         products_created=0,
         orders_written=0,
         reconcile_status=RECONCILE_BLOCKED,
-        checks=[],
+        checks=checks,
         posted=False,
         blocked_by=blockers,
     )
 
 
 __all__ = [
+    "BLOCKED_CHECK_DETAIL_FA",
+    "CHECK_SKIPPED",
     "DEFAULT_BUSINESS_SLUG",
     "RECONCILE_BLOCKED",
     "SAMPLE_BUSINESS_SLUG",

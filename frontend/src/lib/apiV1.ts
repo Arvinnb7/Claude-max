@@ -70,7 +70,8 @@ export type ReconcileCheck = {
   actual: string | null;
   delta: string | null;
   tolerance: string | null;
-  status: "OK" | "WARN" | "MISMATCH";
+  /** SKIPPED = «سنجیده نشد» (فایل چیزی برای این کنترل ندارد)؛ برچسبِ دسته را عوض نمی‌کند. */
+  status: "OK" | "WARN" | "MISMATCH" | "SKIPPED";
   detail: string | null;
 };
 

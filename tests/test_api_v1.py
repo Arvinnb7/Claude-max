@@ -76,8 +76,8 @@ def test_import_detail_exposes_reconciliation_evidence():
     assert r.status_code == 200
     body = r.json()
     ids = {c["id"] for c in body["checks"]}
-    assert {"L01", "L02", "L03", "L04"} <= ids
-    assert all(c["status"] in ("OK", "WARN", "MISMATCH") for c in body["checks"])
+    assert {"L01", "L02", "L03", "L04", "L10", "L11", "L12"} <= ids
+    assert all(c["status"] in ("OK", "WARN", "MISMATCH", "SKIPPED") for c in body["checks"])
 
 
 def test_import_detail_404_for_unknown_batch():

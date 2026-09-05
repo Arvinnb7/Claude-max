@@ -95,7 +95,7 @@ class ImportBatch(Base):
 
     # PASS / PASS_WITH_WARNINGS / FAIL — همان دروازه‌ی تحلیل، کپی‌شده برای ممیزی
     validation_status: Mapped[str | None] = mapped_column(String(32))
-    # OK / RECONCILED / MISMATCH — نتیجه‌ی آشتی نوشتن (مستقل از دروازه‌ی تحلیل)
+    # RECONCILED / RECONCILED_WITH_WARNINGS / MISMATCH / BLOCKED — نتیجه‌ی آشتی نوشتن (مستقل از دروازه‌ی تحلیل)
     reconcile_status: Mapped[str | None] = mapped_column(String(32))
     notes_json: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[float] = mapped_column(Float, default=now_ts, index=True)
@@ -124,7 +124,7 @@ class ImportReconciliation(Base):
     actual_text: Mapped[str | None] = mapped_column(String(64))
     delta_text: Mapped[str | None] = mapped_column(String(64))
     tolerance_text: Mapped[str | None] = mapped_column(String(64))
-    status: Mapped[str] = mapped_column(String(16))  # OK / WARN / MISMATCH
+    status: Mapped[str] = mapped_column(String(16))  # OK / WARN / MISMATCH / SKIPPED
     detail_fa: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[float] = mapped_column(Float, default=now_ts)
 
