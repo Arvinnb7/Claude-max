@@ -130,15 +130,18 @@ def _as_of(clean: pd.DataFrame) -> str:
     return pd.Timestamp.now().date().isoformat()
 
 
-def _recently_contacted(window_days: int) -> tuple[set[str], int | None]:
+def _recently_contacted(
+    window_days: int, now: float | None = None,
+) -> tuple[set[str], int | None]:
     """مشتریانی که اخیراً پیام گرفته‌اند — از همان outbox موجود.
 
-    خواندنِ فقط‌خواندنی از لایه‌ی legacy است و آن را تغییر نمی‌دهد.
+    خواندنِ فقط‌خواندنی از لایه‌ی legacy است و آن را تغییر نمی‌دهد. `now` مرجعِ
+    زمانیِ پنجره است (پیش‌فرض ساعتِ دیوار) و در اجرا ثبت می‌شود.
     """
     try:
         from api.persistence import store
 
-        return set(store.recent_contact_customer_ids(window_days)), window_days
+        return set(store.recent_contact_customer_ids(window_days, now=now)), window_days
     except Exception:  # noqa: BLE001 - نبودِ تاریخچه نباید موتور را بخواباند
         logger.debug("تاریخچه‌ی تماس در دسترس نبود؛ فیلتر خستگی رد شد", exc_info=True)
         return set(), None
@@ -207,7 +210,9 @@ def _policy_settings(
         return None, {}, None
 
 
-def _campaign_recent_keys(business_slug: str, db_path: Path | None, window_days: int) -> set[str]:
+def _campaign_recent_keys(
+    business_slug: str, db_path: Path | None, window_days: int, now: float | None = None,
+) -> set[str]:
     """مهرِ تماسِ کمپین‌ها (اکسل یا پیامکِ واقعی) به‌صورت کلیدهای خامِ موتور."""
     try:
         from mktcore.contact.register import recent_contact_keys
@@ -216,7 +221,9 @@ def _campaign_recent_keys(business_slug: str, db_path: Path | None, window_days:
             business_id = resolve_business_id(session, business_slug)
             if business_id is None:
                 return set()
-            return recent_contact_keys(session, business_id, window_days=window_days)
+            return recent_contact_keys(
+                session, business_id, window_days=window_days, now=now,
+            )
     except Exception:  # noqa: BLE001 - نبودِ دفتر نباید موتور را بخواباند
         logger.debug("مهرِ تماسِ کمپین‌ها در دسترس نبود", exc_info=True)
         return set()
@@ -235,13 +242,14 @@ def build_context(
     offer_ladder_bp: tuple[int, ...] | None = None,
     full_price_tier_of: dict[str, str | None] | None = None,
     customer_margin_bp_of: dict[str, int] | None = None,
+    fatigue_now: float | None = None,
 ) -> dict:
     """ساخت زمینه‌ی فیلترها از آنچه **واقعاً** در دست است.
 
     هر کلیدِ «has_*» صادقانه از داده خوانده می‌شود؛ هیچ‌کدام فرضِ خوش‌بینانه
-    ندارند.
+    ندارند. `fatigue_now` مرجعِ زمانیِ پنجره‌ی خستگی است (پیش‌فرض ساعتِ دیوار).
     """
-    recent, window = _recently_contacted(fatigue_window_days)
+    recent, window = _recently_contacted(fatigue_window_days, fatigue_now)
     if recently_contacted_extra:
         # تماسِ کمپین (اکسل/پیامک) هم تماس است — تا دیروز فیلترِ خستگی فقط outbox
         # را می‌دید و عضوِ تازه‌تماس‌گرفته‌ی کمپین دوباره فرصت می‌ساخت.
@@ -293,22 +301,29 @@ def run_opportunity_engine(
     display_currency: str = "تومان",
     business_slug: str = "default",
     db_path: Path | None = None,
+    fatigue_now: float | None = None,
 ) -> OpportunityRunResult | None:
     """یک اجرای کامل: تولید → فیلتر → ماندگارسازی → چرخه‌ی حیات.
 
     §۲۸: برای هر `(کسب‌وکار، تاریخ)` **یک** اجرا. اگر اجرای دیگری در جریان
     باشد، این یکی `LeaseBusyError` می‌اندازد — نه اینکه هر دو بنویسند و
     فرصت‌های همدیگر را «ناپدید» اعلام کنند.
+
+    `fatigue_now` (§۳۵ فاز ۲ — بازتولیدپذیری): مرجعِ زمانیِ پنجره‌ی خستگیِ تماس.
+    پیش‌فرض ساعتِ دیوار است (تماس رویدادِ زمانِ واقعی است، نه `as_of`ِ داده)،
+    ولی مقدارِ به‌کاررفته در `OpportunityRun.notes_json["fatigue_reference_ts"]`
+    ثبت می‌شود تا همان اجرا با همان ورودی‌ها بازپخش‌پذیر باشد.
     """
     ensure_schema(db_path)
     as_of = _as_of(clean)
+    reference = now_ts() if fatigue_now is None else float(fatigue_now)
     with job_lease(
         JobLease.JOB_OPPORTUNITY_ENGINE, f"{business_slug}|{as_of}", db_path=db_path,
     ):
         return _run_engine_locked(
             bundle, clean, as_of=as_of, session_id=session_id,
             display_currency=display_currency, business_slug=business_slug,
-            db_path=db_path,
+            db_path=db_path, fatigue_now=reference,
         )
 
 
@@ -321,8 +336,11 @@ def _run_engine_locked(
     display_currency: str,
     business_slug: str,
     db_path: Path | None,
+    fatigue_now: float | None = None,
 ) -> OpportunityRunResult | None:
     """بدنه‌ی اجرا، با این فرض که اجاره گرفته شده است."""
+    if fatigue_now is None:
+        fatigue_now = now_ts()
     candidates = generate_candidates(bundle, clean)
     # این مولد برخلاف بقیه به دفتر کل نگاه می‌کند (امتیازِ مدلِ فعال)، پس اینجا
     # صدا زده می‌شود که `business_slug` و مسیر دیتابیس در دست است.
@@ -344,7 +362,8 @@ def _run_engine_locked(
     ctx = build_context(
         clean,
         consent_denied=_opted_out_keys(business_slug, db_path),
-        recently_contacted_extra=_campaign_recent_keys(business_slug, db_path, 14),
+        recently_contacted_extra=_campaign_recent_keys(business_slug, db_path, 14, fatigue_now),
+        fatigue_now=fatigue_now,
         margin_floor_bp=floor_bp,
         margin_by_product=margins,
         daily_capacity=capacity,
@@ -401,7 +420,12 @@ def _run_engine_locked(
             candidates_generated=len(candidates),
             candidates_filtered=len(rejected),
             notes_json=json.dumps(
-                {"skipped_filters": skipped, "capped_out": capped_out},
+                {
+                    "skipped_filters": skipped, "capped_out": capped_out,
+                    # مرجعِ زمانیِ پنجره‌ی خستگی — ورودیِ پنهانِ زمان، صریح و بازپخش‌پذیر
+                    "fatigue_reference_ts": fatigue_now,
+                    "fatigue_window_days": ctx.get("fatigue_window_days"),
+                },
                 ensure_ascii=False,
             ),
         )

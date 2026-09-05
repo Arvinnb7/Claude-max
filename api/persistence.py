@@ -758,8 +758,13 @@ class PersistentStore:
                 (key, value, time.time()),
             )
 
-    def recent_contact_customer_ids(self, within_days: float = 14.0) -> set[str]:
+    def recent_contact_customer_ids(
+        self, within_days: float = 14.0, *, now: float | None = None,
+    ) -> set[str]:
         """مشتریانی که در بازه‌ی اخیر **واقعاً** پیامی گرفته‌اند.
+
+        `now` مرجعِ زمانیِ پنجره است (پیش‌فرض: ساعتِ دیوار). موتورِ فرصت‌ها آن را
+        صریح می‌دهد و ثبت می‌کند تا یک اجرا بازپخش‌پذیر باشد.
 
         `outbox_exists_recent` برای بررسی تک‌نفره است؛ فیلتر «خستگی تماس» در
         موتور فرصت‌ها باید هزاران مشتری را یک‌جا بررسی کند و صدا زدن آن در حلقه
@@ -775,7 +780,7 @@ class PersistentStore:
         (ثبتِ آزمایشی هم ثبت است و باید مانع ثبت دوباره شود)، این یکی می‌پرسد
         «آیا این مشتری چیزی دریافت کرده؟».
         """
-        cutoff = time.time() - within_days * 86400
+        cutoff = (time.time() if now is None else float(now)) - within_days * 86400
         with self._conn() as c:
             rows = c.execute(
                 "SELECT DISTINCT customer_id FROM outbox "

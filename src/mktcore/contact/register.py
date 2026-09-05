@@ -153,6 +153,7 @@ def recent_exposures(
 def recent_contact_keys(
     session: Session, business_id: int, *, window_days: int,
     exclude_campaign_id: int | None = None, legacy_raw_keys: set[str] | None = None,
+    now: float | None = None,
 ) -> set[str]:
     """همه‌ی شناسه‌های اشخاصی که اخیراً تماس گرفته‌اند — از کمپین‌ها و از outbox.
 
@@ -163,6 +164,7 @@ def recent_contact_keys(
 
     ids = recent_exposures(
         session, business_id, window_days=window_days, exclude_campaign_id=exclude_campaign_id,
+        now=now,
     )
     raw = {str(k) for k in (legacy_raw_keys or set()) if k}
     if raw:
