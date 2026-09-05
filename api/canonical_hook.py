@@ -95,6 +95,8 @@ def record_analysis(
         payload["features_written"] = _record_features(
             clean, bundle, display_currency=display_currency, business_slug=slug,
         )
+        # مدعیِ سایه‌ی پرونده‌ی ۳۶۰ (از دفتر کل): فقط مقایسه، هیچ نوشتنی.
+        payload["feature_basis_diff"] = _shadow_feature_diff(clean, business_slug=slug)
         # امتیازِ مدل‌ها **پیش از** فرصت‌ها: مولدهای فرصت ممکن است به آن نگاه
         # کنند. بدون مدلِ فعال این گام هیچ‌چیز نمی‌نویسد.
         payload["models"] = _score_models(business_slug=slug)
@@ -102,6 +104,7 @@ def record_analysis(
             clean, bundle, session_id=session_id,
             display_currency=display_currency, business_slug=slug,
         )
+        _attach_diff_to_run(payload["opportunities"], payload["feature_basis_diff"])
         # حلقه بسته می‌شود: خرید‌های تازه‌ای که همین حالا وارد دفتر شدند، ممکن
         # است نتیجه‌ی کمپین‌های قبلی باشند.
         payload["campaign_outcomes"] = _refresh_campaign_outcomes(
@@ -135,6 +138,60 @@ def _record_features(clean: pd.DataFrame, bundle: Any, *, display_currency: str,
     except Exception:  # noqa: BLE001 - همان جداسازی، یک لایه پایین‌تر
         logger.exception("نوشتن عکس ویژگی مشتری ناموفق بود")
         return 0
+
+
+def _shadow_feature_diff(clean: pd.DataFrame, *, business_slug: str = "default") -> dict | None:
+    """اختلافِ مدعیِ دفترکلی با عکسِ تازه‌نوشته‌شده — خلاصه، بدون نوشتن.
+
+    نمونه‌های به‌ازای مشتری اینجا نمی‌آیند (فقط شمارش‌ها)؛ جزئیات از
+    `GET /api/v1/feature-basis-diff` گرفته می‌شود. شکستش هم مثل بقیه‌ی پل بی‌صدا است.
+    """
+    try:
+        from mktcore.db import session_scope
+        from mktcore.db.lookup import resolve_business_id
+        from mktcore.db.repo_features import _as_of_date
+        from mktcore.features.basis_diff import compare_feature_bases
+
+        as_of = _as_of_date(clean)
+        with session_scope() as session:
+            business_id = resolve_business_id(session, business_slug)
+            if business_id is None:
+                return None
+            diff = compare_feature_bases(session, business_id, as_of=as_of, example_limit=0)
+        summary = {k: v for k, v in diff.items() if k != "only_in_challenger_ids"}
+        summary["columns"] = {k: v["mismatches"] for k, v in diff["columns"].items()}
+        return summary
+    except Exception:  # noqa: BLE001 - همان جداسازی
+        logger.exception("مقایسه‌ی مبنای ویژگی (مدعیِ سایه) ناموفق بود")
+        return None
+
+
+def _attach_diff_to_run(opportunities: dict | None, diff: dict | None) -> None:
+    """خلاصه‌ی diff در `notes_json` همان اجرای موتور می‌نشیند تا کنارِ رتبه‌ها بماند."""
+    run_id = (opportunities or {}).get("run_id")
+    if not run_id or diff is None:
+        return
+    try:
+        import json
+
+        from mktcore.db import session_scope
+        from mktcore.db.engine import write_lock
+        from mktcore.db.models import OpportunityRun
+
+        with write_lock, session_scope() as session:
+            run = session.get(OpportunityRun, int(run_id))
+            if run is None:
+                return
+            try:
+                notes = json.loads(run.notes_json) if run.notes_json else {}
+            except (TypeError, ValueError):
+                notes = {}
+            if not isinstance(notes, dict):
+                notes = {}
+            notes["feature_basis_diff"] = diff
+            run.notes_json = json.dumps(notes, ensure_ascii=False)
+    except Exception:  # noqa: BLE001 - همان جداسازی
+        logger.exception("ثبتِ خلاصه‌ی diff در اجرای موتور ناموفق بود")
 
 
 def _score_models(*, business_slug: str = "default") -> dict | None:

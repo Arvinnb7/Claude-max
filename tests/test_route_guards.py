@@ -184,6 +184,7 @@ def test_expensive_and_pii_routes_are_guarded(with_token):
         "GET /api/export": "اکسل با ستون موبایل",
         "GET /api/outbox": "شماره‌ی خامِ گیرنده‌های پیامک",
         "GET /api/v1/quarantine": "ردیفِ خامِ فایل فروش با ستون موبایل و نام",
+        "GET /api/v1/feature-basis-diff": "بازسازیِ کلِ دفتر کل + اعدادِ هر مشتری",
         "GET /api/v1/contact-suppressions": "فهرستِ نام و شماره‌ی منصرف‌شدگان",
         "DELETE /api/v1/customers/{customer_id}/opt-out": "پس‌گرفتن انصراف مشتری",
         "POST /api/v1/models/{run_id}/promote": "فعال‌کردن مدل روی داده‌ی واقعی",

@@ -436,6 +436,38 @@ def data_quality() -> dict:
 
 
 # ---------------------------------------------------------------- قرنطینه
+@router.get("/feature-basis-diff", dependencies=[Depends(require_token)])
+def feature_basis_diff(
+    as_of: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    examples: int = Query(5, ge=0, le=50),
+) -> dict:
+    """اختلافِ مدعیِ دفترکلیِ پرونده‌ی ۳۶۰ با عکسِ نوشته‌شده (قهرمان) — بدون نوشتن.
+
+    `as_of` خالی یعنی تازه‌ترین عکسِ ویژگی. کلِ دفتر کل خوانده می‌شود، پس توکن
+    لازم است (هزینه‌بر) و به‌ازای مشتری فقط شناسه‌ی داخلی برمی‌گردد، نه نام و شماره.
+    """
+    from mktcore.features.basis_diff import compare_feature_bases
+
+    ensure_schema()
+    with session_scope() as session:
+        business_id = _business_id(session)
+        if business_id is None:
+            return _no_ledger_yet()
+        target = as_of or session.scalar(
+            select(func.max(CustomerFeature.as_of_date))
+            .where(CustomerFeature.business_id == business_id)
+        )
+        if target is None:
+            return {
+                "available": False,
+                "note_fa": "هنوز عکسِ ویژگی‌ای نوشته نشده است؛ چیزی برای مقایسه نیست.",
+            }
+        diff = compare_feature_bases(
+            session, business_id, as_of=str(target), example_limit=examples,
+        )
+    return {"available": True, **diff}
+
+
 class ResolveQuarantineRequest(BaseModel):
     """بستنِ یک ردیفِ قرنطینه — ردیف **پاک نمی‌شود**، فقط رسیدگی‌شده می‌شود."""
 
