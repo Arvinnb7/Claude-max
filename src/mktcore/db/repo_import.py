@@ -1150,6 +1150,109 @@ def _reconcile(
     return status, checks
 
 
+# ------------------------------------------------------- کیفیتِ هر دسته (§۸.۵)
+def _quality_from_counts(
+    *, basis: str, n_lines: int, with_customer: int, with_product: int, with_cost: int,
+    with_date: int, in_range: int | None, n_orders: int, orders_with_branch: int,
+    rows_total: int | None, rows_clean: int | None, rows_duplicate: int | None,
+    has_doc_type_column: bool, n_returns: int,
+) -> dict:
+    """نُه بُعدِ §۸.۵ برای **همین دسته** — همان تابعِ خالصِ داشبورد، با شمارشِ دسته."""
+    from mktcore.ingest.quality import build_quality_dimensions, overall_quality
+
+    dimensions = build_quality_dimensions(
+        n_lines=n_lines, lines_with_customer=with_customer, lines_with_product=with_product,
+        lines_with_cost=with_cost, lines_with_date=with_date,
+        lines_in_declared_range=in_range, n_orders=n_orders,
+        orders_with_branch=orders_with_branch, rows_total=rows_total, rows_clean=rows_clean,
+        rows_duplicate=rows_duplicate, has_doc_type_column=has_doc_type_column,
+        n_returns=n_returns,
+    )
+    return {
+        "quality_basis": basis,
+        "quality_dimensions": [d.to_dict() for d in dimensions],
+        "quality_summary": overall_quality(dimensions),
+    }
+
+
+def _batch_quality_from_payloads(payloads: list[dict], *, batch: ImportBatch, clean: pd.DataFrame) -> dict:
+    """کیفیتِ دسته‌ی ثبت‌شده از خطوطی که واقعاً نوشته شدند (نه از کلِ دفتر کل).
+
+    داشبورد (`GET /data-quality`) هفت بُعد را از کلِ دفتر کل می‌گیرد و بارگذاریِ
+    خراب در میانگین گم می‌شود؛ اینجا هر بارگذاری جدا سنجیده و کنارِ خودش ثبت می‌شود.
+    """
+    n_lines = len(payloads)
+    orders: dict[str, bool] = {}
+    for p in payloads:
+        if p["has_order_key"]:
+            orders[p["order_key"]] = orders.get(p["order_key"], False) or bool(p["branch"])
+    in_range = None
+    if batch.date_min and batch.date_max:
+        in_range = sum(1 for p in payloads if batch.date_min <= p["line_date"] <= batch.date_max)
+    return _quality_from_counts(
+        basis="ledger",
+        n_lines=n_lines,
+        with_customer=sum(1 for p in payloads if p["customer_id"] is not None),
+        with_product=sum(1 for p in payloads if p["product_id"] is not None),
+        with_cost=sum(1 for p in payloads if p["cost_rial"] is not None),
+        with_date=sum(1 for p in payloads if p["line_date"]),
+        in_range=in_range,
+        n_orders=len(orders),
+        orders_with_branch=sum(1 for has_branch in orders.values() if has_branch),
+        rows_total=batch.rows_total, rows_clean=batch.rows_clean,
+        rows_duplicate=batch.rows_duplicate,
+        has_doc_type_column="doc_type" in clean.columns,
+        n_returns=int(clean.attrs.get("n_returns") or 0),
+    )
+
+
+def _batch_quality_from_frame(frame: pd.DataFrame, *, batch: ImportBatch, clean: pd.DataFrame) -> dict:
+    """کیفیتِ دسته‌ی **مسدود** از فریمِ پاک: چیزی نوشته نشده، ولی اپراتور باید ببیند
+    فایل چه داشت. بازه‌ی اعلام‌شده برای دسته‌ی مسدود ثبت نمی‌شود ⇒ سازگاریِ تاریخ سنجیده نشد."""
+    columns = set(frame.columns)
+    n_lines = int(len(frame))
+
+    def non_empty(name: str) -> int:
+        if name not in columns:
+            return 0
+        return sum(1 for v in frame[name].to_numpy() if _text_or_none(v) is not None)
+
+    with_product = 0
+    if "product" in columns:
+        with_product = sum(
+            1 for v in frame["product"].to_numpy()
+            if (name := _text_or_none(v)) is not None and normalize_product_name(name)
+        )
+    with_cost = 0
+    if "cost" in columns:
+        with_cost = int(pd.to_numeric(frame["cost"], errors="coerce").notna().sum())
+    with_date = int(frame["date"].notna().sum()) if "date" in columns else 0
+    orders: dict[str, bool] = {}
+    if "order_id" in columns:
+        branches = frame["branch"].to_numpy() if "branch" in columns else None
+        for pos, raw in enumerate(frame["order_id"].to_numpy()):
+            key = normalize_order_key(raw)
+            if key is None:
+                continue
+            has_branch = branches is not None and _text_or_none(branches[pos]) is not None
+            orders[key] = orders.get(key, False) or has_branch
+    return _quality_from_counts(
+        basis="frame",
+        n_lines=n_lines,
+        with_customer=non_empty("customer_id"),
+        with_product=with_product,
+        with_cost=with_cost,
+        with_date=with_date,
+        in_range=None,
+        n_orders=len(orders),
+        orders_with_branch=sum(1 for has_branch in orders.values() if has_branch),
+        rows_total=batch.rows_total, rows_clean=batch.rows_clean,
+        rows_duplicate=batch.rows_duplicate,
+        has_doc_type_column="doc_type" in clean.columns,
+        n_returns=int(clean.attrs.get("n_returns") or 0),
+    )
+
+
 # ------------------------------------------------------------------ نوشتن
 def write_import(
     clean: pd.DataFrame,
@@ -1290,6 +1393,8 @@ def write_import(
                 "has_doc_type_column": "doc_type" in clean.columns,
                 "has_branch_column": "branch" in clean.columns,
                 "n_returns": int(clean.attrs.get("n_returns") or 0),
+                # §۸.۵ «به‌ازای هر دسته»: نُه بُعد از خطوطِ همین بارگذاری
+                **_batch_quality_from_payloads(payloads, batch=batch, clean=clean),
             },
             ensure_ascii=False,
         )
@@ -1368,6 +1473,8 @@ def _record_blocked_batch(
             "has_doc_type_column": "doc_type" in clean.columns,
             "has_branch_column": "branch" in clean.columns,
             "n_returns": int(clean.attrs.get("n_returns") or 0),
+            # §۸.۵: دسته‌ی مسدود هم ابعادش را دارد — از فریمِ پاک، چون خطی نوشته نشده
+            **_batch_quality_from_frame(frame, batch=batch, clean=clean),
         },
         ensure_ascii=False,
     )

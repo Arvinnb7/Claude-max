@@ -148,7 +148,7 @@ def list_imports(limit: int = Query(50, ge=1, le=200)) -> dict:
             .order_by(ImportBatch.created_at.desc())
             .limit(limit)
         ).all()
-        items = [_batch_summary(b) for b in batches]
+        items = [{**_batch_summary(b), **_batch_quality(b)} for b in batches]
         note = _economics_note(_cost_coverage(session, business_id))
     return {"available": True, "items": items, "economics_note_fa": note}
 
@@ -166,7 +166,7 @@ def get_import(batch_id: int) -> dict:
             .where(ImportReconciliation.batch_id == batch_id)
             .order_by(ImportReconciliation.check_id)
         ).all()
-        payload = _batch_summary(batch)
+        payload = {**_batch_summary(batch), **_batch_quality(batch)}
         payload["checks"] = [
             {
                 "id": c.check_id,
@@ -195,6 +195,21 @@ def _batch_notes(batch: ImportBatch | None) -> dict:
     except (TypeError, ValueError):
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _batch_quality(batch: ImportBatch) -> dict:
+    """ابعادِ §۸.۵ **همین** بارگذاری، از یادداشت‌های ثبت‌شده هنگام نوشتن.
+
+    بارگذاری‌های قدیمی‌تر از این قابلیت ابعاد ندارند ⇒ `None`، نه بازمحاسبه: فریمِ
+    آن روز دیگر در دسترس نیست. `GET /data-quality` دست نمی‌خورد (کیفیتِ کلِ دفتر).
+    """
+    notes = _batch_notes(batch)
+    dimensions = notes.get("quality_dimensions")
+    return {
+        "quality_basis": notes.get("quality_basis"),
+        "quality_dimensions": list(dimensions) if isinstance(dimensions, list) else None,
+        "quality_summary": notes.get("quality_summary") or None,
+    }
 
 
 def _batch_summary(batch: ImportBatch) -> dict:

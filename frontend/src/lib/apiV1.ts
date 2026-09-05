@@ -61,6 +61,10 @@ export type ImportBatch = {
   /** §۸.۵ — false یعنی دسته ثبت شد ولی هیچ خطی از آن به دفتر کل نرفت. */
   posted?: boolean;
   blocked_by?: { check_id: string; title: string; detail: string }[];
+  /** §۸.۵ «به‌ازای هر دسته»: ابعادِ همین بارگذاری. null یعنی بارگذاریِ قدیمی‌تر از این قابلیت. */
+  quality_basis?: "ledger" | "frame" | null;
+  quality_dimensions?: QualityDimension[] | null;
+  quality_summary?: QualitySummary | null;
 };
 
 export type ReconcileCheck = {

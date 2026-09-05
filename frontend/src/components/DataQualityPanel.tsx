@@ -60,6 +60,11 @@ const CHECK_LABEL: Record<ReconcileCheck["status"], string> = {
   SKIPPED: "سنجیده نشد",
 };
 
+/** برچسبِ بُعد بدون توضیحِ داخلِ پرانتز — برای نشانِ کوچکِ زیرِ هر بارگذاری. */
+function shortDimensionLabel(label: string): string {
+  return label.split(" (")[0];
+}
+
 export default function DataQualityPanel() {
   const [quality, setQuality] = useState<DataQuality | null>(null);
   const [quarantine, setQuarantine] = useState<QuarantineResponse | null>(null);
@@ -346,6 +351,20 @@ export default function DataQualityPanel() {
                       {!!b.rows.duplicate && <span>{toFa(String(b.rows.duplicate))} تکراری</span>}
                       <span>فروش خالص: {toFa(b.net_sales.display_text)}</span>
                     </div>
+                    {!!b.quality_dimensions?.length && (
+                      <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs">
+                        <span style={{ color: "var(--muted)" }}>
+                          کیفیت این بارگذاری{b.quality_basis === "frame" ? " (از فایل؛ چیزی ثبت نشد)" : ""}:
+                        </span>
+                        {b.quality_dimensions
+                          .filter((d) => d.value !== null)
+                          .map((d) => (
+                            <Badge key={d.id} tone={DIMENSION_TONE[d.severity] ?? "gray"}>
+                              {shortDimensionLabel(d.label_fa)} {toFa(String(Math.round((d.value ?? 0) * 100)))}٪
+                            </Badge>
+                          ))}
+                      </div>
+                    )}
                   </div>
                   <Button variant="ghost" onClick={() => void toggle(b.id)}>
                     {openId === b.id ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
