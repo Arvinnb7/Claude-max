@@ -199,6 +199,11 @@ def identity_period(iso_date: str | None) -> str:
     return (iso_date or "")[:4]
 
 
+def order_header_key(period: str, order_number: str) -> str:
+    """کلیدِ یکتای سرِ فاکتور: «دوره/شماره» — همان دوره‌ای که خطِ فاکتور دارد."""
+    return f"{period}/{order_number}"
+
+
 # ------------------------------------------------------------- کمکی‌های داده
 def _text_or_none(value: object) -> str | None:
     if value is None:
@@ -495,8 +500,8 @@ def _build_line_payloads(
 
         raw_order = normalize_order_key(orders[i]) if orders is not None else None
         is_return_flag = bool(is_returns[i]) if is_returns is not None else False
+        period = identity_period(iso)
         if raw_order is not None:
-            period = identity_period(iso)
             group = (period, raw_order, product_norm or "", is_return_flag)
             ordinal = ordinals.get(group, 0)
             ordinals[group] = ordinal + 1
@@ -520,7 +525,11 @@ def _build_line_payloads(
             "line_uid": uid,
             "business_id": business_id,
             "batch_id": batch_id,
-            "order_key": raw_order or "",
+            # سرِ فاکتور دوره‌دار است: «دوره/شماره». شماره‌ی خام برای نمایش و
+            # برای آشتیِ شمارِ سفارش (همان تعریفِ KPI که دوره نمی‌شناسد).
+            "order_key": order_header_key(period, raw_order) if raw_order else "",
+            "order_period": period,
+            "order_number": raw_order or "",
             "has_order_key": raw_order is not None,
             "customer_id": customer_ids.get(raw_customer) if raw_customer else None,
             "product_id": product_ids.get(product_norm) if product_norm else None,
@@ -689,6 +698,7 @@ def _write_orders(
             "customer_id": payload["customer_id"], "branch": payload["branch"],
             "salesperson": payload["salesperson"], "channel": payload["channel"],
             "region": payload["region"], "discount": 0, "has_discount": False,
+            "period": payload["order_period"], "number": payload["order_number"],
         })
         if payload["is_return"]:
             agg["returns"] += -payload["revenue_rial"]
@@ -735,7 +745,10 @@ def _write_orders(
         if key in existing:
             to_update.append({**row, "id": existing[key]})
         else:
-            to_insert.append({**row, "business_id": business_id, "order_key": key})
+            to_insert.append({
+                **row, "business_id": business_id, "order_key": key,
+                "order_period": agg["period"], "order_number": agg["number"],
+            })
 
     if to_insert:
         session.execute(insert(Order), to_insert)
@@ -882,11 +895,14 @@ def _reconcile(
     if kpis is not None:
         expected_orders = getattr(kpis, "n_orders", None)
         if any(p["has_order_key"] for p in payloads):
+            # با **شماره‌ی خام** شمرده می‌شود نه کلیدِ دوره‌دار — همان تعریفِ KPI
+            # (kpis.n_orders دوره نمی‌شناسد)؛ وگرنه شماره‌ی بازاستفاده‌شده در دو سال
+            # اینجا دو و در KPI یک شمرده می‌شد.
             net_by_order: dict[str, int] = {}
             for p in payloads:
                 if p["has_order_key"]:
-                    net_by_order[p["order_key"]] = (
-                        net_by_order.get(p["order_key"], 0) + int(p["revenue_rial"])
+                    net_by_order[p["order_number"]] = (
+                        net_by_order.get(p["order_number"], 0) + int(p["revenue_rial"])
                     )
             actual_orders = sum(1 for net in net_by_order.values() if net > 0)
             add("L09", "شمار سفارش با KPI", expected_orders, actual_orders, 0)
@@ -1148,6 +1164,7 @@ __all__ = [
     "line_uid",
     "line_uid_for_order",
     "normalize_order_key",
+    "order_header_key",
     "write_import",
 ]
 

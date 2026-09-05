@@ -232,7 +232,13 @@ class ProductAlias(Base):
 
 
 class Order(Base):
-    """سرِ فاکتور. جمع‌ها از خطوط ساخته می‌شوند، پس همیشه با آن‌ها آشتی‌اند."""
+    """سرِ فاکتور. جمع‌ها از خطوط ساخته می‌شوند، پس همیشه با آن‌ها آشتی‌اند.
+
+    هویتِ سر **دوره‌دار** است (از مهاجرت ۱۸): `order_key = "{دوره}/{شماره}"` که دوره
+    سالِ ISO تاریخِ خط است — همان دوره‌ای که خطِ فاکتور دارد. شماره‌ی فاکتوری که ERP
+    هر سال از نو می‌زند، دو سرِ جدا می‌سازد نه یک سرِ ادغام‌شده با AOV متورم.
+    `order_number` همان شماره‌ی نرمال‌شده برای نمایش است.
+    """
 
     __tablename__ = "orders"
     __table_args__ = (
@@ -243,6 +249,8 @@ class Order(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     business_id: Mapped[int] = mapped_column(ForeignKey("businesses.id"), index=True)
     order_key: Mapped[str] = mapped_column(String(128), index=True)
+    order_period: Mapped[str | None] = mapped_column(String(4))
+    order_number: Mapped[str | None] = mapped_column(String(128), index=True)
     customer_id: Mapped[int | None] = mapped_column(
         ForeignKey("customers.id", ondelete="SET NULL"), index=True
     )

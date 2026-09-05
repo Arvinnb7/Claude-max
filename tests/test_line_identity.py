@@ -191,11 +191,12 @@ def test_migration_17_rekeys_lines_and_merges_cross_batch_duplicates(tmp_path):
     db = tmp_path / "v16.db"
     _build_v16_with_duplicates(db)
 
-    assert ensure_schema(db, force=True) == CANONICAL_SCHEMA_VERSION == 17
+    assert ensure_schema(db, force=True) == CANONICAL_SCHEMA_VERSION == 18
     with session_scope(db) as session:
         lines = {line.line_uid: line for line in session.scalars(select(OrderLine)).all()}
-        order = session.scalar(select(Order).where(Order.order_key == "F1"))
+        order = session.scalar(select(Order).where(Order.order_number == "F1"))
         assert order is not None
+        assert (order.order_key, order.order_period) == ("2024/F1", "2024"), "مهاجرت ۱۸ سر را دوره‌دار کرد"
         assert len(lines) == 3, "تکراریِ میان‌دسته‌ای ادغام شد، خطِ واقعی و خطِ بی‌فاکتور ماندند"
         assert "old-4" in lines, "خطِ بی‌فاکتور با کلیدِ قدیمی می‌ماند"
         expected = {
@@ -250,7 +251,7 @@ def test_migration_17_merge_is_order_independent_with_repeated_lines(tmp_path):
     ensure_schema(db, force=True)
     with session_scope(db) as session:
         lines = session.scalars(select(OrderLine)).all()
-        order = session.scalar(select(Order).where(Order.order_key == "F1"))
+        order = session.scalar(select(Order).where(Order.order_number == "F1"))
         assert sorted(line.batch_id for line in lines) == [2, 2], "دسته‌ی جدیدتر با هر دو تکرارش می‌ماند"
         assert {line.line_uid for line in lines} == {
             line_uid_for_order(1, "F1", "کالا", False, 0, period="2024"),
@@ -268,6 +269,15 @@ def test_reused_invoice_number_in_another_year_is_a_different_line(tmp_path):
 
     assert (second.lines_inserted, second.lines_updated) == (1, 0)
     assert _ledger_totals(db) == (2, (100_000 + 250_000) * 10)
+    # سرِ فاکتور هم دوره‌دار است: دو سر، هر کدام در سالِ خودش و برابرِ Σ خطوطِ خودش
+    with session_scope(db) as session:
+        orders = session.scalars(select(Order).order_by(Order.order_key)).all()
+        assert [(o.order_key, o.order_period, o.order_number) for o in orders] == [
+            ("2023/F1", "2023", "F1"), ("2024/F1", "2024", "F1"),
+        ]
+        assert [o.order_date[:4] for o in orders] == ["2023", "2024"]
+        assert [o.net_rial for o in orders] == [1_000_000, 2_500_000]
+    _orders_agree_with_lines(db)
 
 
 def test_order_key_is_normalised_before_identity(tmp_path):
@@ -286,4 +296,109 @@ def test_order_key_is_normalised_before_identity(tmp_path):
     assert (second.lines_inserted, second.lines_updated) == (0, 1)
     with session_scope(db) as session:
         assert session.scalar(select(func.count()).select_from(Order)) == 1
-        assert session.scalar(select(Order.order_key)) == "1234"
+        assert session.scalar(select(Order.order_number)) == "1234"
+        assert session.scalar(select(Order.order_key)) == "2023/1234"
+
+
+# ═══════════════════════════════════ مهاجرت ۱۸ روی دفترِ v17 با سرِ ادغام‌شده
+def _build_v17_with_merged_header(db: Path) -> None:
+    """دفترِ v17: شماره‌ی «F1» در دو سال زیرِ **یک** سر (شکلِ خرابی که مهاجرت ۱۸ درست می‌کند)،
+    به‌علاوه‌ی یک سرِ تک‌دوره که فقط باید کلیدِ دوره‌دار بگیرد."""
+    engine = get_engine(db)
+    with engine.begin() as conn:
+        conn.execute(text(_MIGRATION_TABLE_DDL))
+        for version, name, fn in _MIGRATIONS:
+            if version > 17:
+                break
+            fn(conn)
+            conn.execute(
+                text(f"INSERT INTO {_MIGRATION_TABLE} (version, name, applied_at) "
+                     "VALUES (:v, :n, :t)"),
+                {"v": version, "n": name, "t": 0.0},
+            )
+        _insert_minimal(conn, "businesses", slug="default", name="آزمون",
+                        display_currency="تومان", created_at=0.0)
+        _insert_minimal(conn, "import_batches", business_id=1, dataset_key="A",
+                        revision=1, created_at=0.0)
+        # سرِ ادغام‌شده: تاریخش سالِ قبل است و جمعش هر دو سال را دارد
+        _insert_minimal(conn, "orders", business_id=1, order_key="F1", order_date="2023-03-01",
+                        gross_rial=3_500_000, returns_rial=300_000, net_rial=3_200_000, line_count=3,
+                        batch_id=1, created_at=0.0, updated_at=0.0)
+        _insert_minimal(conn, "orders", business_id=1, order_key="F2", order_date="2024-02-01",
+                        gross_rial=400_000, returns_rial=0, net_rial=400_000, line_count=1,
+                        batch_id=1, created_at=0.0, updated_at=0.0)
+        lines = [
+            # (number, product, revenue, is_return, ordinal, period, date, source_row)
+            ("F1", "کالا", 1_000_000, 0, 0, "2023", "2023-03-01", 1),
+            ("F1", "کالا", 2_500_000, 0, 0, "2024", "2024-03-01", 2),
+            ("F1", "کالا", -300_000, 1, 0, "2024", "2024-03-02", 3),   # برگشت: مبلغِ منفی
+            ("F2", "کالا", 400_000, 0, 0, "2024", "2024-02-01", 4),
+        ]
+        for number, product, revenue, is_return, ordinal, period, date, src in lines:
+            _insert_minimal(
+                conn, "order_lines",
+                line_uid=line_uid_for_order(1, number, product, bool(is_return), ordinal, period=period),
+                business_id=1, batch_id=1, order_id=1 if number == "F1" else 2,
+                raw_product_name=product, revenue_rial=revenue, quantity_milli=1000,
+                source_row=src, line_date=date, is_return=is_return, revision=1,
+                created_at=0.0, updated_at=0.0,
+            )
+
+
+def test_migration_18_splits_merged_multi_year_headers(tmp_path):
+    db = tmp_path / "v17.db"
+    _build_v17_with_merged_header(db)
+
+    assert ensure_schema(db, force=True) == CANONICAL_SCHEMA_VERSION == 18
+    with session_scope(db) as session:
+        orders = {o.order_key: o for o in session.scalars(select(Order)).all()}
+        assert set(orders) == {"2023/F1", "2024/F1", "2024/F2"}, "سرِ ادغام‌شده به دو سرِ دوره‌دار تفکیک شد"
+        assert {o.order_number for o in orders.values()} == {"F1", "F2"}
+        assert {k: o.order_period for k, o in orders.items()} == {
+            "2023/F1": "2023", "2024/F1": "2024", "2024/F2": "2024",
+        }
+        # سرِ موجود دوره‌ی قدیمی‌تر را نگه داشت؛ سرِ تازه دوره‌ی بعد را گرفت
+        assert orders["2023/F1"].id == 1
+        assert (orders["2023/F1"].gross_rial, orders["2023/F1"].returns_rial,
+                orders["2023/F1"].net_rial, orders["2023/F1"].line_count,
+                orders["2023/F1"].order_date) == (1_000_000, 0, 1_000_000, 1, "2023-03-01")
+        assert (orders["2024/F1"].gross_rial, orders["2024/F1"].returns_rial,
+                orders["2024/F1"].net_rial, orders["2024/F1"].line_count,
+                orders["2024/F1"].order_date) == (2_500_000, 300_000, 2_200_000, 2, "2024-03-01")
+        assert (orders["2024/F2"].net_rial, orders["2024/F2"].line_count) == (400_000, 1)
+        # خطوط به سرِ سالِ خودشان وصل شدند
+        by_order = {}
+        for line in session.scalars(select(OrderLine)).all():
+            by_order.setdefault(line.order_id, []).append(line.line_date[:4])
+        assert by_order[orders["2023/F1"].id] == ["2023"]
+        assert sorted(by_order[orders["2024/F1"].id]) == ["2024", "2024"]
+    _orders_agree_with_lines(db)
+    assert _ledger_totals(db) == (4, 3_600_000), "هیچ خطی حذف یا دوباره شمرده نشد"
+    assert applied_versions(get_engine(db)) == list(range(1, CANONICAL_SCHEMA_VERSION + 1))
+
+    # اجرای دوباره چیزی عوض نمی‌کند
+    ensure_schema(db, force=True)
+    with session_scope(db) as session:
+        assert session.scalar(select(func.count()).select_from(Order)) == 3
+    _orders_agree_with_lines(db)
+
+
+def test_migration_18_is_a_no_op_on_a_fresh_period_scoped_ledger(tmp_path):
+    """دفتری که با کدِ تازه نوشته شده، از مهاجرت ۱۸ بی‌تغییر می‌گذرد (ناورداییِ نمونه)."""
+    db = tmp_path / "app.db"
+    _ingest(_clean(_rows(30)), db, dataset_key="a")
+    before = _ledger_totals(db)
+    with session_scope(db) as session:
+        snapshot = sorted(
+            (o.order_key, o.order_period, o.order_number, o.net_rial, o.line_count, o.order_date)
+            for o in session.scalars(select(Order)).all()
+        )
+    assert snapshot and all(k == f"{p}/{n}" for k, p, n, *_ in snapshot)
+    ensure_schema(db, force=True)
+    with session_scope(db) as session:
+        after = sorted(
+            (o.order_key, o.order_period, o.order_number, o.net_rial, o.line_count, o.order_date)
+            for o in session.scalars(select(Order)).all()
+        )
+    assert after == snapshot
+    assert _ledger_totals(db) == before

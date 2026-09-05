@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("mktcore.db.migrations")
 
 # نسخه‌ی جاری طرح‌واره‌ی canonical. با افزودن هر مهاجرت، یک عدد بالا می‌رود.
-CANONICAL_SCHEMA_VERSION = 17
+CANONICAL_SCHEMA_VERSION = 18
 
 _MIGRATION_TABLE = "schema_migrations"
 
@@ -405,6 +405,104 @@ def _migration_0017_order_line_identity(conn: Connection) -> None:
         )
 
 
+def _migration_0018_order_header_period(conn: Connection) -> None:
+    """سرِ فاکتورِ دوره‌دار (§۸.۴ / §۷.۴).
+
+    از مهاجرت ۱۷ خطِ فاکتور دوره دارد ولی سرِ فاکتور فقط با شماره یکتا بود؛ شماره‌ای
+    که ERP هر سال از نو می‌زند، خطوطِ دو سال را زیرِ **یک** سر جمع می‌کرد (شمارِ
+    سفارش کم، AOV متورم، تاریخِ سفارش سالِ قبل). این مهاجرت:
+
+    1. ستون‌های `order_period` و `order_number` را اضافه می‌کند.
+    2. هر سر را با دوره‌ی خطوطش کلیدگذاری می‌کند: `order_key = "{دوره}/{شماره}"`.
+    3. سری که خطوطِ چند دوره دارد **تفکیک** می‌شود: سرِ موجود دوره‌ی قدیمی‌تر را
+       نگه می‌دارد و برای هر دوره‌ی دیگر سرِ تازه ساخته و خطوط به آن وصل می‌شوند؛
+       سپس همه‌ی سرهای لمس‌شده از خطوطشان بازمحاسبه می‌شوند.
+    """
+    existing = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(orders)")}
+    if "order_period" not in existing:
+        conn.exec_driver_sql("ALTER TABLE orders ADD COLUMN order_period VARCHAR(4)")
+    if "order_number" not in existing:
+        conn.exec_driver_sql("ALTER TABLE orders ADD COLUMN order_number VARCHAR(128)")
+        conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_orders_order_number ON orders (order_number)"
+        )
+
+    orders = conn.exec_driver_sql(
+        "SELECT id, business_id, order_key, order_date, customer_id, branch, salesperson, "
+        "channel, region, batch_id, created_at FROM orders WHERE order_number IS NULL"
+    ).fetchall()
+    if not orders:
+        return
+
+    periods_by_order: dict[int, list[str]] = {}
+    for order_id, period in conn.exec_driver_sql(
+        "SELECT order_id, substr(line_date, 1, 4) AS p FROM order_lines "
+        "WHERE order_id IS NOT NULL GROUP BY order_id, p ORDER BY order_id, p"
+    ).fetchall():
+        periods_by_order.setdefault(int(order_id), []).append(str(period or ""))
+
+    taken: set[tuple[int, str]] = {
+        (b, k) for b, k in conn.exec_driver_sql("SELECT business_id, order_key FROM orders")
+    }
+    touched: set[int] = set()
+    split = 0
+    for (order_id, business_id, key, order_date, customer_id, branch, salesperson,
+         channel, region, batch_id, created_at) in orders:
+        number = key
+        periods = periods_by_order.get(order_id) or [str(order_date or "")[:4]]
+        first, rest = periods[0], periods[1:]
+        for period in rest:
+            new_key = f"{period}/{number}"
+            if (business_id, new_key) in taken:
+                logger.warning("مهاجرت ۱۸: کلیدِ «%s» از قبل وجود دارد؛ تفکیکِ سرِ %s برای این دوره انجام نشد", new_key, order_id)
+                continue
+            taken.add((business_id, new_key))
+            conn.execute(text(
+                "INSERT INTO orders (business_id, order_key, order_period, order_number, customer_id, "
+                "order_date, gross_rial, returns_rial, net_rial, line_count, branch, salesperson, "
+                "channel, region, batch_id, created_at, updated_at) VALUES "
+                "(:b, :k, :p, :n, :c, :d, 0, 0, 0, 0, :br, :sp, :ch, :rg, :bt, :ca, :ca)"
+            ), {"b": business_id, "k": new_key, "p": period, "n": number, "c": customer_id,
+                "d": f"{period}-01-01", "br": branch, "sp": salesperson, "ch": channel,
+                "rg": region, "bt": batch_id, "ca": created_at})
+            new_id = conn.exec_driver_sql(
+                "SELECT id FROM orders WHERE business_id = ? AND order_key = ?",
+                (business_id, new_key),
+            ).scalar()
+            conn.execute(text(
+                "UPDATE order_lines SET order_id = :new WHERE order_id = :old "
+                "AND substr(line_date, 1, 4) = :p"
+            ), {"new": new_id, "old": order_id, "p": period})
+            touched.add(int(new_id))
+            split += 1
+        first_key = f"{first}/{number}"
+        if (business_id, first_key) in taken and first_key != key:
+            logger.warning("مهاجرت ۱۸: کلیدِ «%s» از قبل وجود دارد؛ سرِ %s با کلیدِ قدیمی ماند", first_key, order_id)
+            first_key = key
+        taken.add((business_id, first_key))
+        conn.execute(text(
+            "UPDATE orders SET order_key = :k, order_period = :p, order_number = :n WHERE id = :i"
+        ), {"k": first_key, "p": first, "n": number, "i": order_id})
+        if rest:
+            touched.add(int(order_id))
+
+    for order_id in sorted(touched):
+        conn.execute(text(
+            "UPDATE orders SET "
+            "gross_rial = (SELECT COALESCE(SUM(CASE WHEN is_return = 0 THEN revenue_rial ELSE 0 END), 0) "
+            "  FROM order_lines WHERE order_id = :oid), "
+            "returns_rial = (SELECT COALESCE(SUM(CASE WHEN is_return = 1 THEN -revenue_rial ELSE 0 END), 0) "
+            "  FROM order_lines WHERE order_id = :oid), "
+            "line_count = (SELECT COUNT(*) FROM order_lines WHERE order_id = :oid), "
+            "order_date = COALESCE((SELECT MIN(line_date) FROM order_lines WHERE order_id = :oid), order_date) "
+            "WHERE id = :oid"
+        ), {"oid": order_id})
+        conn.execute(text(
+            "UPDATE orders SET net_rial = gross_rial - returns_rial WHERE id = :oid"
+        ), {"oid": order_id})
+    logger.info("مهاجرت ۱۸: %s سرِ فاکتور دوره‌دار شد، %s سرِ ادغام‌شده تفکیک شد", len(orders), split)
+
+
 _MIGRATIONS: tuple[tuple[int, str, Callable[[Connection], None]], ...] = (
     (1, "create_canonical_tables", _migration_0001_create_canonical_tables),
     (2, "create_opportunity_tables", _migration_0002_create_opportunity_tables),
@@ -423,6 +521,7 @@ _MIGRATIONS: tuple[tuple[int, str, Callable[[Connection], None]], ...] = (
     (15, "create_offer_ledger", _migration_0015_create_offer_ledger),
     (16, "offer_margin_basis", _migration_0016_offer_margin_basis),
     (17, "order_line_identity", _migration_0017_order_line_identity),
+    (18, "order_header_period", _migration_0018_order_header_period),
 )
 
 
