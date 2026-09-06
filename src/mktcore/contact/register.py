@@ -135,7 +135,10 @@ def recent_exposures(
     هرگز)، پس همین ستون «تماسِ واقعی» است. کمپینِ خودِ عضو مستثنا می‌شود تا دانلودِ
     دوباره‌ی همان فهرست یا ارسالِ پیامکِ همان کمپین، اعضایش را «خسته» نشمارد.
     """
-    cutoff = (now if now is not None else now_ts()) - window_days * 86400
+    reference = now if now is not None else now_ts()
+    cutoff = reference - window_days * 86400
+    # پنجره از دو طرف بسته است: تماسِ **بعد از** مرجع، تماسِ «اخیر» نیست — وگرنه
+    # بازپخشِ یک اجرا با مرجعِ ثبت‌شده‌اش نتیجه‌ی متفاوتی می‌داد.
     stmt = (
         select(CampaignMember.customer_id)
         .join(Campaign, Campaign.id == CampaignMember.campaign_id)
@@ -143,6 +146,7 @@ def recent_exposures(
             Campaign.business_id == business_id,
             CampaignMember.exposure_at.isnot(None),
             CampaignMember.exposure_at >= cutoff,
+            CampaignMember.exposure_at <= reference,
         )
     )
     if exclude_campaign_id is not None:

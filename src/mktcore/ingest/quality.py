@@ -100,6 +100,7 @@ def build_quality_dimensions(
     rows_duplicate: int | None,
     has_doc_type_column: bool,
     n_returns: int,
+    branch_column_present: bool | None = None,
 ) -> list[QualityDimension]:
     """نُه بُعدِ §۸.۵ از شمارش‌هایی که فراخوان از دفتر کل می‌آورد.
 
@@ -167,8 +168,13 @@ def build_quality_dimensions(
         QualityDimension(
             "branch_coverage", DIMENSION_LABELS_FA["branch_coverage"], branch,
             "not_measured" if branch is None else
+            # ستونِ شعبه هست ولی خالی است: شکافِ داده، نه محدودیتِ شناخته‌شده.
+            # (`None` = فراخوان نگفته؛ رفتارِ قبلی: صفر یعنی ستون نبود.)
+            "warning" if branch == 0 and branch_column_present else
             "known_limitation" if branch == 0 else _severity(branch),
             "سفارشی ثبت نشده است." if branch is None else
+            "ستون شعبه در فایل هست ولی برای هیچ سفارشی پر نشده است."
+            if branch == 0 and branch_column_present else
             "ستون شعبه در فایل نبود؛ «شعبه‌ی محتملِ مشتری» تعیین نمی‌شود."
             if branch == 0 else
             f"{round(branch * 100)}٪ سفارش‌ها شعبه دارند.",

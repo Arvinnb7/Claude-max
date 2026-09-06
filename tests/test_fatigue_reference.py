@@ -156,3 +156,21 @@ def test_a_real_contact_blocks_the_customer_only_inside_the_window(tmp_path, ana
     assert reopened, "بیرونِ پنجره، فرصت‌های مشتری برمی‌گردند"
     assert {str(p[0]) for p in passes} == {OUTCOME_PASS}
     assert again.filtered_out == baseline.filtered_out
+
+
+def test_a_contact_after_the_reference_time_is_not_recent(tmp_path, analyzed):
+    """بازپخش با مرجعِ ثبت‌شده: تماسی که **بعد از** مرجع رخ داده نباید اجرا را عوض کند."""
+    from mktcore.contact.register import recent_contact_keys
+    from mktcore.db.lookup import resolve_business_id
+
+    contact_at = time.time()
+    store.add_outbox(kind="test", status="sent", customer_id="RAW-X", phone=None,
+                     message="x", dry_run=False)
+    assert "RAW-X" in store.recent_contact_customer_ids(14, now=contact_at + 60)
+    assert "RAW-X" not in store.recent_contact_customer_ids(14, now=contact_at - 3600)
+    assert "RAW-X" not in store.recent_contact_customer_ids(14, now=contact_at + 30 * 86400)
+
+    db = _prepare(tmp_path, analyzed)
+    with session_scope(db) as session:
+        business_id = resolve_business_id(session, "default")
+        assert recent_contact_keys(session, business_id, window_days=14, now=contact_at - 3600) == set()

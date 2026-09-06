@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("mktcore.db.migrations")
 
 # نسخه‌ی جاری طرح‌واره‌ی canonical. با افزودن هر مهاجرت، یک عدد بالا می‌رود.
-CANONICAL_SCHEMA_VERSION = 19
+CANONICAL_SCHEMA_VERSION = 20
 
 _MIGRATION_TABLE = "schema_migrations"
 
@@ -436,8 +436,8 @@ def _migration_0018_order_header_period(conn: Connection) -> None:
         )
 
     orders = conn.exec_driver_sql(
-        "SELECT id, business_id, order_key, order_date, batch_id, created_at "
-        "FROM orders WHERE order_number IS NULL"
+        "SELECT id, business_id, order_key, order_date, batch_id, created_at, "
+        "branch, salesperson, channel, region FROM orders WHERE order_number IS NULL"
     ).fetchall()
     if not orders:
         return
@@ -454,10 +454,23 @@ def _migration_0018_order_header_period(conn: Connection) -> None:
     }
     touched: set[int] = set()
     split = 0
-    for order_id, business_id, key, order_date, batch_id, created_at in orders:
+    for (order_id, business_id, key, order_date, batch_id, created_at,
+         branch, salesperson, channel, region) in orders:
         number = key
         periods = periods_by_order.get(order_id) or [str(order_date or "")[:4]]
         first, rest = periods[0], periods[1:]
+        # شعبه/فروشنده/کانال/منطقه روی خطِ دفتر نیستند؛ ولی معلوم است از کجا آمده‌اند:
+        # v17 آن‌ها را از نخستین خطِ **آخرین بارگذاریِ** همین سر می‌گرفت. پس به همان دوره
+        # تعلق دارند — نه لزوماً به دوره‌ی اول. سرهای دیگر NULL می‌گیرند (نه حدس).
+        attr_period = first
+        if rest:
+            owner_period = conn.exec_driver_sql(
+                "SELECT substr(line_date, 1, 4) FROM order_lines WHERE order_id = ? AND batch_id = ? "
+                "ORDER BY is_return, line_date, source_row, id LIMIT 1",
+                (order_id, batch_id),
+            ).scalar()
+            if owner_period:
+                attr_period = str(owner_period)
         for period in rest:
             new_key = f"{period}/{number}"
             if (business_id, new_key) in taken:
@@ -467,9 +480,15 @@ def _migration_0018_order_header_period(conn: Connection) -> None:
             conn.execute(text(
                 "INSERT INTO orders (business_id, order_key, order_period, order_number, "
                 "order_date, gross_rial, returns_rial, net_rial, line_count, batch_id, "
-                "created_at, updated_at) VALUES (:b, :k, :p, :n, :d, 0, 0, 0, 0, :bt, :ca, :ca)"
+                "branch, salesperson, channel, region, created_at, updated_at) VALUES "
+                "(:b, :k, :p, :n, :d, 0, 0, 0, 0, :bt, :br, :sp, :ch, :rg, :ca, :ca)"
             ), {"b": business_id, "k": new_key, "p": period, "n": number,
-                "d": f"{period}-01-01", "bt": batch_id, "ca": created_at})
+                "d": f"{period}-01-01", "bt": batch_id,
+                "br": branch if period == attr_period else None,
+                "sp": salesperson if period == attr_period else None,
+                "ch": channel if period == attr_period else None,
+                "rg": region if period == attr_period else None,
+                "ca": created_at})
             new_id = conn.exec_driver_sql(
                 "SELECT id FROM orders WHERE business_id = ? AND order_key = ?",
                 (business_id, new_key),
@@ -490,6 +509,11 @@ def _migration_0018_order_header_period(conn: Connection) -> None:
         ), {"k": first_key, "p": first, "n": number, "i": order_id})
         if rest:
             touched.add(int(order_id))
+            if attr_period != first:
+                conn.execute(text(
+                    "UPDATE orders SET branch = NULL, salesperson = NULL, channel = NULL, "
+                    "region = NULL WHERE id = :i"
+                ), {"i": order_id})
 
     for order_id in sorted(touched):
         conn.execute(text(
@@ -503,9 +527,10 @@ def _migration_0018_order_header_period(conn: Connection) -> None:
             # تخفیف: جمعِ خطوطِ تخفیف‌دار، وگرنه NULL (همان قاعده‌ی _recompute_order_headers)
             "discount_rial = (SELECT CASE WHEN COUNT(discount_rial) > 0 THEN SUM(discount_rial) END "
             "  FROM order_lines WHERE order_id = :oid), "
-            # مشتری از نخستین خطِ خودِ سر — نه کپی از سرِ ادغام‌شده
+            # مشتری از نخستین خطِ **مشتری‌دارِ** خودِ سر، خرید پیش از برگشت — همان قاعده‌ی
+            # _write_orders (نخستین payload با مشتری؛ خریدها پیش از برگشت‌ها می‌آیند)
             "customer_id = (SELECT customer_id FROM order_lines WHERE order_id = :oid "
-            "  ORDER BY line_date, is_return, source_row, id LIMIT 1) "
+            "  AND customer_id IS NOT NULL ORDER BY is_return, line_date, source_row, id LIMIT 1) "
             "WHERE id = :oid"
         ), {"oid": order_id})
         conn.execute(text(
@@ -538,6 +563,49 @@ def _migration_0019_mapping_profile_versions(conn: Connection) -> None:
     )
 
 
+def _migration_0020_email_keys_backfill(conn: Connection) -> None:
+    """کلیدِ ایمیل برای مشتریانی که پیش از این دور فقط `customers.email` داشتند (§۹.۱ بند ۲).
+
+    تا این دور ایمیل روی مشتری نوشته می‌شد ولی `CustomerKey(email)` نه؛ بدونِ این
+    پرکردن، مشتریِ تازه‌ای با همان ایمیل مالکِ کلید می‌شد و L13 بی‌صدا صفر می‌ماند.
+    قاعده: ایمیلِ نرمال‌شده؛ در تعارض، **قدیمی‌ترین** مشتری (کمترین id) مالک می‌شود و
+    بقیه فقط لاگ می‌شوند (ادغام نمی‌شود). ایمیلِ بدشکل کلید نمی‌گیرد. افزودنی و idempotent.
+    """
+    from mktcore.identity import normalize_email
+
+    rows = conn.exec_driver_sql(
+        "SELECT id, business_id, email FROM customers WHERE email IS NOT NULL AND email != '' "
+        "ORDER BY business_id, id"
+    ).fetchall()
+    if not rows:
+        return
+    existing = {
+        (int(b), str(v)): int(c) for b, v, c in conn.exec_driver_sql(
+            "SELECT business_id, key_value, customer_id FROM customer_keys WHERE key_type = 'email'"
+        )
+    }
+    added = conflicts = 0
+    for customer_id, business_id, raw in rows:
+        email = normalize_email(raw)
+        if not email:
+            continue
+        owner = existing.get((int(business_id), email))
+        if owner is None:
+            conn.execute(text(
+                "INSERT INTO customer_keys (business_id, customer_id, key_type, key_value, "
+                "confidence_bp, first_seen_at) VALUES (:b, :c, 'email', :v, 10000, :t)"
+            ), {"b": business_id, "c": customer_id, "v": email, "t": 0.0})
+            existing[(int(business_id), email)] = int(customer_id)
+            added += 1
+        elif owner != int(customer_id):
+            conflicts += 1
+            logger.warning(
+                "مهاجرت ۲۰: ایمیلِ مشتری %s قبلاً کلیدِ مشتری %s است؛ ادغام نشد (نامزدِ بازبینی)",
+                customer_id, owner,
+            )
+    logger.info("مهاجرت ۲۰: %s کلیدِ ایمیل پر شد، %s تعارض", added, conflicts)
+
+
 _MIGRATIONS: tuple[tuple[int, str, Callable[[Connection], None]], ...] = (
     (1, "create_canonical_tables", _migration_0001_create_canonical_tables),
     (2, "create_opportunity_tables", _migration_0002_create_opportunity_tables),
@@ -558,6 +626,7 @@ _MIGRATIONS: tuple[tuple[int, str, Callable[[Connection], None]], ...] = (
     (17, "order_line_identity", _migration_0017_order_line_identity),
     (18, "order_header_period", _migration_0018_order_header_period),
     (19, "mapping_profile_versions", _migration_0019_mapping_profile_versions),
+    (20, "email_keys_backfill", _migration_0020_email_keys_backfill),
 )
 
 

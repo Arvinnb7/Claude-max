@@ -210,7 +210,7 @@ def test_migration_19_adds_the_table_and_columns_idempotently(tmp_path):
             "SELECT name FROM sqlite_master WHERE type='table'")}
         assert "mapping_profile_versions" not in tables
 
-    assert ensure_schema(db, force=True) == CANONICAL_SCHEMA_VERSION == 19
+    assert ensure_schema(db, force=True) == CANONICAL_SCHEMA_VERSION == 20
     with engine.begin() as conn:
         columns = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(import_batches)")}
         assert {"mapping_signature", "mapping_version"} <= columns

@@ -167,6 +167,28 @@ def test_one_pair_with_two_shared_evidences_is_one_candidate_and_email_is_not_co
     }
 
 
+def test_a_new_customer_never_receives_an_email_owned_by_another_customer(tmp_path):
+    """شاخه‌ی ساختِ مشتریِ تازه هم همان گارد را دارد — بین دو دسته و درونِ یک دسته."""
+    db = tmp_path / "app.db"
+    first = _clean([("1402/01/05", 100_000, "C1", "F1", "کالا", "e@example.com", "")])
+    write_import(first, kpis=compute_kpis(first), db_path=db, dataset_key="a")
+    second = _clean([
+        ("1402/02/05", 150_000, "C2", "F2", "کالا", "E@example.com", ""),     # تازه، همان ایمیل
+        ("1402/02/06", 160_000, "K1", "F3", "کالا", "shared@example.com", ""),
+        ("1402/02/07", 170_000, "K2", "F4", "کالا", "shared@example.com", ""),  # تازه، همان ایمیلِ K1
+    ])
+    result = write_import(second, kpis=compute_kpis(second), db_path=db, dataset_key="b")
+
+    with session_scope(db) as session:
+        customers = {c.canonical_key: c for c in session.scalars(select(Customer)).all()}
+        assert customers["C1"].email == "e@example.com" and customers["C2"].email is None
+        assert customers["K1"].email == "shared@example.com" and customers["K2"].email is None
+        owners = {k.key_value: k.customer_id for k in session.scalars(
+            select(CustomerKey).where(CustomerKey.key_type == "email")).all()}
+    assert owners == {"e@example.com": customers["C1"].id, "shared@example.com": customers["K1"].id}
+    assert _l13(db, result.batch_id).actual_text == "2"
+
+
 def test_phone_resolution_is_unchanged_by_email_keys(tmp_path):
     """سه نوشتارِ نام با یک شماره و ایمیل‌های متفاوت ⇒ یک مشتری؛ ایمیل‌ها نامزد نمی‌سازند."""
     rows = [

@@ -208,7 +208,10 @@ def test_route_is_guarded_and_the_hook_records_a_summary(tmp_path, monkeypatch):
         body = feature_basis_diff(as_of=None, examples=5)
         assert body["available"] is True and body["as_of"] == _as_of_date(clean)
         assert body["identical"] is True
-        assert feature_basis_diff(as_of="1999-01-01", examples=5)["challenger"]["customers"] == 0
+        nothing = feature_basis_diff(as_of="1999-01-01", examples=5)
+        assert nothing["comparable"] is False and nothing["identical"] is None
+        assert nothing["columns"]["n_orders"]["mismatches"] is None
+        assert "وجود ندارد" in nothing["note_fa"]
 
         run_id = (out.get("opportunities") or {}).get("run_id")
         assert run_id, "موتور فرصت‌ها باید اجرا شده باشد"
@@ -219,3 +222,28 @@ def test_route_is_guarded_and_the_hook_records_a_summary(tmp_path, monkeypatch):
     finally:
         get_settings.cache_clear()
         reset_ensure_cache()
+
+
+def test_blank_invoices_and_equal_revenue_products_do_not_fake_a_mismatch(tmp_path):
+    """قهرمان `nunique` می‌گیرد (سلولِ خالیِ فاکتور صفر می‌شمارد) و در تساویِ درآمدِ کالا
+    انتخابش به ترتیبِ ردیف وابسته است؛ مدعی باید همان را بازسازی کند، نه KPI را."""
+    rows = []
+    for c in range(12):
+        rows += [
+            (f"1402/01/{3 + c % 5:02d}", 100_000, f"C{c}", f"X-{c}", "کالای ب"),
+            (f"1402/02/{3 + c % 5:02d}", 100_000, f"C{c}", f"X-{c}", "کالای آ"),   # تساوی
+            (f"1402/03/{3 + c % 5:02d}", 50_000, f"C{c}", "", "کالای ج"),          # فاکتورِ خالی
+            (f"1402/04/{3 + c % 5:02d}", 50_000, f"C{c}", None, "کالای ج"),         # ⇒ تساویِ سه‌گانه
+        ]
+    db = tmp_path / "app.db"
+    clean = _write(rows, db)
+    as_of = _as_of_date(clean)
+    with session_scope(db) as session:
+        snap = {f.customer_id: f for f in session.scalars(select(CustomerFeature)).all()}
+        diff = compare_feature_bases(session, 1, as_of=as_of)
+    assert all(f.n_orders == 1 for f in snap.values()), "قهرمان: یک فاکتورِ یکتا، خالی‌ها صفر"
+    assert diff["columns"]["n_orders"]["mismatches"] == 0
+    assert diff["columns"]["aov_rial"]["mismatches"] == 0
+    assert diff["columns"]["top_product"]["mismatches"] == 0
+    assert diff["columns"]["top_product"]["ties"] == 12, "تساوی اختلاف نیست، مبهم است"
+    assert diff["identical"] is True and diff["comparable"] is True

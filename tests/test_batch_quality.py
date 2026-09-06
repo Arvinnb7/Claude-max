@@ -134,6 +134,42 @@ def test_branch_coverage_agrees_with_the_order_table_and_the_blocked_path(isolat
     assert _dims(get_import(blocked.batch_id))["branch_coverage"]["value"] == 0.5
 
 
+# ═══════════════ اعتبار با برگشت، کاملی با تاریخِ نامعتبر، ستونِ شعبه‌ی خالی
+def test_validity_counts_returns_as_valid_and_completeness_sees_invalid_dates(isolated_ledger):
+    rows = [(f"1402/01/{d:02d}", 100_000 + d, f"C{d}", f"F{d}", "کالا", "الف") for d in range(1, 7)]
+    rows += [("1402/01/09", -30_000, "C1", "R1", "کالا", "الف"),      # برگشت: معتبر است
+             ("1402/01/10", -40_000, "C2", "R2", "کالا", "الف")]
+    rows += [("تاریخِ خراب", 50_000, "C3", "F9", "کالا", "الف"),         # تاریخِ نامعتبر ⇒ قرنطینه
+             ("۱۴۰۲/۱۳/۴۵", 60_000, "C4", "F10", "کالا", "الف")]
+    clean = _clean(rows)
+    result = write_import(clean, kpis=compute_kpis(clean))
+    dims = _dims(get_import(result.batch_id))
+    # ۱۰ ردیف: ۸ به دفتر رفتند (۶ خرید + ۲ برگشت)، ۲ تاریخِ نامعتبر
+    assert dims["validity"]["value"] == 0.8
+    assert dims["completeness"]["value"] == 0.8 and dims["completeness"]["severity"] != "ok"
+    assert dims["uniqueness"]["value"] == 1.0
+
+    blocked = write_import(
+        clean, kpis=compute_kpis(clean), dataset_key="b",
+        posting_blockers=[{"check_id": "C04", "title": "قرارداد علامت", "detail": "مبهم"}],
+    )
+    b = _dims(get_import(blocked.batch_id))
+    assert (b["validity"]["value"], b["completeness"]["value"]) == (0.8, 0.8)
+
+
+def test_a_present_but_empty_branch_column_is_a_gap_not_a_known_limitation(isolated_ledger):
+    rows = [(f"1402/01/{d:02d}", 100_000, f"C{d}", f"F{d}", "کالا", "") for d in range(1, 5)]
+    clean = _clean(rows)
+    result = write_import(clean, kpis=compute_kpis(clean))
+    dim = _dims(get_import(result.batch_id))["branch_coverage"]
+    assert (dim["value"], dim["severity"]) == (0.0, "warning")
+    assert "هست ولی" in dim["note_fa"]
+    # بدون ستون: همان محدودیتِ شناخته‌شده‌ی قبلی
+    no_col = _clean(rows, {k: v for k, v in _MAPPING.items() if k is not ColumnRole.BRANCH})
+    result2 = write_import(no_col, kpis=compute_kpis(no_col), dataset_key="n")
+    assert _dims(get_import(result2.batch_id))["branch_coverage"]["severity"] == "known_limitation"
+
+
 # ═══════════════════════════ دسته‌ی مسدود: ابعاد از فریم
 def test_blocked_batch_reports_dimensions_from_the_frame(isolated_ledger):
     clean = _clean(_rows(4))

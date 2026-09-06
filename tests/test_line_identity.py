@@ -27,7 +27,7 @@ from mktcore.db.migrations import (  # noqa: E402
     applied_versions,
     ensure_schema,
 )
-from mktcore.db.models import ImportReconciliation, Order, OrderLine  # noqa: E402
+from mktcore.db.models import Customer, ImportReconciliation, Order, OrderLine  # noqa: E402
 from mktcore.db.repo_import import frame_dataset_key, line_uid_for_order  # noqa: E402
 
 from .test_golden_scenarios import _clean, _ingest  # noqa: E402
@@ -191,7 +191,7 @@ def test_migration_17_rekeys_lines_and_merges_cross_batch_duplicates(tmp_path):
     db = tmp_path / "v16.db"
     _build_v16_with_duplicates(db)
 
-    assert ensure_schema(db, force=True) == CANONICAL_SCHEMA_VERSION == 19
+    assert ensure_schema(db, force=True) == CANONICAL_SCHEMA_VERSION == 20
     with session_scope(db) as session:
         lines = {line.line_uid: line for line in session.scalars(select(OrderLine)).all()}
         order = session.scalar(select(Order).where(Order.order_number == "F1"))
@@ -355,7 +355,7 @@ def test_migration_18_splits_merged_multi_year_headers(tmp_path):
     db = tmp_path / "v17.db"
     _build_v17_with_merged_header(db)
 
-    assert ensure_schema(db, force=True) == CANONICAL_SCHEMA_VERSION == 19
+    assert ensure_schema(db, force=True) == CANONICAL_SCHEMA_VERSION == 20
     with session_scope(db) as session:
         orders = {o.order_key: o for o in session.scalars(select(Order)).all()}
         assert set(orders) == {"2023/F1", "2024/F1", "2024/F2"}, "سرِ ادغام‌شده به دو سرِ دوره‌دار تفکیک شد"
@@ -375,7 +375,8 @@ def test_migration_18_splits_merged_multi_year_headers(tmp_path):
         # مشتری و تخفیفِ هر سر از خطوطِ خودش — نه کپی از سرِ ادغام‌شده
         assert (orders["2023/F1"].customer_id, orders["2023/F1"].discount_rial) == (1, 100)
         assert (orders["2024/F1"].customer_id, orders["2024/F1"].discount_rial) == (2, 200)
-        # شعبه روی خطِ دفتر نیست: سرِ دوره‌ی اول مقدارش را نگه می‌دارد، سرِ تازه NULL (نه حدس)
+        # شعبه روی خطِ دفتر نیست؛ به دوره‌ی نخستین خطِ **آخرین بارگذاریِ** سر تعلق دارد.
+        # اینجا همه‌ی خطوط از دسته‌ی ۱ آمده‌اند و اولی ۲۰۲۳ است ⇒ سرِ ۲۰۲۳ نگه می‌دارد، ۲۰۲۴ NULL.
         assert orders["2023/F1"].branch == "شعبه‌۳" and orders["2024/F1"].branch is None
         assert (orders["2024/F2"].customer_id, orders["2024/F2"].discount_rial) == (None, None)
         # خطوط به سرِ سالِ خودشان وصل شدند
@@ -414,3 +415,99 @@ def test_migration_18_is_a_no_op_on_a_fresh_period_scoped_ledger(tmp_path):
         )
     assert after == snapshot
     assert _ledger_totals(db) == before
+
+
+def test_migration_18_attributes_follow_the_period_of_the_last_upload(tmp_path):
+    """بارگذاریِ سال‌به‌سال (رایج): سرِ «F1» را بارگذاریِ ۲۰۲۴ آخرین بار نوشته، پس شعبه‌اش
+    مالِ ۲۰۲۴ است — نه سرِ ۲۰۲۳ که فقط قدیمی‌تر است. مشتریِ هر سر از نخستین خطِ
+    مشتری‌دارِ خودش (خرید پیش از برگشت)."""
+    db = tmp_path / "v17.db"
+    engine = get_engine(db)
+    with engine.begin() as conn:
+        conn.execute(text(_MIGRATION_TABLE_DDL))
+        for version, name, fn in _MIGRATIONS:
+            if version > 17:
+                break
+            fn(conn)
+            conn.execute(
+                text(f"INSERT INTO {_MIGRATION_TABLE} (version, name, applied_at) "
+                     "VALUES (:v, :n, :t)"),
+                {"v": version, "n": name, "t": 0.0},
+            )
+        _insert_minimal(conn, "businesses", slug="default", name="آزمون",
+                        display_currency="تومان", created_at=0.0)
+        for key in ("y2023", "y2024"):
+            _insert_minimal(conn, "import_batches", business_id=1, dataset_key=key,
+                            revision=1, created_at=0.0)
+        for key in ("C1", "C2", "C3"):
+            _insert_minimal(conn, "customers", business_id=1, canonical_key=key,
+                            resolution_method="raw_key", created_at=0.0, updated_at=0.0)
+        # v17: بارگذاریِ ۲۰۲۴ (دسته ۲) سر را بازنویسی کرده ⇒ شعبه و مشتریِ ۲۰۲۴ روی سرِ مشترک
+        _insert_minimal(conn, "orders", business_id=1, order_key="F1", order_date="2023-03-01",
+                        gross_rial=0, returns_rial=0, net_rial=0, line_count=0,
+                        customer_id=2, branch="B2024", batch_id=2, created_at=0.0, updated_at=0.0)
+        lines = [
+            # (batch, revenue, is_return, ordinal, period, date, source_row, customer)
+            (1, 1_000_000, 0, 0, "2023", "2023-03-01", 1, 1),
+            (2, -200_000, 1, 0, "2024", "2024-03-01", 1, 3),   # برگشتِ زودتر با مشتریِ دیگر
+            (2, 2_500_000, 0, 0, "2024", "2024-03-05", 2, None),  # خریدِ بی‌مشتری
+            (2, 900_000, 0, 1, "2024", "2024-03-06", 3, 2),     # نخستین خریدِ مشتری‌دار ⇒ C2
+        ]
+        for batch, revenue, is_return, ordinal, period, date, src, cust in lines:
+            _insert_minimal(
+                conn, "order_lines",
+                line_uid=line_uid_for_order(1, "F1", "کالا", bool(is_return), ordinal, period=period),
+                business_id=1, batch_id=batch, order_id=1, customer_id=cust,
+                raw_product_name="کالا", revenue_rial=revenue, quantity_milli=1000,
+                source_row=src, line_date=date, is_return=is_return, revision=1,
+                created_at=0.0, updated_at=0.0,
+            )
+
+    ensure_schema(db, force=True)
+    with session_scope(db) as session:
+        orders = {o.order_key: o for o in session.scalars(select(Order)).all()}
+    assert set(orders) == {"2023/F1", "2024/F1"}
+    assert orders["2023/F1"].branch is None, "شعبه‌ی بارگذاریِ ۲۰۲۴ روی سرِ ۲۰۲۳ نمی‌ماند"
+    assert orders["2024/F1"].branch == "B2024"
+    assert orders["2023/F1"].customer_id == 1
+    assert orders["2024/F1"].customer_id == 2, "خریدِ مشتری‌دار پیش از برگشت و خطِ بی‌مشتری"
+    assert (orders["2024/F1"].gross_rial, orders["2024/F1"].returns_rial) == (3_400_000, 200_000)
+    _orders_agree_with_lines(db)
+
+
+def test_migration_20_backfills_email_keys_from_customer_rows(tmp_path):
+    """دفترِ پیش از این دور: ایمیل روی مشتری هست ولی کلیدِ ایمیل نه ⇒ پر می‌شود؛ در تعارض
+    قدیمی‌ترین مشتری مالک می‌شود و هیچ ادغامی رخ نمی‌دهد؛ ایمیلِ بدشکل کلید نمی‌گیرد."""
+    from mktcore.db.models import CustomerKey
+
+    db = tmp_path / "v19.db"
+    engine = get_engine(db)
+    with engine.begin() as conn:
+        conn.execute(text(_MIGRATION_TABLE_DDL))
+        for version, name, fn in _MIGRATIONS:
+            if version > 19:
+                break
+            fn(conn)
+            conn.execute(
+                text(f"INSERT INTO {_MIGRATION_TABLE} (version, name, applied_at) "
+                     "VALUES (:v, :n, :t)"),
+                {"v": version, "n": name, "t": 0.0},
+            )
+        _insert_minimal(conn, "businesses", slug="default", name="آزمون",
+                        display_currency="تومان", created_at=0.0)
+        for key, email in (("A", " Old@Example.com "), ("B", "old@example.com"),
+                           ("C", "not-an-email"), ("D", None)):
+            _insert_minimal(conn, "customers", business_id=1, canonical_key=key, email=email,
+                            resolution_method="raw_key", created_at=0.0, updated_at=0.0)
+
+    assert ensure_schema(db, force=True) == CANONICAL_SCHEMA_VERSION == 20
+    with session_scope(db) as session:
+        keys = [(k.customer_id, k.key_value) for k in session.scalars(
+            select(CustomerKey).where(CustomerKey.key_type == "email")).all()]
+        n_customers = session.scalar(select(func.count()).select_from(Customer))
+    assert keys == [(1, "old@example.com")], "قدیمی‌ترین مشتری مالک شد؛ بدشکل و خالی کلید نگرفتند"
+    assert n_customers == 4, "ادغامی رخ نداد"
+    ensure_schema(db, force=True)  # idempotent
+    with session_scope(db) as session:
+        assert session.scalar(select(func.count()).select_from(CustomerKey).where(
+            CustomerKey.key_type == "email")) == 1

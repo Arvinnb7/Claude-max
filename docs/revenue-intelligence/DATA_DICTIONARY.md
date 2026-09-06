@@ -4,7 +4,7 @@
 `tests/test_docs_drift.py` به `Base.metadata` پین شده: هر جدول و ستونِ لایه‌ی canonical
 اینجا هست، وگرنه تست می‌شکند. توضیح‌ها در همان اسکریپت نگه‌داری می‌شوند.
 
-**نسخه‌ی طرح‌واره‌ی canonical:** `CANONICAL_SCHEMA_VERSION = 19`
+**نسخه‌ی طرح‌واره‌ی canonical:** `CANONICAL_SCHEMA_VERSION = 20`
 (`src/mktcore/db/migrations.py`؛ جدولِ `schema_migrations` نسخه‌های اعمال‌شده را دارد).
 `PRAGMA user_version` لایه‌ی legacy در ۲ می‌ماند.
 

@@ -780,12 +780,14 @@ class PersistentStore:
         (ثبتِ آزمایشی هم ثبت است و باید مانع ثبت دوباره شود)، این یکی می‌پرسد
         «آیا این مشتری چیزی دریافت کرده؟».
         """
-        cutoff = (time.time() if now is None else float(now)) - within_days * 86400
+        reference = time.time() if now is None else float(now)
+        cutoff = reference - within_days * 86400
         with self._conn() as c:
             rows = c.execute(
                 "SELECT DISTINCT customer_id FROM outbox "
-                "WHERE customer_id IS NOT NULL AND created_at > ? AND dry_run = 0",
-                (cutoff,),
+                "WHERE customer_id IS NOT NULL AND created_at > ? AND created_at <= ? "
+                "AND dry_run = 0",
+                (cutoff, reference),
             ).fetchall()
         return {str(r["customer_id"]) for r in rows}
 
