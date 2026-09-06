@@ -373,7 +373,10 @@ def resolve_customers_with_candidates(
             if customer is not None:
                 if phone and not customer.phone_e164:
                     customer.phone_e164 = phone
-                if info["email"] and not customer.email:
+                # ایمیل فقط وقتی روی مشتری می‌نشیند که کلیدش مالِ همین مشتری باشد یا
+                # هنوز مالکی نداشته باشد؛ ایمیلِ مشتریِ دیگر «نامزدِ ادغام» است (L13)
+                if (info["email"] and not customer.email
+                        and existing.get(("email", info["email"])) in (None, customer_id)):
                     customer.email = info["email"]
                 if info["first"] and (customer.first_order_date is None
                                       or info["first"] < customer.first_order_date):
@@ -1117,10 +1120,16 @@ def _reconcile(
             "L11", "جمع تخفیف با KPI", None, None, tolerance, CHECK_SKIPPED,
             "ستون تخفیف نسبتی است و جمع‌پذیر نیست؛ سنجیده نشد.",
         ))
+    elif kpis is None:
+        # بدونِ KPI مرجعی نیست — مثل L02–L06/L09 که در این حالت اصلاً نمی‌آیند؛
+        # SKIPPED تا برچسبِ دسته با همان ورودی عوض نشود.
+        checks.append(ReconcileCheck(
+            "L11", "جمع تخفیف با KPI", None, None, tolerance, CHECK_SKIPPED,
+            "مرجعی (KPI) برای جمع تخفیف وجود نداشت؛ سنجیده نشد.",
+        ))
     else:
-        expected_discount = (
-            None if kpis is None
-            else to_rial_int(getattr(kpis, "discount_total", None) or 0.0, display_currency)
+        expected_discount = to_rial_int(
+            getattr(kpis, "discount_total", None) or 0.0, display_currency,
         )
         # همان تعریفِ KPI: تخفیفِ ردیف‌های فروش (نه برگشت)
         actual_discount = None if blocked else int(session.scalar(
@@ -1128,8 +1137,7 @@ def _reconcile(
                 OrderLine.batch_id == batch_id, OrderLine.is_return.is_(False),
             )
         ) or 0)
-        add("L11", "جمع تخفیف با KPI", expected_discount, actual_discount, tolerance,
-            None if kpis is not None else "مرجعی (KPI) برای جمع تخفیف وجود نداشت.")
+        add("L11", "جمع تخفیف با KPI", expected_discount, actual_discount, tolerance)
 
     # L12 — مبلغِ ردیف‌های کنارگذاشته (قرنطینه): اطلاع است تا «کلِ مبدأ» با
     # جمعِ دفتر + قرنطینه بازسازی‌پذیر بماند. مثل L08 همیشه OK.
@@ -1158,12 +1166,15 @@ def _reconcile(
     if blocked:
         checks.append(ReconcileCheck("L13", "نامزدهای ادغام هویت", None, None, 0, "WARN"))
     else:
-        pairs = sorted({
-            (c.key_type, min(c.resolved_customer_id, c.other_customer_id),
-             max(c.resolved_customer_id, c.other_customer_id))
-            for c in candidates
-        })
-        shown = "، ".join(f"{kind}: #{a}↔#{b}" for kind, a, b in pairs[:10])
+        evidence: dict[tuple[int, int], set[str]] = {}
+        for c in candidates:
+            pair = (min(c.resolved_customer_id, c.other_customer_id),
+                    max(c.resolved_customer_id, c.other_customer_id))
+            evidence.setdefault(pair, set()).add(c.key_type)
+        pairs = sorted(evidence)
+        shown = "، ".join(
+            f"#{a}↔#{b} ({'/'.join(sorted(evidence[(a, b)]))})" for a, b in pairs[:10]
+        )
         checks.append(ReconcileCheck(
             "L13", "نامزدهای ادغام هویت", len(pairs), len(pairs), 0, "OK",
             None if not pairs else (
@@ -1240,13 +1251,12 @@ def _batch_quality_from_payloads(payloads: list[dict], *, batch: ImportBatch, cl
     خراب در میانگین گم می‌شود؛ اینجا هر بارگذاری جدا سنجیده و کنارِ خودش ثبت می‌شود.
     """
     n_lines = len(payloads)
+    # شعبه‌ی هر سفارش = شعبه‌ی **نخستین** خطِ آن — همان قاعده‌ای که `_write_orders` سر را
+    # با آن می‌سازد و داشبورد از جدولِ `orders` می‌خواند؛ وگرنه دو عدد برای یک دسته.
     orders: dict[str, bool] = {}
     for p in payloads:
-        if p["has_order_key"]:
-            orders[p["order_key"]] = orders.get(p["order_key"], False) or bool(p["branch"])
-    in_range = None
-    if batch.date_min and batch.date_max:
-        in_range = sum(1 for p in payloads if batch.date_min <= p["line_date"] <= batch.date_max)
+        if p["has_order_key"] and p["order_key"] not in orders:
+            orders[p["order_key"]] = bool(p["branch"])
     return _quality_from_counts(
         basis="ledger",
         n_lines=n_lines,
@@ -1254,7 +1264,9 @@ def _batch_quality_from_payloads(payloads: list[dict], *, batch: ImportBatch, cl
         with_product=sum(1 for p in payloads if p["product_id"] is not None),
         with_cost=sum(1 for p in payloads if p["cost_rial"] is not None),
         with_date=sum(1 for p in payloads if p["line_date"]),
-        in_range=in_range,
+        # هیچ بازه‌ای «اعلام» نشده: `date_min/date_max` از همین خطوط ساخته می‌شوند و
+        # سنجیدنِ خطوط با بازه‌ی خودشان همیشه ۱۰۰٪ می‌داد. صادقانه: سنجیده نشد.
+        in_range=None,
         n_orders=len(orders),
         orders_with_branch=sum(1 for has_branch in orders.values() if has_branch),
         rows_total=batch.rows_total, rows_clean=batch.rows_clean,
@@ -1288,12 +1300,17 @@ def _batch_quality_from_frame(frame: pd.DataFrame, *, batch: ImportBatch, clean:
     orders: dict[str, bool] = {}
     if "order_id" in columns:
         branches = frame["branch"].to_numpy() if "branch" in columns else None
+        dates = frame["date"].to_numpy() if "date" in columns else None
         for pos, raw in enumerate(frame["order_id"].to_numpy()):
-            key = normalize_order_key(raw)
-            if key is None:
+            number = normalize_order_key(raw)
+            if number is None:
                 continue
-            has_branch = branches is not None and _text_or_none(branches[pos]) is not None
-            orders[key] = orders.get(key, False) or has_branch
+            # همان کلیدِ دوره‌دارِ سرِ فاکتور (F1) تا شمارِ سفارشِ دسته‌ی مسدود با
+            # همان فایلِ ثبت‌شده یکی باشد؛ شعبه از نخستین ردیفِ سفارش.
+            iso = _iso_date(dates[pos]) if dates is not None else None
+            key = order_header_key(identity_period(iso), number)
+            if key not in orders:
+                orders[key] = branches is not None and _text_or_none(branches[pos]) is not None
     return _quality_from_counts(
         basis="frame",
         n_lines=n_lines,

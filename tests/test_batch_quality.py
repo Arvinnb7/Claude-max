@@ -76,7 +76,9 @@ def test_each_batch_reports_its_own_dimensions_and_the_dashboard_is_unchanged(is
     assert _dims(detail_b)["customer_identifier_rate"]["severity"] == "warning"
     # شعبه فقط برای نیمی از خطوط ⇒ پوششِ شعبه به‌ازای سفارش‌های همین دسته
     assert 0 < _dims(detail_a)["branch_coverage"]["value"] < 1
-    assert _dims(detail_a)["date_range_consistency"]["value"] == 1.0
+    # هیچ بازه‌ای اعلام نشده (date_min/max از همین خطوط‌اند) ⇒ سنجیده نشد، نه ۱۰۰٪ِ همان‌گو
+    assert _dims(detail_a)["date_range_consistency"]["value"] is None
+    assert _dims(detail_a)["date_range_consistency"]["severity"] == "not_measured"
     assert detail_a["quality_summary"]["dimensions_total"] == 9
     assert detail_a["quality_summary"]["dimensions_measured"] >= 8
 
@@ -106,6 +108,30 @@ def test_dimensions_are_persisted_in_the_batch_notes(isolated_ledger):
         "date_range_consistency",
     }
     assert notes["quality_summary"]["dimensions_total"] == 9
+
+
+# ═══════════════════ پوششِ شعبه: همان تعریفِ جدولِ سفارش‌ها، در هر سه مسیر
+def test_branch_coverage_agrees_with_the_order_table_and_the_blocked_path(isolated_ledger):
+    """شعبه‌ی سفارش = شعبه‌ی نخستین خط (قاعده‌ی `_write_orders`)، سفارش = «دوره/شماره»؛
+    دسته‌ی ثبت‌شده، داشبورد و دسته‌ی مسدودِ همان فایل یک عدد می‌دهند."""
+    rows = [
+        ("1402/01/05", 100_000, "C1", "F1", "کالا", ""),          # خطِ اولِ F1 بی‌شعبه
+        ("1402/01/06", 120_000, "C1", "F1", "کالا", "مرکزی"),     # خطِ دومِ F1 شعبه‌دار
+        ("1402/02/01", 130_000, "C2", "F2", "کالا", "شرق"),
+        ("1401/03/01", 140_000, "C3", "F3", "کالا", "غرب"),       # F3 در ۱۴۰۱
+        ("1403/03/01", 150_000, "C3", "F3", "کالا", ""),          # همان شماره در ۱۴۰۳ ⇒ سفارشِ جدا
+    ]
+    clean = _clean(rows)
+    posted = write_import(clean, kpis=compute_kpis(clean), dataset_key="p")
+    per_batch = _dims(get_import(posted.batch_id))["branch_coverage"]["value"]
+    dashboard = {d["id"]: d for d in data_quality()["dimensions"]}["branch_coverage"]["value"]
+    assert per_batch == dashboard == 0.5, "۲ از ۴ سفارش (2023/F1 بی‌شعبه، 2024/F3 بی‌شعبه)"
+
+    blocked = write_import(
+        clean, kpis=compute_kpis(clean), dataset_key="b",
+        posting_blockers=[{"check_id": "C04", "title": "قرارداد علامت", "detail": "مبهم"}],
+    )
+    assert _dims(get_import(blocked.batch_id))["branch_coverage"]["value"] == 0.5
 
 
 # ═══════════════════════════ دسته‌ی مسدود: ابعاد از فریم

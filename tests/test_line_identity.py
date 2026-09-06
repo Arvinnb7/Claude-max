@@ -320,25 +320,31 @@ def _build_v17_with_merged_header(db: Path) -> None:
                         display_currency="تومان", created_at=0.0)
         _insert_minimal(conn, "import_batches", business_id=1, dataset_key="A",
                         revision=1, created_at=0.0)
-        # سرِ ادغام‌شده: تاریخش سالِ قبل است و جمعش هر دو سال را دارد
+        for key in ("C1", "C2"):
+            _insert_minimal(conn, "customers", business_id=1, canonical_key=key,
+                            resolution_method="raw_key", created_at=0.0, updated_at=0.0)
+        # سرِ ادغام‌شده: تاریخش سالِ قبل است، جمعش هر دو سال را دارد، و مشتری/شعبه/تخفیفش
+        # از آخرین بارگذاری آمده (v17 مشتری را با هر بارگذاری بازنویسی می‌کرد)
         _insert_minimal(conn, "orders", business_id=1, order_key="F1", order_date="2023-03-01",
                         gross_rial=3_500_000, returns_rial=300_000, net_rial=3_200_000, line_count=3,
+                        customer_id=2, branch="شعبه‌۳", discount_rial=300,
                         batch_id=1, created_at=0.0, updated_at=0.0)
         _insert_minimal(conn, "orders", business_id=1, order_key="F2", order_date="2024-02-01",
                         gross_rial=400_000, returns_rial=0, net_rial=400_000, line_count=1,
                         batch_id=1, created_at=0.0, updated_at=0.0)
         lines = [
-            # (number, product, revenue, is_return, ordinal, period, date, source_row)
-            ("F1", "کالا", 1_000_000, 0, 0, "2023", "2023-03-01", 1),
-            ("F1", "کالا", 2_500_000, 0, 0, "2024", "2024-03-01", 2),
-            ("F1", "کالا", -300_000, 1, 0, "2024", "2024-03-02", 3),   # برگشت: مبلغِ منفی
-            ("F2", "کالا", 400_000, 0, 0, "2024", "2024-02-01", 4),
+            # (number, product, revenue, is_return, ordinal, period, date, source_row, customer, discount)
+            ("F1", "کالا", 1_000_000, 0, 0, "2023", "2023-03-01", 1, 1, 100),
+            ("F1", "کالا", 2_500_000, 0, 0, "2024", "2024-03-01", 2, 2, 200),
+            ("F1", "کالا", -300_000, 1, 0, "2024", "2024-03-02", 3, 2, None),   # برگشت: مبلغِ منفی
+            ("F2", "کالا", 400_000, 0, 0, "2024", "2024-02-01", 4, None, None),
         ]
-        for number, product, revenue, is_return, ordinal, period, date, src in lines:
+        for number, product, revenue, is_return, ordinal, period, date, src, cust, disc in lines:
             _insert_minimal(
                 conn, "order_lines",
                 line_uid=line_uid_for_order(1, number, product, bool(is_return), ordinal, period=period),
                 business_id=1, batch_id=1, order_id=1 if number == "F1" else 2,
+                customer_id=cust, discount_rial=disc,
                 raw_product_name=product, revenue_rial=revenue, quantity_milli=1000,
                 source_row=src, line_date=date, is_return=is_return, revision=1,
                 created_at=0.0, updated_at=0.0,
@@ -366,6 +372,12 @@ def test_migration_18_splits_merged_multi_year_headers(tmp_path):
                 orders["2024/F1"].net_rial, orders["2024/F1"].line_count,
                 orders["2024/F1"].order_date) == (2_500_000, 300_000, 2_200_000, 2, "2024-03-01")
         assert (orders["2024/F2"].net_rial, orders["2024/F2"].line_count) == (400_000, 1)
+        # مشتری و تخفیفِ هر سر از خطوطِ خودش — نه کپی از سرِ ادغام‌شده
+        assert (orders["2023/F1"].customer_id, orders["2023/F1"].discount_rial) == (1, 100)
+        assert (orders["2024/F1"].customer_id, orders["2024/F1"].discount_rial) == (2, 200)
+        # شعبه روی خطِ دفتر نیست: سرِ دوره‌ی اول مقدارش را نگه می‌دارد، سرِ تازه NULL (نه حدس)
+        assert orders["2023/F1"].branch == "شعبه‌۳" and orders["2024/F1"].branch is None
+        assert (orders["2024/F2"].customer_id, orders["2024/F2"].discount_rial) == (None, None)
         # خطوط به سرِ سالِ خودشان وصل شدند
         by_order = {}
         for line in session.scalars(select(OrderLine)).all():

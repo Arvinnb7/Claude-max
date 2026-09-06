@@ -161,6 +161,18 @@ def test_l11_amount_discount_reconciles_in_rial(tmp_path):
     assert result.reconcile_status == "RECONCILED"
 
 
+def test_l11_without_a_kpi_reference_is_skipped_not_warned(tmp_path):
+    """بدونِ KPI مرجعی نیست — مثل L02–L06/L09؛ برچسبِ دسته با همان ورودی عوض نمی‌شود."""
+    clean = _clean(_discount_rows(lambda i: 50_000 if i % 2 else 0), _COLS_DISC, _MAPPING_DISC)
+    db = tmp_path / "app.db"
+    result = write_import(clean, kpis=None, db_path=db)
+
+    checks = _checks(db, result.batch_id)
+    assert checks["L11"].status == CHECK_SKIPPED and "KPI" in checks["L11"].detail_fa
+    assert "L02" not in checks and "L09" not in checks
+    assert result.reconcile_status == "RECONCILED"
+
+
 def test_l11_rate_discount_is_not_summable_so_it_is_skipped(tmp_path):
     clean = _clean(_discount_rows(lambda i: 0.1 if i % 2 else 0), _COLS_DISC, _MAPPING_DISC)
     assert clean.attrs["discount_is_amount"] is False

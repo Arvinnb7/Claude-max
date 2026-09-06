@@ -140,6 +140,33 @@ def test_raw_key_pulled_to_another_customer_by_phone_is_also_a_candidate(tmp_pat
     assert l13.actual_text == "1" and "raw_key" in l13.detail_fa
 
 
+def test_one_pair_with_two_shared_evidences_is_one_candidate_and_email_is_not_copied(tmp_path):
+    """C1 با ایمیل (بی‌شماره) و C2 با شماره ثبت‌اند؛ سپس ردیفِ «C1» با **هر دو** می‌آید:
+    با شماره به C2 می‌رسد ⇒ یک جفت (#1↔#2) با دو شاهد، نه دو جفت؛ و ایمیلِ C1 روی C2 کپی نمی‌شود."""
+    db = tmp_path / "app.db"
+    first = _clean([
+        ("1402/01/05", 100_000, "C1", "F1", "کالا", "e@example.com", ""),
+        ("1402/01/06", 110_000, "C2", "F2", "کالا", "", "09121110000"),
+    ])
+    write_import(first, kpis=compute_kpis(first), db_path=db, dataset_key="a")
+    second = _clean([("1402/02/05", 150_000, "C1", "F3", "کالا", "e@example.com", "09121110000")])
+    result = write_import(second, kpis=compute_kpis(second), db_path=db, dataset_key="b")
+
+    with session_scope(db) as session:
+        customers = {c.canonical_key: c for c in session.scalars(select(Customer)).all()}
+        assert set(customers) == {"C1", "C2"}
+        assert customers["C1"].email == "e@example.com"
+        assert customers["C2"].email is None, "ایمیلِ مشتریِ دیگر روی مشتریِ حل‌شده کپی نمی‌شود"
+        c1, c2 = customers["C1"].id, customers["C2"].id
+        notes = json.loads(session.get(ImportBatch, result.batch_id).notes_json)
+    l13 = _l13(db, result.batch_id)
+    assert (l13.expected_text, l13.actual_text) == ("1", "1"), "یک جفتِ یکتا، نه یک جفت به‌ازای هر شاهد"
+    assert f"#{c1}↔#{c2} (email/raw_key)" in l13.detail_fa
+    assert {(m["key_type"], m["other_customer_id"]) for m in notes["merge_candidates"]} == {
+        ("raw_key", c1), ("email", c1),
+    }
+
+
 def test_phone_resolution_is_unchanged_by_email_keys(tmp_path):
     """سه نوشتارِ نام با یک شماره و ایمیل‌های متفاوت ⇒ یک مشتری؛ ایمیل‌ها نامزد نمی‌سازند."""
     rows = [

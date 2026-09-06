@@ -416,7 +416,15 @@ def _migration_0018_order_header_period(conn: Connection) -> None:
     2. هر سر را با دوره‌ی خطوطش کلیدگذاری می‌کند: `order_key = "{دوره}/{شماره}"`.
     3. سری که خطوطِ چند دوره دارد **تفکیک** می‌شود: سرِ موجود دوره‌ی قدیمی‌تر را
        نگه می‌دارد و برای هر دوره‌ی دیگر سرِ تازه ساخته و خطوط به آن وصل می‌شوند؛
-       سپس همه‌ی سرهای لمس‌شده از خطوطشان بازمحاسبه می‌شوند.
+       سپس همه‌ی سرهای لمس‌شده از خطوطشان بازمحاسبه می‌شوند: جمع‌ها، شمارِ خط،
+       تاریخ، `discount_rial` (همان قاعده‌ی `_recompute_order_headers`) و
+       `customer_id` از **نخستین خطِ خودِ سر**.
+
+    شعبه/فروشنده/کانال/منطقه روی خطِ دفتر کل ذخیره نمی‌شوند، پس برای سرِ تازه
+    بازسازی‌پذیر نیستند و **NULL** می‌مانند (کپی از سرِ ادغام‌شده حدس بود)؛ سرِ
+    دوره‌ی اول مقدارِ خودش را نگه می‌دارد (اولین payloadِ آخرین بارگذاری، که
+    تاریخ‌مرتب است، به دوره‌ی قدیمی‌تر تعلق دارد). بارگذاریِ دوباره‌ی همان فایل
+    این صفت‌ها را از خودِ فایل پر می‌کند.
     """
     existing = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(orders)")}
     if "order_period" not in existing:
@@ -428,8 +436,8 @@ def _migration_0018_order_header_period(conn: Connection) -> None:
         )
 
     orders = conn.exec_driver_sql(
-        "SELECT id, business_id, order_key, order_date, customer_id, branch, salesperson, "
-        "channel, region, batch_id, created_at FROM orders WHERE order_number IS NULL"
+        "SELECT id, business_id, order_key, order_date, batch_id, created_at "
+        "FROM orders WHERE order_number IS NULL"
     ).fetchall()
     if not orders:
         return
@@ -446,8 +454,7 @@ def _migration_0018_order_header_period(conn: Connection) -> None:
     }
     touched: set[int] = set()
     split = 0
-    for (order_id, business_id, key, order_date, customer_id, branch, salesperson,
-         channel, region, batch_id, created_at) in orders:
+    for order_id, business_id, key, order_date, batch_id, created_at in orders:
         number = key
         periods = periods_by_order.get(order_id) or [str(order_date or "")[:4]]
         first, rest = periods[0], periods[1:]
@@ -458,13 +465,11 @@ def _migration_0018_order_header_period(conn: Connection) -> None:
                 continue
             taken.add((business_id, new_key))
             conn.execute(text(
-                "INSERT INTO orders (business_id, order_key, order_period, order_number, customer_id, "
-                "order_date, gross_rial, returns_rial, net_rial, line_count, branch, salesperson, "
-                "channel, region, batch_id, created_at, updated_at) VALUES "
-                "(:b, :k, :p, :n, :c, :d, 0, 0, 0, 0, :br, :sp, :ch, :rg, :bt, :ca, :ca)"
-            ), {"b": business_id, "k": new_key, "p": period, "n": number, "c": customer_id,
-                "d": f"{period}-01-01", "br": branch, "sp": salesperson, "ch": channel,
-                "rg": region, "bt": batch_id, "ca": created_at})
+                "INSERT INTO orders (business_id, order_key, order_period, order_number, "
+                "order_date, gross_rial, returns_rial, net_rial, line_count, batch_id, "
+                "created_at, updated_at) VALUES (:b, :k, :p, :n, :d, 0, 0, 0, 0, :bt, :ca, :ca)"
+            ), {"b": business_id, "k": new_key, "p": period, "n": number,
+                "d": f"{period}-01-01", "bt": batch_id, "ca": created_at})
             new_id = conn.exec_driver_sql(
                 "SELECT id FROM orders WHERE business_id = ? AND order_key = ?",
                 (business_id, new_key),
@@ -494,7 +499,13 @@ def _migration_0018_order_header_period(conn: Connection) -> None:
             "returns_rial = (SELECT COALESCE(SUM(CASE WHEN is_return = 1 THEN -revenue_rial ELSE 0 END), 0) "
             "  FROM order_lines WHERE order_id = :oid), "
             "line_count = (SELECT COUNT(*) FROM order_lines WHERE order_id = :oid), "
-            "order_date = COALESCE((SELECT MIN(line_date) FROM order_lines WHERE order_id = :oid), order_date) "
+            "order_date = COALESCE((SELECT MIN(line_date) FROM order_lines WHERE order_id = :oid), order_date), "
+            # تخفیف: جمعِ خطوطِ تخفیف‌دار، وگرنه NULL (همان قاعده‌ی _recompute_order_headers)
+            "discount_rial = (SELECT CASE WHEN COUNT(discount_rial) > 0 THEN SUM(discount_rial) END "
+            "  FROM order_lines WHERE order_id = :oid), "
+            # مشتری از نخستین خطِ خودِ سر — نه کپی از سرِ ادغام‌شده
+            "customer_id = (SELECT customer_id FROM order_lines WHERE order_id = :oid "
+            "  ORDER BY line_date, is_return, source_row, id LIMIT 1) "
             "WHERE id = :oid"
         ), {"oid": order_id})
         conn.execute(text(
