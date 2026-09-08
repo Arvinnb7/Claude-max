@@ -44,10 +44,14 @@ def generate_from_action_list(
     *,
     per_customer_cap: int = WIDE_PER_CUSTOMER_CAP,
     limit: int = WIDE_LIMIT,
+    as_of: str | None = None,
 ) -> list[OpportunityCandidate]:
     """ترجمه‌ی فهرست اقدام موجود به نامزدهای فرصت.
 
     ارزش‌ها از قبل در احتمال ضرب شده‌اند؛ اینجا **دوباره ضرب نمی‌شوند**.
+    `as_of` (§۱۲ `generate(as_of)`) اینجا عمداً خوانده نمی‌شود: این مولد همان فهرستِ
+    اقدامِ داشبورد است که «آخرین روزِ داده» را خودش می‌داند؛ پارامتر برای مولدهای
+    مدعی است که باید بازپخش‌پذیر باشند.
     """
     try:
         plan = build_action_list(bundle, clean, per_customer_cap=per_customer_cap, limit=limit)
@@ -131,6 +135,7 @@ _CONFIDENCE_WEIGHT = {"بالا": 0.5, "متوسط": 0.3, "کم": 0.15}
 
 def generate_from_expansion_gap(
     bundle: Any, clean: pd.DataFrame, *, top_per_customer: int = 2,
+    as_of: str | None = None,
 ) -> list[OpportunityCandidate]:
     """نامزدهای «این دسته را از ما نمی‌خرد» بر پایه‌ی مقایسه‌ی همتایان."""
     try:
@@ -335,10 +340,17 @@ def generate_whale_relationship(
 GENERATORS = (generate_from_action_list, generate_from_expansion_gap)
 
 
-def generate_candidates(bundle: Any, clean: pd.DataFrame) -> list[OpportunityCandidate]:
+def generate_candidates(
+    bundle: Any, clean: pd.DataFrame, *, as_of: str | None = None,
+) -> list[OpportunityCandidate]:
+    """همه‌ی مولدهای فعال با یک تاریخِ مرجعِ مشترک (§۱۲ `generate(as_of)`).
+
+    `as_of` = آخرین روزِ داده‌ی همین تحلیل (همان `engine._as_of`)؛ مولدهای امروزی آن
+    را نادیده می‌گیرند (خروجی بیت‌به‌بیت)، مولدِ مدعی با آن بازپخش‌پذیر می‌شود.
+    """
     out: list[OpportunityCandidate] = []
     for generator in GENERATORS:
-        out.extend(generator(bundle, clean))
+        out.extend(generator(bundle, clean, as_of=as_of))
     return out
 
 

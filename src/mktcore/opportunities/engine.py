@@ -341,7 +341,7 @@ def _run_engine_locked(
     """بدنه‌ی اجرا، با این فرض که اجاره گرفته شده است."""
     if fatigue_now is None:
         fatigue_now = now_ts()
-    candidates = generate_candidates(bundle, clean)
+    candidates = generate_candidates(bundle, clean, as_of=as_of)
     # این مولد برخلاف بقیه به دفتر کل نگاه می‌کند (امتیازِ مدلِ فعال)، پس اینجا
     # صدا زده می‌شود که `business_slug` و مسیر دیتابیس در دست است.
     candidates += generate_whale_relationship(
