@@ -112,14 +112,14 @@
 | قلم سند | وضعیت | شاهد / آنچه کم است |
 |---|---|---|
 | Lifecycle states (§۱۱ — ۱۲ حالت) | `done` | **هر ۱۲ حالت** در `lifecycle/states.py` پیاده و قابل‌دسترسی‌اند؛ گذارها با دلیل در `CustomerLifecycleEvent` ثبت می‌شوند |
-| Rule-based replenishment (§۱۳) | `partial` | میانه‌ی **ساده**ی فاصله‌ها استفاده می‌شود، نه میانه‌ی وزنیِ مقاوم + MAD (§۱۳.۳). تعدیل بر پایه‌ی مقدار/اندازه‌ی بسته (§۱۳.۴) **نیست**. سلسله‌مراتب ۵ سطحیِ شواهد (§۱۳.۲) **نیست** |
+| Rule-based replenishment (§۱۳) | `partial` — ✅ **مدعی ساخته شد (R1–R3)** | قهرمان همان میانه‌ی جمعیتِ کالا است؛ مدعیِ `replenish` (پله‌ی ۱ §۱۳.۲: مشتری + همان کالا، میانه‌ی وزنی + MAD + تعدیلِ بسته، جدولِ سررسیدِ کالیبره) فقط با بردِ اثبات‌شده روی holdout (بازه‌ی ±۲۵٪) و اجرای فعال وارد کارت می‌شود. پله‌های ۲–۴ **نیست** (داده‌ی خانواده/سگمنت×کالا) |
 | Rule-based churn/slipping (§۱۶.۱) | `done` | آستانه‌ها مضربِ آهنگ خودِ مشتری‌اند، نه ۹۰ روزِ ثابت |
 | Association / sequential NBP baseline (§۱۴) | `partial` | الگوهای توالی کاملاً به فرصت وصل‌اند (`KIND_SEQUENCE`)؛ قواعد انجمنی وجود دارند ولی بیشتر به‌عنوان سیگنالِ **پشتیبان** در توصیه‌گر، نه مولدِ درجه‌یک |
 | Basket-building baseline (§۱۵) | `missing` | attach rate، ارزش افزوده‌ی سبد، تغییر سود، هزینه‌ی تخفیف بسته و کانیبالیزیشن — هیچ‌کدام. نوع مانع: بخشی `blocked_by_data` (سود لازم دارد) و بخشی `my_judgement` |
 | Expansion-gap baseline (§۱۷) | `done` | `analysis/expansion_gap.py` + مولد اختصاصی. ⚠️ سند «gross profit» می‌خواهد، ما **درآمد**محور ساخته‌ایم (در خود فایل مستند شده) |
 | Opportunity common contract (§۱۲) | `done` | `opportunities/contract.py` |
 | Filters (§۱۲ — ۱۱ مرحله) | `partial` | **۱۰ از ۱۱** فیلتر. `filter_margin_floor` که تا دیروز همیشه `skip` می‌داد حالا واقعاً کار می‌کند: حاشیه از دفتر کل، کف **از کاربر** (`PUT /api/v1/margin-floor`). بدون کفِ تعیین‌شده همچنان `skip` ثبت می‌شود — نبودِ تصمیمِ کاربر «قبول» نیست |
-| Conflict suppression · expiry · EV ranking | `done` | `filter_conflict`، `_expire_overdue`، مرتب‌سازی نزولی بر ارزش |
+| Conflict suppression · expiry · EV ranking | `done` | `filter_conflict` (با تقدمِ یادآوریِ تکرار بر مکملِ عمومی در سقف — §۲۳.۳ بند ۲)، `_expire_overdue`، `_close_fulfilled` (خریدِ همان کالا فرصت را می‌بندد — بند ۴)، مرتب‌سازی نزولی بر ارزش. جایگزین‌ها (بند ۵) بدون مدلِ خانواده‌ی کالا ساخته نشد |
 | Opportunity Inbox + Customer 360 UI | `done` | `OpportunityInbox.tsx`، `Customer360.tsx` |
 
 **دروازه‌ی پذیرش فاز ۲** («هر فرصت شواهد دارد و بازتولیدپذیر است»): ✅ می‌گذرد.
@@ -165,7 +165,7 @@
 | قلم سند | وضعیت | شاهد / آنچه کم است |
 |---|---|---|
 | Calibrated churn/survival model | `done` | مدلِ خطرِ گسسته روی جدولِ «مشتری × دوره» با سانسور و holdout زمانی؛ خط پایه همان دامپینگ هندسیِ فعلی است — `ml/churn.py`، `test_churn_model.py` |
-| Advanced replenishment model (§۱۳.۵) | `done` | همان مدلِ خطر: احتمالِ خرید در افق مکملِ احتمالِ ریزش است. ضمناً میانه‌ی وزنی، MAD و تعدیلِ اندازه‌ی بسته (§۱۳.۳ و §۱۳.۴) اضافه شدند — `analysis/cadence_robust.py` |
+| Advanced replenishment model (§۱۳.۵) | `done` | همان مدلِ خطر: احتمالِ خرید در افق مکملِ احتمالِ ریزش است. میانه‌ی وزنی، MAD و تعدیلِ اندازه‌ی بسته (§۱۳.۳ و §۱۳.۴) در `analysis/cadence_robust.py` و حالا در **مسیرِ کالا** هم (`analysis/replenish_personal.py`، مدلِ `replenish` در رجیستری با کلیدِ رزروشده‌ی قبلی) |
 | CLV (§۱۹) | `done` | سودمحور، افق ۹۰/۱۸۰/۳۶۵، با بازه‌ی عدم‌قطعیت و نسخه/تاریخ — `analysis/clv.py`. نسخه‌ی درآمدیِ قبلی دست‌نخورده ماند |
 | Future-whale model (§۱۸) | `done` | برچسبِ صدکِ سودِ آینده درونِ کوهورت، ویژگی فقط از پنجره‌ی اولیه، دروازه‌ی بلوغ، و اقدامِ رابطه‌ای بدون عدد ریالی — `ml/whale.py`، `test_whale_model.py` |
 | Hybrid next-best-product ranking (§۱۴.۴ — ۹ سیگنال) | `partial` | همچنان **۴ از ۹** در امتیازِ توصیه‌گر. سودِ کالا حالا در دسترس است ولی وارد رتبه‌بندی نشد؛ دلیلش پایین‌تر |
@@ -219,7 +219,7 @@ top-K economic metrics.»*
 | notification and scheduled workflows | `done` | APScheduler، اسکن روزانه، جبران اجرای ازدست‌رفته، گاردِ مجوز تماس |
 | performance tuning (§۳۳) | `partial` | ایندکس‌ها و صفحه‌بندی هست؛ تنظیم عامدانه‌ی کارایی انجام نشده |
 | advanced monitoring (§۳۲) | ✅ **بسته شد (S2)** | `X-Request-Id` (با انتقال به jobها)، لاگِ ساختاریافته، `/api/v1/ops/metrics`، و healthی که واقعاً دیتابیس را می‌زند |
-| documented deployment/runbook | `missing` | `OPERATIONS_RUNBOOK.md` ساخته نشده |
+| documented deployment/runbook | ✅ **بسته شد (S6)** | `OPERATIONS_RUNBOOK.md` — با `test_docs_drift` پین شده |
 
 ---
 

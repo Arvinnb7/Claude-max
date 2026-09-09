@@ -330,3 +330,32 @@ def test_generated_docs_are_not_behind_the_code():
         capture_output=True, text=True, cwd=str(_ROOT), check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+# ═══════════════════════════ مدعیِ چرخه‌ی خریدِ شخصی (§۱۳.۲–۱۳.۴، §۲۳.۳)
+_SPEC_GAP = _ROOT / "docs" / "revenue-intelligence" / "SPEC_GAP_AUDIT.md"
+_FINANCIAL = _ROOT / "docs" / "revenue-intelligence" / "FINANCIAL_CALCULATION_RULES.md"
+
+
+def test_replenish_card_states_the_rule_the_label_and_the_revenue_basis():
+    card = _MODEL_CARDS.read_text(encoding="utf-8").split("## `replenish`")[1].split("\n## ")[0]
+    for phrase in ("میانه‌ی وزنی", "holdout", "درآمد", "±۲۵٪", "validated_rejected"):
+        assert phrase in card, phrase
+
+
+def test_financial_rules_document_the_due_score_and_the_conflict_rules():
+    text = _FINANCIAL.read_text(encoding="utf-8")
+    for phrase in ("overdue_ratio", "§۲۳.۳", "topk_captured_revenue_rial", "fulfilled_by_purchase"):
+        assert phrase in text, phrase
+
+
+def test_gap_audit_never_calls_an_existing_required_doc_missing():
+    """سندی که روی دیسک هست، در شکاف‌سنجی «ساخته نشده» نباشد — همان کلاسِ خطای ردیفِ runbook."""
+    text = _SPEC_GAP.read_text(encoding="utf-8")
+    docs_dir = _ROOT / "docs" / "revenue-intelligence"
+    for line in text.splitlines():
+        if "`missing`" not in line:
+            continue
+        for name in ("OPERATIONS_RUNBOOK", "SECURITY_AND_PRIVACY", "DATA_DICTIONARY",
+                     "SOURCE_MAPPING_GUIDE", "API_GUIDE", "EXPERIMENTATION_GUIDE", "MODEL_CARDS"):
+            assert not (name in line and (docs_dir / f"{name}.md").exists()), line
