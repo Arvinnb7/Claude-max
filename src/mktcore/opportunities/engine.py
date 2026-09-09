@@ -39,6 +39,7 @@ from mktcore.db.models import (
     OpportunityEvent,
     OpportunityFactor,
     OpportunityRun,
+    OrderLine,
 )
 from mktcore.money import to_basis_points, to_rial_int
 from mktcore.uplift.empirical import BASIS_LABELS_FA, BASIS_NONE
@@ -103,6 +104,8 @@ class OpportunityRunResult:
     expired: int
     capped_out: int = 0
     skipped_filters: dict[str, int] = field(default_factory=dict)
+    # §۲۳.۳ بند ۴: فرصت‌هایی که با خریدِ همان کالا پس از ساختشان بسته شدند
+    closed_by_purchase: int = 0
 
     def to_dict(self) -> dict:
         payload = {
@@ -115,6 +118,7 @@ class OpportunityRunResult:
             "expired": self.expired,
             "capped_out": self.capped_out,
             "skipped_filters": self.skipped_filters,
+            "closed_by_purchase": self.closed_by_purchase,
         }
         if self.capped_out:
             payload["cap_note_fa"] = (
@@ -456,6 +460,11 @@ def _run_engine_locked(
             display_currency=display_currency, as_of=as_of,
             uplift_multipliers=multipliers,
         )
+        # §۲۳.۳ بند ۴ — پیش از «دیگر مصداق ندارد»: فرصتی که مشتری همان کالایش را
+        # پس از ساختِ فرصت خریده، با دلیلِ «خرید» بسته می‌شود، نه با «تحلیل تولید نکرد».
+        closed_by_purchase = _close_fulfilled(
+            session, business.id, run.id, as_of, skip_keys=seen_keys | still_valid,
+        )
         superseded = _supersede_missing(
             session, business.id, run.id, seen_keys | still_valid,
         )
@@ -465,6 +474,10 @@ def _run_engine_locked(
         run.opportunities_refreshed = refreshed
         run.opportunities_superseded = superseded
         run.opportunities_expired = expired
+        if closed_by_purchase:
+            notes = json.loads(run.notes_json or "{}")
+            notes["closed_by_purchase"] = closed_by_purchase
+            run.notes_json = json.dumps(notes, ensure_ascii=False)
         run_id = run.id
 
     result = OpportunityRunResult(
@@ -477,6 +490,7 @@ def _run_engine_locked(
         expired=expired,
         capped_out=capped_out,
         skipped_filters=skipped,
+        closed_by_purchase=closed_by_purchase,
     )
     logger.info("موتور فرصت‌ها: %s", result.to_dict())
     return result
@@ -867,6 +881,87 @@ def _supersede_missing(
     return count
 
 
+def _close_fulfilled(
+    session: Session, business_id: int, run_id: int, as_of: str, *, skip_keys: set[str],
+) -> int:
+    """§۲۳.۳ بند ۴: خریدِ همان کالا پس از ساختِ فرصت، فرصت را می‌بندد.
+
+    فقط فرصت‌های **زنده‌ی کالادار** (باز/پذیرفته/اسنوز) که در این اجرا تولید نشده‌اند؛
+    خطِ خرید باید غیربرگشتی و **پس از** تاریخِ اجرای نخستینِ فرصت و تا `as_of` باشد
+    (`<` اکید: خریدِ همان روزِ ساخت، «پاسخ به یادآوری» نیست). مثلِ `_expire_overdue`،
+    وضعیتِ پذیرفته هم بسته می‌شود — مشتری خودش خریده، کارِ تیم تمام است.
+    """
+    from sqlalchemy.orm import aliased
+
+    first_run = aliased(OpportunityRun)
+    live = session.execute(
+        select(Opportunity, first_run.as_of_date)
+        .join(first_run, first_run.id == Opportunity.first_seen_run_id)
+        .where(
+            Opportunity.business_id == business_id,
+            Opportunity.status.in_(sorted(_LIVE_STATUSES)),
+            Opportunity.product_id.isnot(None),
+            Opportunity.customer_id.isnot(None),
+        )
+    ).all()
+    count = 0
+    for opportunity, first_as_of in live:
+        if opportunity.dedupe_key in skip_keys or not first_as_of:
+            continue
+        purchase = session.execute(
+            select(OrderLine.line_date)
+            .where(
+                OrderLine.business_id == business_id,
+                OrderLine.customer_id == opportunity.customer_id,
+                OrderLine.product_id == opportunity.product_id,
+                OrderLine.is_return.is_(False),
+                OrderLine.line_date > str(first_as_of),
+                OrderLine.line_date <= as_of,
+            )
+            .order_by(OrderLine.line_date)
+            .limit(1)
+        ).first()
+        if purchase is None:
+            continue
+        previous = opportunity.status
+        opportunity.status = STATUS_SUPERSEDED
+        opportunity.status_reason_fa = (
+            f"مشتری پس از ساختِ این فرصت همین کالا را خرید ({purchase[0]})."
+        )
+        opportunity.updated_at = now_ts()
+        opportunity.last_seen_run_id = run_id
+        _add_event(
+            session, opportunity.id, "fulfilled_by_purchase", previous, STATUS_SUPERSEDED,
+            note=f"خریدِ همان کالا در {purchase[0]} — §۲۳.۳ بند ۴.",
+            payload={"purchase_date": str(purchase[0]), "product_id": int(opportunity.product_id)},
+        )
+        count += 1
+    return count
+
+
+def close_fulfilled_opportunities(
+    *,
+    business_slug: str = "default",
+    as_of: str | None = None,
+    db_path: Path | None = None,
+) -> dict:
+    """بستنِ فرصت‌های «خریده‌شده» بدونِ اجرای کاملِ موتور (کارِ انقضا هم صدایش می‌زند).
+
+    idempotent است: فرصتِ بسته‌شده دیگر زنده نیست و بارِ دوم شمرده نمی‌شود.
+    """
+    ensure_schema(db_path)
+    today = as_of or pd.Timestamp.now().date().isoformat()
+    with write_lock, session_scope(db_path) as session:
+        business_id = resolve_business_id(session, business_slug)
+        if business_id is None:
+            return {"closed_by_purchase": 0, "note_fa": "کسب‌وکاری با این نام وجود ندارد."}
+        last_run = session.scalar(
+            select(func.max(OpportunityRun.id)).where(OpportunityRun.business_id == business_id)
+        )
+        closed = _close_fulfilled(session, business_id, last_run or 0, today, skip_keys=set())
+    return {"closed_by_purchase": closed, "as_of": today}
+
+
 def expire_overdue_opportunities(
     *,
     business_slug: str = "default",
@@ -943,6 +1038,7 @@ __all__ = [
     "STATUS_SNOOZED",
     "STATUS_SUPERSEDED",
     "OpportunityRunResult",
+    "close_fulfilled_opportunities",
     "build_context",
     "expire_overdue_opportunities",
     "run_opportunity_engine",

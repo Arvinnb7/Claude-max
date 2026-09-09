@@ -119,9 +119,12 @@ def _job_opportunity_generation(*, correlation_id: str | None = None) -> dict:
 
 
 def _job_opportunity_expiration(*, correlation_id: str | None = None) -> dict:
-    from mktcore.opportunities import expire_overdue_opportunities
+    """انقضا (§۲۸ بند ۷) + بستنِ فرصت‌های خریده‌شده (§۲۳.۳ بند ۴) — بدونِ اجرای موتور."""
+    from mktcore.opportunities import close_fulfilled_opportunities, expire_overdue_opportunities
 
-    return expire_overdue_opportunities()
+    expired = expire_overdue_opportunities()
+    closed = close_fulfilled_opportunities()
+    return {**expired, "closed_by_purchase": closed.get("closed_by_purchase", 0)}
 
 
 def _job_outcome_matching(*, correlation_id: str | None = None) -> dict:
