@@ -296,26 +296,63 @@ def _uplift_detail_fa(table, kind: str, uplift: float, basis: str, *, state: str
 # زمان بی‌معناست، ولی یک اقدامِ خدمتی با یک یادآوری چرخه تداخل ندارد.
 RELATIONSHIP_CAP = 1
 
+# §۲۳.۳ بند ۲: «یادآوریِ تکرارِ خرید بر فروشِ مکملِ عمومی مقدم است.» وقتی سقفِ هر مشتری
+# پر است و یادآوری می‌رسد، کم‌ارزش‌ترین مکملِ عمومی جا می‌دهد — نه اینکه یادآوری،
+# که به رفتارِ واقعیِ خودِ مشتری تکیه دارد، به‌خاطر چند ریال اختلاف رد شود.
+REPLENISHMENT_KINDS: tuple[str, ...] = ("یادآوری چرخه‌ی مصرف",)
+CROSS_SELL_KINDS: tuple[str, ...] = ("معرفی کالای مکمل", "تکمیل الگوی خرید", "توسعه‌ی سبد خرید")
+
+
+def _yield_slot(holder: OpportunityCandidate, newcomer: OpportunityCandidate, ctx: dict) -> None:
+    """مکملِ عمومی جایش را به یادآوریِ تکرار می‌دهد: بلاکِ پسینی + پس‌دادنِ ظرفیت."""
+    for index, note in enumerate(holder.factors):
+        if note.code == "conflict":
+            holder.factors[index] = OpportunityFactorNote(
+                "conflict", FILTER_CODES["conflict"], OUTCOME_BLOCK,
+                f"جای خود را به یادآوری چرخه‌ی «{newcomer.product_name or ''}» داد "
+                "(§۲۳.۳: یادآوریِ تکرارِ خرید بر فروشِ مکملِ عمومی مقدم است).",
+            )
+            break
+    # اگر ظرفیتِ تیم را گرفته بود، پسش می‌دهد؛ وگرنه یک تماسِ واقعی گم می‌شد
+    if any(n.code == "operator_capacity" and n.outcome == OUTCOME_PASS for n in holder.factors):
+        used: dict[str, int] = ctx.setdefault("_capacity_used", {})
+        used["money"] = max(0, used.get("money", 0) - 1)
+
 
 def filter_conflict(candidate: OpportunityCandidate, ctx: dict) -> OpportunityFactorNote:
     """تداخل: یک مشتری نباید هم‌زمان با چند پیام متضاد هدف گرفته شود.
 
     شمارش **به‌تفکیک نوعِ ارزش** انجام می‌شود: فرصت‌های فروشی با هم رقابت
     می‌کنند، ولی اقدامِ رابطه‌ای (که پیشنهاد فروش نیست) نباید جای یک یادآوری
-    چرخه را بگیرد — و برعکس.
+    چرخه را بگیرد — و برعکس. در سقفِ پر، یادآوریِ تکرار بر مکملِ عمومی مقدم است
+    (§۲۳.۳): کم‌ارزش‌ترین مکمل جا می‌دهد؛ هیچ ارزش یا رتبه‌ای عوض نمی‌شود.
     """
     relationship = candidate.value_kind == VALUE_RELATIONSHIP
     bucket = "relationship" if relationship else "money"
     cap = RELATIONSHIP_CAP if relationship else ctx.get("per_customer_open_cap", 3)
     counts: dict[tuple[str, str], int] = ctx.setdefault("_customer_counts", {})
+    slots: dict[tuple[str, str], list[OpportunityCandidate]] = ctx.setdefault("_customer_slots", {})
     key = (candidate.customer_key, bucket)
     used = counts.get(key, 0)
     if used >= cap:
+        holders = slots.get(key, [])
+        yielding = [h for h in holders if h.kind in CROSS_SELL_KINDS]
+        if candidate.kind in REPLENISHMENT_KINDS and yielding:
+            loser = min(yielding, key=lambda h: h.expected_value_display)
+            holders.remove(loser)
+            _yield_slot(loser, candidate, ctx)
+            holders.append(candidate)
+            return OpportunityFactorNote(
+                "conflict", FILTER_CODES["conflict"], OUTCOME_PASS,
+                f"سقف {cap} پر بود؛ مکملِ عمومیِ «{loser.product_name or ''}» جا داد "
+                "(§۲۳.۳: یادآوریِ تکرارِ خرید مقدم است).",
+            )
         return OpportunityFactorNote(
             "conflict", FILTER_CODES["conflict"], OUTCOME_BLOCK,
             f"این مشتری از قبل {used} فرصت باز از همین نوع دارد (سقف {cap}).",
         )
     counts[key] = used + 1
+    slots.setdefault(key, []).append(candidate)
     return OpportunityFactorNote(
         "conflict", FILTER_CODES["conflict"], OUTCOME_PASS,
         f"شمار فرصت‌های باز این مشتری زیر سقف {cap} است.",
@@ -544,15 +581,16 @@ def apply_filters(
     ارزشمندترین فرصت‌ها بمانند نه تصادفی‌ها.
     """
     ordered = sorted(candidates, key=lambda c: -c.expected_value_display)
-    accepted: list[OpportunityCandidate] = []
-    rejected: list[OpportunityCandidate] = []
     for candidate in ordered:
         for check in FILTER_CHAIN:
             note = check(candidate, ctx)
             candidate.add_factor(note)
             if note.blocking:
                 break
-        (rejected if candidate.blocked_by else accepted).append(candidate)
+    # تفکیک **پس از** حلقه: قاعده‌ی تقدمِ §۲۳.۳ می‌تواند نامزدی را که قبلاً پذیرفته شده
+    # بود پسینی رد کند؛ تفکیکِ درونِ حلقه آن را در فهرستِ پذیرفته‌ها جا می‌گذاشت.
+    accepted = [c for c in ordered if not c.blocked_by]
+    rejected = [c for c in ordered if c.blocked_by]
     return accepted, rejected
 
 
