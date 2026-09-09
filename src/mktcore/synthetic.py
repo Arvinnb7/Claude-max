@@ -283,6 +283,81 @@ def generate_cohort_sales(
     return pd.DataFrame(rows)
 
 
+# ─────────────────────────────── داده‌ی «مصرفی با آهنگِ شخصی» (§۱۳.۲ — مدعیِ چرخه‌ی خرید)
+CONSUMABLES = {
+    "غذای خشک ۱۲.۵ کیلویی": 3_200_000,
+    "غذای خشک ۳ کیلویی": 950_000,
+    "خاک گربه ۱۰ لیتری": 780_000,
+    "کنسرو ۴۰۰ گرمی": 260_000,
+    "مکمل مفصل": 1_450_000,
+}
+_PERSONAL_CADENCES = (21.0, 35.0, 60.0, 90.0)
+
+
+def generate_replenishment_sales(
+    *,
+    seed: int = 5,
+    start: str = "2024-01-01",
+    days: int = 720,
+    n_customers: int = 300,
+    with_cost: bool = False,
+) -> pd.DataFrame:
+    """داده‌ی فروشِ کالاهای مصرفی که هر مشتری **آهنگِ شخصیِ** خودش را برای هر کالا دارد.
+
+    همان ستون‌های فارسیِ `generate_cohort_sales` — به‌جز اینکه به‌طور پیش‌فرض
+    **ستونِ بها ندارد** (مثلِ فایلِ واقعیِ کاربر). هر مشتری ۱ تا ۲ کالای مصرفی با
+    آهنگِ ثابتِ شخصی از {۲۱، ۳۵، ۶۰، ۹۰} روز (± نویزِ کوچک) می‌خرد؛ ۱۰٪ خریدها
+    «انباری»‌اند (مقدار ۳ ⇒ فاصله‌ی بعدی ×۳)؛ ۱۰٪ مشتری‌ها در میانه‌ی راه می‌روند.
+    میانه‌ی جمعیتِ هر کالا عمداً از آهنگِ اکثرِ خریدارانش دور است تا قهرمانِ
+    «میانه‌ی کالا» چیزی برای باختن داشته باشد.
+    """
+    rng = np.random.default_rng(seed)
+    dates = pd.date_range(start=start, periods=days, freq="D")
+    products = list(CONSUMABLES)
+    rows: list[dict] = []
+    order_counter = 1
+
+    for index in range(n_customers):
+        key = f"R{index + 1:05d}"
+        phone = "0912" + "".join(str(d) for d in rng.integers(0, 10, 7))
+        region = str(rng.choice(REGIONS, p=[0.40, 0.18, 0.16, 0.14, 0.12]))
+        n_products = int(rng.integers(1, 3))
+        chosen = rng.choice(len(products), size=n_products, replace=False)
+        churn_day = days if rng.random() >= 0.10 else int(rng.integers(days // 3, days))
+        for p_index in chosen:
+            product = products[int(p_index)]
+            cadence = float(rng.choice(_PERSONAL_CADENCES))
+            day = int(rng.integers(0, 20))
+            while day < min(days, churn_day):
+                stock_up = rng.random() < 0.10
+                qty = 3 if stock_up else 1
+                unit_price = CONSUMABLES[product] * (1 + rng.normal(0, 0.03))
+                row = {
+                    "تاریخ": dates[day],
+                    "شماره سفارش": f"RINV-{order_counter:06d}",
+                    "کد مشتری": key,
+                    "شماره موبایل": phone,
+                    "نام محصول": product,
+                    "دسته‌بندی": "مصرفی",
+                    "کانال فروش": str(rng.choice(CHANNELS, p=[0.45, 0.25, 0.18, 0.12])),
+                    "استان": region,
+                    "شعبه": _branch_of(region),
+                    "فروشنده": str(rng.choice(SALESPEOPLE[region])),
+                    "تعداد": qty,
+                    "قیمت واحد": round(unit_price),
+                    "تخفیف": 0.0,
+                    "مبلغ کل": round(unit_price * qty),
+                }
+                if with_cost:
+                    row["بهای تمام شده"] = round(CONSUMABLES[product] * 0.62 * qty)
+                rows.append(row)
+                order_counter += 1
+                gap = max(2.0, rng.normal(cadence, 2.0)) * (3.0 if stock_up else 1.0)
+                day += int(round(gap))
+    frame = pd.DataFrame(rows).sort_values("تاریخ", kind="stable").reset_index(drop=True)
+    return frame
+
+
 def cohort_quality(frame: pd.DataFrame) -> dict[str, float]:
     """کیفیتِ پنهانِ هر مشتری — فقط برای **تستِ خودِ مولد**.
 
