@@ -53,7 +53,9 @@ from .filters import apply_filters
 from .generators import (
     WHALE_MAX_PER_RUN,
     generate_candidates,
+    generate_replenishment_personal,
     generate_whale_relationship,
+    replace_champion_cycle,
 )
 from .offers import upsert_offer
 
@@ -347,6 +349,14 @@ def _run_engine_locked(
     candidates += generate_whale_relationship(
         business_slug=business_slug, db_path=db_path,
     )
+    # مدعیِ چرخه‌ی خریدِ شخصی: فقط با اجرای فعالِ `replenish`؛ وگرنه `[]` و بیت‌به‌بیت.
+    challenger = generate_replenishment_personal(
+        bundle, clean, as_of=as_of, business_slug=business_slug, db_path=db_path,
+    )
+    candidates, replaced = replace_champion_cycle(candidates, challenger)
+    replenish_notes = (
+        {"emitted": len(challenger), "replaced": replaced} if challenger else None
+    )
     uplift_table = _load_uplift_table(db_path)
     floor_bp, margins, capacity = _policy_settings(business_slug, db_path)
     ladder, tier_thresholds = _offer_policy(business_slug, db_path)
@@ -425,6 +435,8 @@ def _run_engine_locked(
                     # مرجعِ زمانیِ پنجره‌ی خستگی — ورودیِ پنهانِ زمان، صریح و بازپخش‌پذیر
                     "fatigue_reference_ts": fatigue_now,
                     "fatigue_window_days": ctx.get("fatigue_window_days"),
+                    # مدعیِ چرخه‌ی شخصی (None = مدلی فعال نبود)
+                    "replenish_challenger": replenish_notes,
                 },
                 ensure_ascii=False,
             ),

@@ -13,7 +13,9 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import Any
+
+import pandas as pd
 
 from mktcore.analysis.actions import build_action_list
 
@@ -23,9 +25,6 @@ from .contract import (
     OpportunityCandidate,
     OpportunityFactorNote,
 )
-
-if TYPE_CHECKING:
-    import pandas as pd
 
 logger = logging.getLogger("mktcore.opportunities.generators")
 
@@ -333,6 +332,168 @@ def generate_whale_relationship(
             ))
         candidates.append(candidate)
     return candidates
+
+
+# ─────────────────────────────── مدعیِ چرخه‌ی خریدِ شخصی (§۱۳.۲) — فقط پشتِ اجرای فعال
+REPLENISH_GENERATOR = "replenish_personal"
+REPLENISH_GENERATOR_VERSION = 1
+REPLENISH_MAX_PER_RUN = 3000
+# پنجره‌ی «نزدیک» همان قاعده‌ی قهرمان (`purchase_cycle.analyze_purchase_cycles`): تا
+# ۲۰٪ فاصله (کمینه ۳ روز) پیش از سررسید هم یادآوری معنا دارد.
+REPLENISH_NEAR_FRACTION = 0.2
+REPLENISH_TTL_DAYS = (7, 45)
+
+
+def generate_replenishment_personal(
+    bundle: Any,
+    clean: pd.DataFrame,
+    *,
+    as_of: str | None = None,
+    business_slug: str = "default",
+    db_path: Any = None,
+) -> list[OpportunityCandidate]:
+    """یادآورِ تکرارِ خرید با آهنگِ **شخصیِ** جفتِ (مشتری، کالا) — قهرمان/مدعی.
+
+    بدونِ اجرای فعالِ `replenish` در رجیستری `[]` برمی‌گرداند و موتور بیت‌به‌بیت مثلِ
+    قبل می‌ماند. با اجرای فعال، برای هر جفتِ واجد (≥ ۲ فاصله) که در پنجره‌ی نزدیکِ
+    سررسیدِ شخصی‌اش است و جدولِ سررسید برایش احتمالِ کالیبره دارد، یک نامزدِ
+    `KIND_CYCLE` می‌سازد که پله‌ی شواهد، فاصله‌ی شخصی، عدم‌قطعیت، نسبتِ عقب‌افتادگی،
+    تعدیلِ بسته و مبنای ارزش را در عواملش می‌گوید (§۱۳.۶ / §۲۶.۶).
+    """
+    if as_of is None or clean is None or clean.empty:
+        return []
+    try:
+        import numpy as np
+
+        from mktcore.analysis.actions import KIND_CYCLE, VALUE_OPPORTUNITY, _phone_map
+        from mktcore.analysis.replenish_personal import personal_cadence_table
+        from mktcore.db.engine import session_scope
+        from mktcore.db.lookup import resolve_business_id
+        from mktcore.ml.replenish import promoted_due_table, score_due_table
+
+        with session_scope(db_path) as session:
+            business_id = resolve_business_id(session, business_slug)
+            if business_id is None:
+                return []
+            active = promoted_due_table(session, business_id)
+            if active is None:
+                logger.info("مدلِ replenish فعال نیست؛ یادآورِ شخصی ساخته نشد.")
+                return []
+            run, table = active
+            model_version = int(run.model_version)
+        cadence = personal_cadence_table(
+            clean, as_of=as_of, min_gaps=int(table.get("min_gaps", 2)),
+            decay=float(table.get("decay", 0.75)),
+        )
+    except Exception:  # noqa: BLE001 - یک مولد خراب نباید کل موتور را بخواباند
+        logger.exception("ساخت یادآورِ شخصیِ تکرارِ خرید ناموفق بود")
+        return []
+    if cadence.empty:
+        return []
+
+    probabilities = score_due_table(
+        table, cadence["overdue_ratio"].to_numpy(dtype=float),
+        cadence["uncertainty"].fillna(0.0).to_numpy(dtype=float),
+    )
+    phones = _phone_map(clean)
+    reference = pd.Timestamp(as_of)
+    candidates: list[OpportunityCandidate] = []
+    for (customer, product), row, probability in zip(
+        cadence.index, cadence.to_dict("records"), probabilities, strict=False,
+    ):
+        if probability is None or np.isnan(probability) or probability <= 0:
+            # جدولِ سررسید برای این سلول شاهدِ کافی ندارد (بی‌امتیاز، نه حدس) یا در گذشته
+            # هیچ‌کس در این وضعیت نخریده؛ کارتی با احتمالِ صفر یادآوری نیست.
+            continue
+        interval = float(row["pack_adjusted_interval_days"])
+        elapsed = float(row["elapsed_days"])
+        near = max(3.0, REPLENISH_NEAR_FRACTION * interval)
+        if elapsed < interval - near:
+            continue
+        spend = row["median_spend"]
+        if spend is None or not np.isfinite(spend):
+            continue
+        offset = int(round(elapsed - interval))
+        gaps_fa = "، ".join(str(g) for g in row["gaps_days"])
+        due = pd.Timestamp(row["last_purchase"]) + pd.Timedelta(days=interval)
+        ttl = int(min(max(round(interval), REPLENISH_TTL_DAYS[0]), REPLENISH_TTL_DAYS[1]))
+        reason = (
+            f"{len(row['gaps_days'])} بار با فاصله‌های {gaps_fa} روز خریده؛ فاصله‌ی شخصی‌اش "
+            f"{round(interval)} روز است و {int(elapsed)} روز از آخرین خرید گذشته "
+            + (f"({offset} روز عقب‌افتاده)" if offset > 0 else f"({-offset} روز مانده)")
+            + "."
+        )
+        candidate = OpportunityCandidate(
+            kind=KIND_CYCLE,
+            generator=REPLENISH_GENERATOR,
+            generator_version=REPLENISH_GENERATOR_VERSION,
+            customer_key=str(customer),
+            title_fa=f"یادآوری خرید «{product}» (آهنگ شخصی)",
+            action_fa=f"تماس/پیام یادآوری خرید «{product}»",
+            reason_fa=reason,
+            expected_value_display=float(spend) * float(probability),
+            value_kind=VALUE_OPPORTUNITY,
+            product_name=str(product),
+            message_fa=(
+                f"سلام، طبق آهنگِ خریدِ خودتان ({round(interval)} روزه) زمان تهیه‌ی «{product}» رسیده است."
+            ),
+            probability=float(probability),
+            confidence=str(row["confidence_fa"]),
+            phone=phones.get(str(customer)),
+            due_date=due.date().isoformat(),
+            expires_at=(reference + pd.Timedelta(days=ttl)).date().isoformat(),
+        )
+        evidence = [
+            ("evidence_level", "پله‌ی شواهد", str(row["evidence_level_fa"]),
+             "آهنگ از خریدهای خودِ این مشتری برای همین کالا است، نه میانه‌ی جمعیت (§۱۳.۲)."),
+            ("expected_interval", "فاصله‌ی شخصیِ خرید", f"{round(interval)} روز",
+             f"میانه‌ی وزنیِ فاصله‌های {gaps_fa} روز (وزنِ تازگی ۰٫۷۵)."),
+            ("interval_uncertainty", "عدم‌قطعیتِ آهنگ",
+             f"{round(float(row['uncertainty'] or 0.0), 2)}", "MAD ÷ فاصله (§۱۳.۳)."),
+            ("overdue_ratio", "نسبتِ عقب‌افتادگی", f"{round(float(row['overdue_ratio']), 2)}",
+             "گذشته از آخرین خرید ÷ فاصله‌ی موردانتظار."),
+            ("pack_adjustment", "تعدیلِ اندازه‌ی خرید",
+             str(row["pack_reason_fa"] or "مقدارِ معمول؛ بدون تعدیل"), None),
+            ("probability", "احتمال خرید در بازه‌ی ادعا", f"{round(float(probability) * 100, 1)}٪",
+             f"از جدولِ سررسیدِ کالیبره‌ی مدلِ فعالِ replenish نسخه {model_version}؛ در ارزش ضرب شده است."),
+            ("champion_replaced", "جایگزینِ یادآورِ جمعیتی", "بله",
+             "میانه‌ی جمعیتِ کالا برای این جفت کنار گذاشته شد (قهرمان/مدعی، با holdout)."),
+            ("value_basis", "مبنای ارزش", "درآمد",
+             "ارزش = میانه‌ی مبلغِ خریدهای همین کالا × احتمال؛ درآمدی است نه سود."),
+        ]
+        for code, label, value, detail in evidence:
+            candidate.add_factor(OpportunityFactorNote(
+                code=code, label_fa=label, outcome=OUTCOME_EVIDENCE, value_text=value, detail_fa=detail,
+            ))
+        candidates.append(candidate)
+        if len(candidates) >= REPLENISH_MAX_PER_RUN:
+            break
+    return candidates
+
+
+def replace_champion_cycle(
+    candidates: list[OpportunityCandidate], challenger: list[OpportunityCandidate],
+) -> tuple[list[OpportunityCandidate], int]:
+    """یادآورِ قهرمان (`action_list` × `KIND_CYCLE`) برای جفت‌های پوشش‌داده‌شده حذف می‌شود.
+
+    بدونِ مدعی هیچ‌چیز حذف نمی‌شود؛ جفت‌های بی‌پوشش یادآورِ قهرمان (پله‌ی ۵) را نگه می‌دارند.
+    """
+    if not challenger:
+        return candidates, 0
+    from mktcore.analysis.actions import KIND_CYCLE
+
+    covered = {(c.customer_key, c.product_name) for c in challenger}
+    kept: list[OpportunityCandidate] = []
+    replaced = 0
+    for candidate in candidates:
+        if (
+            candidate.generator == ACTION_GENERATOR and candidate.kind == KIND_CYCLE
+            and (candidate.customer_key, candidate.product_name) in covered
+        ):
+            replaced += 1
+            continue
+        kept.append(candidate)
+    return kept + challenger, replaced
 
 
 # فهرست مولدهای فعال. افزودن مولد تازه یعنی افزودن یک تابع به این تاپل؛
