@@ -62,6 +62,9 @@ class ScheduledJob:
     hour: int | None = None
     interval_hours: float | None = None
     max_attempts: int = 3
+    # دقیقه‌ی اجرا؛ `None` یعنی زمان‌بند خودش دقیقه‌ها را پخش می‌کند تا چند
+    # تراکنشِ سنگین روی یک فایل SQLite هم‌زمان نشوند.
+    minute: int | None = None
 
     def __call__(self, **kwargs: Any) -> Any:
         return self.run(**kwargs)
@@ -250,6 +253,34 @@ def _job_retry_sweep(*, correlation_id: str | None = None) -> dict:
     return sweep_due_retries()
 
 
+def _job_cycle_notification(*, correlation_id: str | None = None) -> dict:
+    """اسکنِ روزانه‌ی چرخه‌ی خرید و ثبت/ارسالِ یادآوری (§۲۸ «daily notification»).
+
+    تا این دور، این کار مستقیم روی APScheduler نشسته بود: شکستش فقط یک خط لاگ
+    بود و در دفترِ اجرا و صفِ مرده دیده نمی‌شد. منطقِ خودِ اسکن (`run_cycle_scan`
+    با الگوی «ادعا سپس ارسال» و dedupe هفت‌روزه) بیت‌به‌بیت همان است.
+    """
+    from api.scheduler import run_cycle_scan
+
+    result = run_cycle_scan()
+    if result.get("status") in ("no_session", "no_data"):
+        raise JobSkipped(str(result.get("پیام") or result["status"]))
+    return result
+
+
+def _job_retention(*, correlation_id: str | None = None) -> dict:
+    """هرسِ فایل‌های سنگینِ نشست‌ها طبق سیاستِ نگه‌داری (۰ = هرگز)."""
+    from api.persistence import store
+
+    return store.run_retention()
+
+
+def _schedule_hour() -> int:
+    from mktcore.config import get_settings
+
+    return int(get_settings().mkt_schedule_hour)
+
+
 SCHEDULED_JOBS: tuple[ScheduledJob, ...] = (
     ScheduledJob(
         name="opportunity_generation",
@@ -295,6 +326,22 @@ SCHEDULED_JOBS: tuple[ScheduledJob, ...] = (
         run=_job_retry_sweep,
         interval_hours=0.25,
         max_attempts=1,
+    ),
+    ScheduledJob(
+        name="cycle_notification",
+        title_fa="اسکنِ روزانه‌ی چرخه‌ی خرید و ثبتِ یادآوری",
+        run=_job_cycle_notification,
+        hour=_schedule_hour(),
+        minute=0,
+        # کاری که پیامک می‌فرستد تلاشِ دوباره‌ی خودکار نمی‌گیرد؛ ردیفِ «در حال
+        # ارسال»ِ ادعاشده، اجرای فردا را از تکرار بازمی‌دارد و شکست دیده می‌شود.
+        max_attempts=1,
+    ),
+    ScheduledJob(
+        name="retention",
+        title_fa="هرسِ فایل‌های سنگینِ نشست‌ها طبق سیاستِ نگه‌داری",
+        run=_job_retention,
+        interval_hours=6,
     ),
 )
 

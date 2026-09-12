@@ -29,6 +29,8 @@ CYCLE_KIND = "cycle_notification"
 AUDIENCE_KEY = "چرخه_عقب‌افتاده"
 # کلید «آخرین اجرای موفق» — مبنای جبران اجرای ازدست‌رفته پس از ری‌استارت
 LAST_SCAN_KEY = "scheduler.cycle_scan.last_run_date"
+# نامِ همین اسکن در فهرستِ کارهای §۲۸ (`mktcore.jobs.SCHEDULED_JOBS`)
+CYCLE_JOB_NAME = "cycle_notification"
 
 
 def run_cycle_scan(*, limit: int = 200, dedupe_days: float = 7.0) -> dict:
@@ -154,12 +156,8 @@ def start_scheduler() -> bool:
         return False
 
     sched = BackgroundScheduler(timezone="Asia/Tehran")
-    sched.add_job(
-        lambda: run_cycle_scan(), "cron", hour=settings.mkt_schedule_hour, minute=0,
-        id="cycle-scan", replace_existing=True,
-    )
-    sched.add_job(store.run_retention, "interval", hours=6, id="session-cleanup",
-                  replace_existing=True)
+    # اسکنِ چرخه و هرسِ نگه‌داری هم از همین‌جا می‌گذرند — دیگر `add_job`ِ مستقیم
+    # ندارند، تا شکستشان در دفترِ اجرا و صفِ مرده بنشیند، نه فقط در لاگ.
     _register_pipeline_jobs(sched)
     sched.start()
     _scheduler = sched
@@ -171,7 +169,7 @@ def start_scheduler() -> bool:
 
 
 def _register_pipeline_jobs(sched: Any) -> None:
-    """ثبتِ شش کارِ §۲۸ روی زمان‌بند.
+    """ثبتِ همه‌ی کارهای §۲۸ روی زمان‌بند (از جمله اسکنِ چرخه و نگه‌داری).
 
     هر کار از راهِ `run_job` صدا زده می‌شود، نه مستقیم — یعنی همان‌جا ردیفِ
     اجرا، تلاشِ دوباره و صف مرده را می‌گیرد. صدا زدنِ مستقیمِ تابع یعنی شکستش
@@ -188,8 +186,9 @@ def _register_pipeline_jobs(sched: Any) -> None:
                 id=f"job-{name}", replace_existing=True,
             )
             continue
+        minute = job.minute if job.minute is not None else (index * 7) % 60
         sched.add_job(
-            _make_runner(name), "cron", hour=job.hour, minute=(index * 7) % 60,
+            _make_runner(name), "cron", hour=job.hour, minute=minute,
             id=f"job-{name}", replace_existing=True,
         )
 
@@ -208,15 +207,11 @@ def stop_scheduler() -> None:
 
 def scheduler_status() -> dict:
     settings = get_settings()
-    next_run = None
-    if _scheduler is not None:
-        job = _scheduler.get_job("cycle-scan")
-        if job and job.next_run_time:
-            next_run = job.next_run_time.isoformat()
     return {
         "enabled": settings.mkt_scheduler_enable,
         "running": _scheduler is not None,
-        "next_run": next_run,
+        # اسکنِ چرخه حالا یکی از کارهای خط لوله است؛ کلیدِ پاسخ همان می‌ماند.
+        "next_run": _next_run(f"job-{CYCLE_JOB_NAME}"),
         "schedule_hour": settings.mkt_schedule_hour,
         "auto_sms": settings.mkt_auto_sms,
         "sms_configured": settings.sms_configured,

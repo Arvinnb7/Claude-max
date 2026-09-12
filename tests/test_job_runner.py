@@ -209,6 +209,7 @@ def test_every_job_has_a_persian_title_and_a_schedule():
     "campaign_analysis",
     "model_retraining",
     "drift_monitoring",
+    "retention",
 ])
 def test_each_real_job_either_works_or_says_why_not(tmp_path, monkeypatch, name):
     """هیچ کارِ ثبت‌شده‌ای نباید با خطای برنامه‌نویسی بیفتد.
@@ -345,3 +346,119 @@ def test_drift_job_raises_an_alert_on_a_shifted_model(tmp_path, monkeypatch, cap
     assert len(alerts) == 1 and alerts[0]["model_key"] == "whale"
     assert alerts[0]["level"] == drift_mod.LEVEL_SHIFTED
     assert any("whale" in rec.getMessage() for rec in caplog.records if rec.levelno >= logging.WARNING)
+
+
+# ═══════════════════════════ اسکنِ چرخه و نگه‌داری زیرِ همین runner (§۲۸)
+def _job(name: str) -> ScheduledJob:
+    return next(job for job in SCHEDULED_JOBS if job.name == name)
+
+
+def test_the_two_jobs_that_bypassed_the_runner_are_now_registered():
+    """اسکنِ چرخه و هرسِ نگه‌داری مستقیم روی APScheduler بودند: شکستشان فقط لاگ بود."""
+    from mktcore.config import get_settings
+
+    cycle = _job("cycle_notification")
+    assert cycle.hour == get_settings().mkt_schedule_hour
+    assert cycle.minute == 0, "ساعتِ مستندِ اسکن HH:00 است؛ پخشِ دقیقه برایش نیست"
+    # کاری که پیامک می‌فرستد تلاشِ دوباره‌ی خودکار نمی‌گیرد
+    assert cycle.max_attempts == 1
+    retention = _job("retention")
+    assert retention.interval_hours == 6
+
+
+def test_cycle_notification_without_a_session_is_skipped_with_the_reason(db, monkeypatch):
+    import api.scheduler as scheduler
+
+    monkeypatch.setattr(
+        scheduler, "run_cycle_scan",
+        lambda: {"status": "no_session", "پیام": "هیچ نشست تحلیل‌شده‌ای برای اسکن وجود ندارد."},
+    )
+    result = run_job("cycle_notification", db_path=db)
+    assert result["status"] == JobRun.STATUS_SKIPPED
+    assert "نشست" in result["note_fa"]
+
+
+def test_cycle_notification_records_the_scan_summary(db, monkeypatch):
+    import api.scheduler as scheduler
+
+    summary = {"status": "ok", "session_id": "s1", "بررسی‌شده": 4, "ثبت‌شده": 2,
+               "ارسال_واقعی": 0, "حالت": "آزمایشی (بدون ارسال)"}
+    monkeypatch.setattr(scheduler, "run_cycle_scan", lambda: dict(summary))
+    result = run_job("cycle_notification", db_path=db)
+    assert result["status"] == JobRun.STATUS_SUCCEEDED
+    assert result["result"] == summary
+
+
+def test_a_failed_cycle_scan_is_dead_letter_on_the_first_attempt(db, monkeypatch):
+    """پیامکی که «در حال ارسال» ادعا شده، با تلاشِ دوباره دو بار نمی‌رود — شکست دیده می‌شود."""
+    import api.scheduler as scheduler
+
+    def boom():
+        raise RuntimeError("پنل پیامکی جواب نداد")
+
+    monkeypatch.setattr(scheduler, "run_cycle_scan", boom)
+    result = run_job("cycle_notification", db_path=db)
+    assert result["status"] == JobRun.STATUS_DEAD_LETTER
+    assert result["attempt"] == 1
+    assert [r["job_name"] for r in dead_letter_runs(db_path=db)] == ["cycle_notification"]
+
+
+def test_retention_job_runs_the_store_policy(db, monkeypatch):
+    from api.persistence import store
+
+    calls = []
+    monkeypatch.setattr(
+        store, "run_retention",
+        lambda **kw: calls.append(kw) or {"raw_pruned": 0, "archived": 0, "deleted": 0, "jobs_pruned": 0},
+    )
+    result = run_job("retention", db_path=db)
+    assert result["status"] == JobRun.STATUS_SUCCEEDED
+    assert calls == [{}], "با پیش‌فرض‌های تنظیمات (۰ = هرگز) — نه پارامترِ دست‌ساز"
+
+
+class _FakeScheduler:
+    def __init__(self, *args, **kwargs):
+        self.jobs: dict[str, dict] = {}
+        self.started = False
+
+    def add_job(self, func, trigger, *, id, replace_existing=False, **fields):  # noqa: A002
+        self.jobs[id] = {"trigger": trigger, **fields}
+
+    def start(self):
+        self.started = True
+
+    def shutdown(self, wait=False):
+        self.started = False
+
+    def get_job(self, job_id):
+        return None
+
+
+def test_the_scheduler_registers_every_job_only_through_run_job(monkeypatch):
+    """هیچ `add_job`ِ مستقیم نمانده: همه با شناسه‌ی `job-<name>` و از راهِ runner."""
+    import sys
+    import types
+
+    import api.scheduler as scheduler
+
+    from mktcore.config import get_settings
+
+    fake_module = types.ModuleType("apscheduler.schedulers.background")
+    fake_module.BackgroundScheduler = _FakeScheduler
+    monkeypatch.setitem(sys.modules, "apscheduler.schedulers.background", fake_module)
+    monkeypatch.setattr(get_settings(), "mkt_scheduler_enable", True, raising=False)
+    monkeypatch.setattr(scheduler, "_scheduler", None)
+
+    assert scheduler.start_scheduler() is True
+    try:
+        sched = scheduler._scheduler
+        assert set(sched.jobs) == {f"job-{job.name}" for job in SCHEDULED_JOBS}
+        assert "cycle-scan" not in sched.jobs and "session-cleanup" not in sched.jobs
+        cycle = sched.jobs["job-cycle_notification"]
+        assert cycle["trigger"] == "cron"
+        assert cycle["hour"] == get_settings().mkt_schedule_hour and cycle["minute"] == 0
+        assert sched.jobs["job-retention"] == {"trigger": "interval", "hours": 6}
+        status = scheduler.scheduler_status()
+        assert status["running"] is True and "next_run" in status
+    finally:
+        scheduler.stop_scheduler()
