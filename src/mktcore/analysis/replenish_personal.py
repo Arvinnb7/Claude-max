@@ -112,7 +112,6 @@ def personal_cadence_table(
         )
 
     quantity = columns.quantity if columns.quantity in work.columns else None
-    pack = columns.pack_size if columns.pack_size in work.columns else None
     revenue = columns.revenue if columns.revenue in work.columns else None
 
     rows: list[dict] = []
@@ -123,8 +122,6 @@ def personal_cadence_table(
             agg[quantity] = "sum"
         if revenue:
             agg[revenue] = "sum"
-        if pack:
-            agg[pack] = "max"
         daily = (
             group.groupby("_date").agg(agg).sort_index() if agg
             else group[["_date"]].drop_duplicates().set_index("_date").sort_index()
@@ -151,13 +148,12 @@ def personal_cadence_table(
                 typical_qty = float(qty_series.iloc[:-1].median()) if len(qty_series) > 1 else None
                 if typical_qty is None or not np.isfinite(typical_qty) or typical_qty <= 0:
                     typical_qty = float(qty_series.median())
-        pack_size = None
-        if pack:
-            pack_series = pd.to_numeric(daily[pack], errors="coerce")
-            pack_size = float(pack_series.max()) if pack_series.notna().any() else None
+        # مبنا مقدارِ معمولِ **خودِ** مشتری برای همین کالاست، در همان واحدِ آخرین خرید؛ نسبتِ
+        # last/typical از واحد مستقل است، پس اندازه‌ی بسته به `pack_adjusted_gap` داده
+        # نمی‌شود (وگرنه فقط یک طرف به «چند بسته» تبدیل می‌شد و فاصله به صفر می‌رسید).
         adjusted, pack_reason = pack_adjusted_gap(
             interval, quantity_milli=last_qty,
-            baseline_quantity_milli=typical_qty, pack_size_milli=pack_size,
+            baseline_quantity_milli=typical_qty, pack_size_milli=None,
         )
         expected = float(adjusted if adjusted is not None else interval)
         level, confidence = evidence_level(personal_product_gaps=len(gaps))

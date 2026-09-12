@@ -309,7 +309,8 @@ def generate_replenishment_sales(
     آهنگِ ثابتِ شخصی از {۲۱، ۳۵، ۶۰، ۹۰} روز (± نویزِ کوچک) می‌خرد؛ ۱۰٪ خریدها
     «انباری»‌اند (مقدار ۳ ⇒ فاصله‌ی بعدی ×۳)؛ ۱۰٪ مشتری‌ها در میانه‌ی راه می‌روند.
     میانه‌ی جمعیتِ هر کالا عمداً از آهنگِ اکثرِ خریدارانش دور است تا قهرمانِ
-    «میانه‌ی کالا» چیزی برای باختن داشته باشد.
+    «میانه‌ی کالا» چیزی برای باختن داشته باشد. نویز ±۱۲٪ آهنگ و ۱۲٪ چرخه‌ی جاافتاده
+    (خریدِ جای دیگر) تا برچسبِ «خرید در بازه» ساختاراً یک نباشد.
     """
     rng = np.random.default_rng(seed)
     dates = pd.date_range(start=start, periods=days, freq="D")
@@ -323,7 +324,7 @@ def generate_replenishment_sales(
         region = str(rng.choice(REGIONS, p=[0.40, 0.18, 0.16, 0.14, 0.12]))
         n_products = int(rng.integers(1, 3))
         chosen = rng.choice(len(products), size=n_products, replace=False)
-        churn_day = days if rng.random() >= 0.10 else int(rng.integers(days // 3, days))
+        churn_day = days if rng.random() >= 0.15 else int(rng.integers(days // 3, days))
         for p_index in chosen:
             product = products[int(p_index)]
             cadence = float(rng.choice(_PERSONAL_CADENCES))
@@ -352,7 +353,10 @@ def generate_replenishment_sales(
                     row["بهای تمام شده"] = round(CONSUMABLES[product] * 0.62 * qty)
                 rows.append(row)
                 order_counter += 1
-                gap = max(2.0, rng.normal(cadence, 2.0)) * (3.0 if stock_up else 1.0)
+                # نویزِ واقع‌گرایانه: ±۱۲٪ آهنگ؛ گاهی یک چرخه جا می‌افتد (مسافرت، خریدِ جای دیگر)
+                gap = max(2.0, rng.normal(cadence, 0.12 * cadence)) * (3.0 if stock_up else 1.0)
+                if rng.random() < 0.12:
+                    gap *= 2.0
                 day += int(round(gap))
     frame = pd.DataFrame(rows).sort_values("تاریخ", kind="stable").reset_index(drop=True)
     return frame

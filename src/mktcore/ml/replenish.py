@@ -7,7 +7,8 @@
 
 واحدِ سنجش: (مشتری، کالا، تاریخِ عکس). هر طرف برای جفت یک سررسید و یک **بازه‌ی ادعا**
 (±۲۵٪ فاصله‌ی خودش — تصمیمِ کاربر) دارد؛ «برد» یعنی مشتری همان کالا را داخلِ همان
-بازه خرید. ردیفی شمرده می‌شود که بازه‌ی ادعای **هر دو** طرف تا پایانِ داده پوشیده باشد.
+بازه خرید. ردیفی شمرده می‌شود که بازه‌ی ادعای **هر دو** طرف تا پایانِ داده پوشیده و هنوز
+نگذشته باشد (بازه‌ی گذشته «ادعا» نیست و برچسبش ساختاراً صفر می‌شد).
 سنجه‌ی اقتصادی: درآمدِ (یا با پوششِ کاملِ بها، سودِ) خریدهای داخلِ بازه در K تای اولِ
 رتبه‌بندیِ هر طرف. نامِ کلیدِ سنجه مبنایش را می‌گوید؛ فایلِ واقعی بها ندارد.
 
@@ -78,6 +79,10 @@ class ReplenishSpec:
     bootstrap_samples: int = 400
     bootstrap_quantile: float = 0.05
     max_calibration_bin_error: float = 0.15
+    # کفِ تفکیک: امتیازِ کالیبره باید نتیجه‌ها را از هم جدا کند — فاصله‌ی نرخِ واقعی بین
+    # پرجمعیت‌ترین بین‌های اطمینان (≥ ۲۰ ردیف) دست‌کم این‌قدر. پیش‌بینیِ ثابت (بی‌مهارت) یک بین
+    # دارد و رد می‌شود، حتی اگر قهرمان آن‌قدر ضعیف باشد که به‌راحتی «ببرد».
+    min_bin_spread: float = 0.15
 
     def with_params(self, params: dict[str, Any] | None) -> ReplenishSpec:
         if not params:
@@ -154,7 +159,8 @@ def build_pair_period(lines: pd.DataFrame, spec: ReplenishSpec) -> pd.DataFrame:
         )
         if table.empty:
             continue
-        cycles = _champion_cycles(past)
+        # قهرمانِ تولیدی برگشت‌ها را نمی‌بیند (فریمِ تحلیل فقط خرید دارد)؛ همان را بازسازی می‌کنیم
+        cycles = _champion_cycles(past[~past["is_return"].astype(bool)])
         rows: list[dict] = []
         for (customer, product), row in table.iterrows():
             customer, product = int(customer), int(product)
@@ -169,9 +175,10 @@ def build_pair_period(lines: pd.DataFrame, spec: ReplenishSpec) -> pd.DataFrame:
                 offset = elapsed - cycle
                 near = max(3.0, 0.2 * cycle)
                 claimed = offset >= -near
-                # قهرمان در بهترین حالتش: نزدیک‌ترین به سررسیدِ خودش اول (سخت‌گیرانه‌تر از
-                # ترتیبِ تولیدیِ «عقب‌افتاده‌ترین اول» که برای مقایسه جداگانه ثبت می‌شود)
-                champion_score = -abs(offset) if claimed else CHAMPION_UNCLAIMED
+                # قهرمان در بهترین حالتش: «سررسیدِ پیشِ رو اول» (کم‌ترین عقب‌افتادگی)، چون
+                # بازه‌ی ادعای این جفت‌ها هنوز پیشِ روست؛ ترتیبِ تولیدیِ «عقب‌افتاده‌ترین اول»
+                # جداگانه ثبت می‌شود (بازه‌ی آن‌ها گذشته و ساختاراً چیزی نمی‌گیرد).
+                champion_score = -offset if claimed else CHAMPION_UNCLAIMED
                 champion_offset_score = offset if claimed else CHAMPION_UNCLAIMED
                 cp_due = last + pd.Timedelta(days=cycle)
                 cp_half = spec.window_fraction * cycle
@@ -179,7 +186,13 @@ def build_pair_period(lines: pd.DataFrame, spec: ReplenishSpec) -> pd.DataFrame:
             else:
                 champion_score = champion_offset_score = CHAMPION_UNCLAIMED
                 cp_start = cp_end = None
-            covered = ch_end <= data_max and (cp_end is None or cp_end <= data_max)
+            # ردیف فقط وقتی سنجیدنی است که بازه‌ی ادعای هر دو طرف (۱) تا پایانِ داده پوشیده و
+            # (۲) هنوز **نگذشته** باشد؛ بازه‌ای که پیش از عکس تمام شده «ادعا» نیست و برچسبش
+            # ساختاراً صفر می‌شد — همان چیزی که یک مدعیِ بی‌مهارت می‌توانست یاد بگیرد.
+            covered = (
+                ch_end <= data_max and ch_end > stamp
+                and (cp_end is None or (cp_end <= data_max and cp_end > stamp))
+            )
             hit_ch, value_ch = _window_hits(future, customer, product, max(ch_start, stamp), ch_end, value_col)
             if cp_end is not None:
                 hit_cp, value_cp = _window_hits(future, customer, product, max(cp_start, stamp), cp_end, value_col)
@@ -316,9 +329,14 @@ def evaluate_replenish(
             or (baseline_top <= 0 and model_top > 0)
         )
     )
+    # کفِ تفکیک: با قهرمانِ غایب یا ضعیف، مدعیِ بی‌مهارت هم می‌توانست «ببرد»؛ امتیازِ
+    # کالیبره باید بین‌هایی با نرخِ واقعیِ متفاوت داشته باشد (پیش‌بینیِ ثابت یک بین دارد).
+    order_ch = np.argsort(-score_ch, kind="stable")[:top_k]
+    populated = [b["واقعی"] for b in bins if b["تعداد"] >= 20]
+    bin_spread = float(max(populated) - min(populated)) if len(populated) >= 2 else 0.0
+    discriminates = bool(bin_spread >= spec.min_bin_spread)
     calibrated = bool(max_bin_error <= spec.max_calibration_bin_error)
 
-    order_ch = np.argsort(-score_ch, kind="stable")[:top_k]
     order_cp = np.argsort(-score_cp, kind="stable")[:top_k]
     hits_30 = validate["label_30d"].to_numpy(dtype=int)
     key = f"topk_captured_{value_basis}_rial"
@@ -336,7 +354,7 @@ def evaluate_replenish(
         key: int(round(model_top)),
         f"baseline_{key}": int(round(baseline_top)),
         f"baseline_by_offset_{key}": int(round(baseline_offset_top)),
-        "baseline_ranking_fa": "نزدیک‌ترین به سررسیدِ خودش اول (بهترین حالتِ قهرمان)؛ ترتیبِ تولیدی «عقب‌افتاده‌ترین اول» جداگانه",
+        "baseline_ranking_fa": "سررسیدِ پیشِ رو اول (بهترین حالتِ قهرمان)؛ ترتیبِ تولیدی «عقب‌افتاده‌ترین اول» جداگانه — بازه‌ی آن‌ها گذشته و ساختاراً چیزی نمی‌گیرد",
         "topk_lift_bp": lift_bp,
         "topk_advantage_lower_rial": None if lower_bound is None else int(round(lower_bound)),
         "topk_hit_precision": round(float(labels[order_ch].mean()), 4) if len(labels) else None,
@@ -350,13 +368,15 @@ def evaluate_replenish(
             else "بها در داده نیست؛ سنجه درآمدی است نه سودی."
         ),
         "max_calibration_bin_error": round(float(max_bin_error), 4),
+        "bin_spread": round(bin_spread, 4),
         "reliability_bins": bins,
         "gates": {
             "beats_baseline_brier": beats_brier,
             "beats_baseline_topk": beats_topk,
+            "discriminates": discriminates,
             "calibrated": calibrated,
         },
-        "passed": bool(beats_brier and beats_topk and calibrated),
+        "passed": bool(beats_brier and beats_topk and discriminates and calibrated),
     }
 
 
@@ -369,6 +389,11 @@ def _rejection_reason(metrics: dict, spec: ReplenishSpec) -> str:
         parts.append(
             "ارزشِ خریدهای داخلِ بازه در K تای اول از میانه‌ی کالا جلو نزد یا اختلافش آماری "
             f"واقعی نبود (حداقل {spec.min_topk_lift_bp / 100:.1f}٪)"
+        )
+    if not gates["discriminates"]:
+        parts.append(
+            f"امتیاز نتیجه‌ها را از هم جدا نمی‌کند (فاصله‌ی نرخِ واقعی بین بین‌ها {metrics['bin_spread']}؛ "
+            f"کف {spec.min_bin_spread})"
         )
     if not gates["calibrated"]:
         parts.append(f"کالیبراسیون خارج از تلرانس است ({metrics['max_calibration_bin_error']})")
@@ -436,11 +461,19 @@ def train_replenish(
         positives = min(int(train["label"].sum()), int(validate["label"].sum()))
     requirements, failing = _requirements(lines, table, spec, positives)
     if failing or train is None or train.empty or validate.empty:
-        code = failing or "too_few_pairs"
-        need = next(r for r in requirements if r["code"] == code)
+        if failing:
+            need = next(r for r in requirements if r["code"] == failing)
+            code = failing
+            reason = f"{need['label_fa']}: {need['available']} موجود، دست‌کم {need['required']} لازم."
+        else:
+            code = "split_unbalanced"
+            reason = (
+                "برشِ زمانی یکی از دو بازو را خالی گذاشت (بیشترِ ردیف‌ها در یک عکس‌اند)؛ "
+                "به عکس‌های بیشتر یا داده‌ی بلندتر نیاز است."
+            )
         return record_run(
             status=ModelRun.STATUS_INSUFFICIENT, blocked_reason_code=code,
-            blocked_reason_fa=f"{need['label_fa']}: {need['available']} موجود، دست‌کم {need['required']} لازم.",
+            blocked_reason_fa=reason,
             metrics_json={"requirements": requirements, "n_rows": int(len(table)),
                           "value_basis": value_basis},
             note_fa=unchanged, **common,

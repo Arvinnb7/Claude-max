@@ -166,3 +166,21 @@ def test_time_of_day_on_the_reference_day_is_not_leakage():
     row = table.loc[("الف", PRODUCT)]
     assert row["elapsed_days"] == 0.0 and row["last_purchase"] == "2024-05-15"
     assert row["gaps_days"] == [43, 47, 45]
+
+
+def test_ledger_pack_size_does_not_collapse_the_interval():
+    """اندازه‌ی بسته (۱۲٫۵ کیلو = ۱۲٬۵۰۰٬۰۰۰ میلی) با مقدارِ «۱ عدد» (۱۰۰۰ میلی) قاطی نمی‌شود:
+    نسبتِ آخرین/معمولِ خودِ مشتری از واحد مستقل است."""
+    ledger = pd.DataFrame({
+        "customer_id": [1, 1, 1, 1],
+        "product_id": [7, 7, 7, 7],
+        "line_date": ["2024-01-01", "2024-02-13", "2024-03-31", "2024-05-15"],
+        "revenue_rial": [10, 10, 10, 10],
+        "quantity_milli": [1000, 1000, 1000, 3000],
+        "pack_size_milli": [12_500_000] * 4,
+        "is_return": [False] * 4,
+    })
+    row = personal_cadence_table(ledger, as_of=AS_OF, columns=LEDGER_COLUMNS).loc[(1, 7)]
+    assert row["expected_interval_days"] == 45.0
+    assert row["pack_adjusted_interval_days"] == 135.0, "۳ عدد در برابر ۱ عددِ معمول ⇒ ×۳، نه ×۰٫۰۰۰۰۸"
+    assert 0 < row["overdue_ratio"] < 1

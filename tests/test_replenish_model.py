@@ -82,7 +82,11 @@ def test_pair_labels_match_actual_same_product_purchases(trained):
     spec = ReplenishSpec()
     table = build_pair_period(lines, spec)
     assert not table.empty and table.attrs["value_basis"] == "revenue"
-    sample = table[table["future_covered"]].iloc[0]
+    covered = table[table["future_covered"]]
+    # همه‌ی ردیف‌های سنجیدنی بازه‌ی بازی دارند: نسبتِ عقب‌افتادگی نمی‌تواند از ۱٫۲۵ گذشته باشد
+    assert (covered["overdue_ratio"] <= 1.25 + 1e-9).all(), "بازه‌ی گذشته «ادعا» نیست"
+    assert covered["label"].sum() > 0 and (covered["label"] == 0).sum() > 0
+    sample = covered[covered["label"] == 1].iloc[0]
     stamp = pd.Timestamp(sample["as_of"])
     lines["_date"] = pd.to_datetime(lines["line_date"])
     pair = lines[(lines["customer_id"] == sample["customer_id"]) & (lines["product_id"] == sample["product_id"])
@@ -93,8 +97,21 @@ def test_pair_labels_match_actual_same_product_purchases(trained):
     due = last + pd.Timedelta(days=interval)
     start, end = max(due - pd.Timedelta(days=0.25 * interval), stamp), due + pd.Timedelta(days=0.25 * interval)
     inside = pair[(pair["_date"] > start) & (pair["_date"] <= end)]
-    assert int(sample["label"]) == int(not inside.empty)
-    assert sample["value_rial"] == float(inside["revenue_rial"].sum())
+    assert int(sample["label"]) == int(not inside.empty) == 1
+    assert sample["value_rial"] == float(inside["revenue_rial"].sum()) > 0
+    # و یک ردیفِ صفر هم با بازمحاسبه صفر است (نه به‌خاطرِ بازه‌ی گذشته)
+    zero = covered[covered["label"] == 0].iloc[0]
+    z_stamp = pd.Timestamp(zero["as_of"])
+    z_pair = lines[(lines["customer_id"] == zero["customer_id"]) & (lines["product_id"] == zero["product_id"])
+                   & (~lines["is_return"].astype(bool))]
+    z_last = z_pair[z_pair["_date"] < z_stamp]["_date"].max()
+    z_interval = float(zero["expected_interval_days"])
+    z_due = z_last + pd.Timedelta(days=z_interval)
+    z_end = z_due + pd.Timedelta(days=0.25 * z_interval)
+    assert z_end > z_stamp
+    z_inside = z_pair[(z_pair["_date"] > max(z_due - pd.Timedelta(days=0.25 * z_interval), z_stamp))
+                      & (z_pair["_date"] <= z_end)]
+    assert z_inside.empty
 
 
 def test_snapshots_stop_before_the_tail_and_features_never_see_the_snapshot(trained):
@@ -112,6 +129,27 @@ def test_snapshots_stop_before_the_tail_and_features_never_see_the_snapshot(trai
 
     with pytest.raises(LeakageError):
         personal_cadence_table(lines, as_of=dates[0], columns=LEDGER_COLUMNS)
+
+
+def test_champion_cycles_ignore_returns_and_only_see_the_past():
+    """قهرمانِ تولیدی برگشت نمی‌بیند؛ و میانه‌اش از داده‌ی پیش از عکس است نه کلِ دفتر."""
+    from mktcore.ml.replenish import _champion_cycles
+
+    rows = []
+    for c in range(20):   # ۲۰ مشتریِ تک‌خرید + برگشت (اگر برگشت شمرده شود، «تکراری» می‌شوند)
+        rows += [(c, 7, "2024-01-10", 100, False), (c, 7, "2024-01-29", -100, True)]
+    for c in range(20, 23):   # سه تکراریِ واقعی با فاصله‌ی ۴۰ روز
+        rows += [(c, 7, "2024-01-05", 100, False), (c, 7, "2024-02-14", 100, False), (c, 7, "2024-03-25", 100, False)]
+    frame = pd.DataFrame(rows, columns=["customer_id", "product_id", "line_date", "revenue_rial", "is_return"])
+    frame["_date"] = pd.to_datetime(frame["line_date"])
+    assert _champion_cycles(frame[~frame["is_return"]]) == {}, "۳ از ۲۳ تکراری < ۰٫۳ ⇒ مصرفی نیست"
+    assert _champion_cycles(frame) == {7: 19.0}, "با برگشت، هر برگشت یک «خریدِ تکراری» جعلی می‌ساخت"
+    table = build_pair_period(frame.drop(columns=["_date"]).assign(
+        quantity_milli=1000, pack_size_milli=None, gross_profit_rial=None, cost_rial=None,
+        unit_price_rial=None, discount_rial=None, discount_rate_bp=None, order_id=None,
+        category=None, branch=None, channel=None,
+    ), ReplenishSpec(period_days=10, tail_days=5, min_gaps=2))
+    assert table.empty or (table["champion_score"] == CHAMPION_UNCLAIMED).all()
 
 
 def test_validation_snapshots_are_later_than_training(trained):
@@ -132,7 +170,9 @@ def test_challenger_beats_the_product_median_champion(trained):
     assert metrics["topk_captured_revenue_rial"] > metrics["baseline_topk_captured_revenue_rial"]
     assert "baseline_by_offset_topk_captured_revenue_rial" in metrics
     assert metrics["brier"] < metrics["brier_baseline"]
+    assert set(metrics["gates"]) == {"beats_baseline_brier", "beats_baseline_topk", "discriminates", "calibrated"}
     assert all(metrics["gates"].values())
+    assert metrics["bin_spread"] >= 0.15
     assert metrics["topk_hit_precision"] > metrics["baseline_topk_hit_precision"]
     assert "±25" in metrics["label_window_fa"]
     assert metrics["coverage"]["pair_snapshots_covered"] >= 500
@@ -170,9 +210,29 @@ def test_champion_score_is_unclaimed_outside_its_near_window(trained):
     unclaimed = table[table["champion_score"] == CHAMPION_UNCLAIMED]
     claimed = table[table["champion_score"] > CHAMPION_UNCLAIMED]
     assert len(unclaimed) and len(claimed)
-    assert (claimed["champion_score"] <= 0).all(), "نزدیک‌ترین به سررسید = صفر، دورتر منفی"
+    assert (claimed["champion_score"] == -claimed["champion_offset_score"]).all(), "سررسیدِ پیشِ رو اول"
     assert (unclaimed["champion_offset_score"] == CHAMPION_UNCLAIMED).all()
     assert (claimed["champion_offset_score"] >= -0.2 * 400).all()
+
+
+def test_a_trivial_challenger_cannot_pass_the_gates(trained):
+    """مدعی‌ای که فقط «نرخِ پایه» را می‌گوید (بی‌مهارت) از کفِ مهارت رد می‌شود."""
+    import numpy as np
+
+    from mktcore.ml.linear_fit import chronological_cut
+    from mktcore.ml.replenish import evaluate_replenish
+
+    spec = ReplenishSpec()
+    full = build_pair_period(_lines(trained["db"]), spec)
+    table = full[full["future_covered"]]
+    split = chronological_cut(table["as_of"], spec.train_fraction)
+    train, validate = table[table["as_of"] < split], table[table["as_of"] >= split]
+    prevalence = float(train["label"].mean())
+    trivial = evaluate_replenish(
+        validate, np.full(len(validate), prevalence), spec=spec, train=train, value_basis="revenue",
+    )
+    assert trivial["passed"] is False
+    assert trivial["gates"]["discriminates"] is False, "پیش‌بینیِ ثابت یک بین دارد و تفکیک نمی‌کند"
 
 
 # ═══════════════════════════════════════════ رجیستری: promote/rollback، بدون score_job
