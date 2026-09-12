@@ -24,6 +24,10 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(_ROOT / "src"))
 
+from mktcore.analysis.validation import (  # noqa: E402
+    POSTING_BLOCKERS,
+    UNKNOWN_MONEY_UNIT_ID,
+)
 from mktcore.campaigns.analysis import VERDICT_LABELS_FA, VERDICT_PROVEN  # noqa: E402
 from mktcore.db.base import now_ts  # noqa: E402
 from mktcore.db.engine import session_scope  # noqa: E402
@@ -63,10 +67,13 @@ from .v1 import (  # noqa: E402
 
 router = APIRouter(prefix="/api/v1", tags=["daily-brief"])
 
-# فرصت‌هایی که «زنده» حساب می‌شوند: هنوز کسی رویشان کار می‌کند یا می‌تواند بکند.
+# فرصت‌هایی که «زنده» حساب می‌شوند (بارِ اپراتور): هنوز کسی رویشان کار می‌کند یا می‌تواند بکند.
 LIVE_STATUSES: tuple[str, ...] = (STATUS_OPEN, STATUS_ACCEPTED, STATUS_SNOOZED)
 
-FORECAST_LABEL_FA = "پیش‌بینیِ درآمد از فرصت‌های زنده — غیرعلّی، هنوز اثبات نشده"
+FORECAST_LABEL_FA = (
+    "پیش‌بینیِ درآمد از فرصت‌های **باز** (همان قاعده‌ی «ارزشِ فهرست» در صندوق) — "
+    "غیرعلّی، هنوز اثبات نشده"
+)
 PROVEN_LABEL_FA = "افزوده‌ی اثبات‌شده — از کمپین‌های با گروه کنترل و حکمِ «اثبات‌شده»"
 NOT_VALIDATED_LABEL_FA = (
     "پیش‌بینیِ قاعده‌محور که هنوز با آزمایش سنجیده نشده — با «اثبات‌شده» جمع نکنید"
@@ -78,7 +85,10 @@ GROSS_PROFIT_UNCHECKED_FA = (
 STOCK_UNCHECKED_FA = "بررسی نشد: داده‌ی موجودی به سیستم داده نشده است."
 NO_RUN_FA = "موتورِ فرصت هنوز اجرا نشده است؛ خروجیِ روزانه بدون اجرا معنا ندارد."
 NO_LEDGER_FA = "هنوز بارگذاری‌ای در دفتر کل ثبت نشده است."
-UNIT_REVIEW_CODES: tuple[str, ...] = ("C04", "C05", "unknown_currency")
+# «بازبینیِ واحدِ مالی» (§۳۸) فقط یعنی واحدِ پولِ نامعلوم (C00)؛ C04/C05 خطای مالیِ
+# دیگری‌اند و با نامِ خودشان گزارش می‌شوند. کدها از خودِ ماژولِ اعتبارسنجی، نه بازنویسی.
+UNIT_REVIEW_CODES: tuple[str, ...] = (UNKNOWN_MONEY_UNIT_ID,)
+BLOCKING_CODES: frozenset[str] = frozenset(POSTING_BLOCKERS) | {UNKNOWN_MONEY_UNIT_ID}
 
 
 # ---------------------------------------------------------------- خلاصه‌ی روزانه
@@ -132,11 +142,13 @@ def daily_brief() -> dict:
 
 
 def _forecast_block(session, business_id: int) -> dict:
-    """جمعِ ارزشِ مورد انتظارِ فرصت‌های زنده‌ی ریالی — همان قاعده‌ی `open_pipeline`."""
+    """جمعِ ارزشِ مورد انتظارِ فرصت‌های **باز**ِ ریالی — بیت‌به‌بیت همان `open_pipeline`
+    صندوق (`GET /api/v1/opportunities`)، تا دو عددِ متفاوت برای یک چیز روی یک صفحه نباشد.
+    پذیرفته‌ها جدا و با نامِ خودشان می‌آیند (§۳۸ «از اقدام‌های پذیرفته‌شده»)."""
     count, total = session.execute(
         select(func.count(Opportunity.id), func.sum(Opportunity.expected_value_rial)).where(
             Opportunity.business_id == business_id,
-            Opportunity.status.in_(LIVE_STATUSES),
+            Opportunity.status == STATUS_OPEN,
             Opportunity.value_kind != VALUE_RELATIONSHIP,
         )
     ).one()
@@ -150,13 +162,13 @@ def _forecast_block(session, business_id: int) -> dict:
     relationship = session.scalar(
         select(func.count(Opportunity.id)).where(
             Opportunity.business_id == business_id,
-            Opportunity.status.in_(LIVE_STATUSES),
+            Opportunity.status == STATUS_OPEN,
             Opportunity.value_kind == VALUE_RELATIONSHIP,
         )
     ) or 0
     return {
         "label_fa": FORECAST_LABEL_FA,
-        "statuses": list(LIVE_STATUSES),
+        "statuses": [STATUS_OPEN],
         "count": int(count or 0),
         "revenue": _money(int(total or 0)),
         "accepted_count": int(accepted_count or 0),
@@ -216,7 +228,7 @@ def _proven_block(session, business_id: int) -> dict:
 
 
 def _groups(session, business_id: int) -> list[dict]:
-    """گروه‌های فرصت به‌ازای نوع — مرتب بر ارزش؛ گروهِ رابطه‌ای فقط با تعداد و در انتها."""
+    """گروه‌های فرصتِ **باز** به‌ازای نوع — مرتب بر ارزش؛ گروهِ رابطه‌ای فقط با تعداد و در انتها."""
     rows = session.execute(
         select(
             Opportunity.kind,
@@ -227,7 +239,7 @@ def _groups(session, business_id: int) -> list[dict]:
         )
         .where(
             Opportunity.business_id == business_id,
-            Opportunity.status.in_(LIVE_STATUSES),
+            Opportunity.status == STATUS_OPEN,
         )
         .group_by(Opportunity.kind, Opportunity.value_kind)
     ).all()
@@ -287,7 +299,11 @@ def _urgent_block(session, business_id: int, as_of: str) -> dict:
         .order_by(ImportBatch.created_at.desc()).limit(1)
     ).first()
     blocked_by = list(_batch_notes(newest).get("blocked_by") or []) if newest is not None else []
-    blocked_codes = sorted({str(b.get("code") if isinstance(b, dict) else b) for b in blocked_by})
+    # شکلِ نوشته‌شده توسط `posting_block_reasons`: dict با `check_id` (نه `code`)
+    blocked_codes = sorted({
+        str(b.get("check_id") or b.get("code") or "?") if isinstance(b, dict) else str(b)
+        for b in blocked_by
+    })
     unit_review = any(code in UNIT_REVIEW_CODES for code in blocked_codes)
     return {
         "expiring_today": int(expiring_today),
@@ -306,6 +322,15 @@ def _urgent_block(session, business_id: int, as_of: str) -> dict:
         "suppressed_by_stock": None,
         "suppressed_by_stock_note_fa": STOCK_UNCHECKED_FA,
     }
+
+
+def _blocked_suffix(u: dict) -> str:
+    if not u["latest_import_blocked"]:
+        return "."
+    codes = "، ".join(u["latest_import_blocked_by"])
+    if u["financial_unit_review_needed"]:
+        return f"؛ آخرین بارگذاری به‌خاطر واحدِ مالیِ نامعلوم مسدود است ({codes})."
+    return f"؛ آخرین بارگذاری به‌خاطر خطای مالیِ مسدودکننده ثبت نشده است ({codes})."
 
 
 def _fmt(money: dict) -> str:
@@ -339,8 +364,7 @@ def _render_text(p: dict) -> str:
         f"- {u['expiring_today']} فرصت امروز منقضی می‌شود ({u['expiring_soon']} تا {u['expiring_soon_days']} روز).",
         f"- {u['vip_entered_at_risk']} مشتریِ ویژه به «در خطر ریزش» رفت.",
         f"- سرکوب به‌خاطر موجودی: {u['suppressed_by_stock_note_fa']}",
-        f"- {u['quarantine_open_rows']} ردیفِ قرنطینه‌ی باز"
-        + ("؛ آخرین بارگذاری به‌خاطر واحدِ مالی مسدود است." if u["financial_unit_review_needed"] else "."),
+        f"- {u['quarantine_open_rows']} ردیفِ قرنطینه‌ی باز" + _blocked_suffix(u),
         f"- {u['dead_letter_runs']} کارِ زمان‌بندی‌شده در صفِ مرده.",
     ]
     return "\n".join(lines)

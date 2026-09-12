@@ -46,7 +46,7 @@ def list_jobs(limit: int = Query(default=50, ge=1, le=200)) -> dict:
             {
                 "name": job.name,
                 "title_fa": job.title_fa,
-                "hour": job.hour,
+                "hour": job.schedule_hour(),
                 "interval_hours": job.interval_hours,
                 "max_attempts": job.max_attempts,
                 "last_run": latest.get(job.name),

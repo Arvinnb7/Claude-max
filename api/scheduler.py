@@ -188,7 +188,7 @@ def _register_pipeline_jobs(sched: Any) -> None:
             continue
         minute = job.minute if job.minute is not None else (index * 7) % 60
         sched.add_job(
-            _make_runner(name), "cron", hour=job.hour, minute=minute,
+            _make_runner(name), "cron", hour=job.schedule_hour(), minute=minute,
             id=f"job-{name}", replace_existing=True,
         )
 
@@ -220,7 +220,7 @@ def scheduler_status() -> dict:
             {
                 "name": job.name,
                 "title_fa": job.title_fa,
-                "hour": job.hour,
+                "hour": job.schedule_hour(),
                 "interval_hours": job.interval_hours,
                 "max_attempts": job.max_attempts,
                 "next_run": _next_run(f"job-{job.name}"),

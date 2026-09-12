@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -19,6 +20,7 @@ from api import brief_api  # noqa: E402
 from api.main import app  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
+from mktcore.analysis.validation import posting_block_reasons  # noqa: E402
 from mktcore.campaigns.assign import ARM_CONTROL, ARM_TREATMENT  # noqa: E402
 from mktcore.db import session_scope  # noqa: E402
 from mktcore.db.base import now_ts  # noqa: E402
@@ -28,10 +30,12 @@ from mktcore.db.models import (  # noqa: E402
     CampaignOutcome,
     Customer,
     CustomerLifecycleEvent,
+    ImportBatch,
     Opportunity,
 )
 from mktcore.lifecycle.states import STATE_AT_RISK, STATE_VIP  # noqa: E402
 from mktcore.opportunities.contract import VALUE_RELATIONSHIP  # noqa: E402
+from mktcore.opportunities.engine import STATUS_OPEN  # noqa: E402
 
 from .conftest import poll_job  # noqa: E402
 
@@ -55,12 +59,12 @@ def _analyzed() -> dict:
     return _cache["payload"]
 
 
-def _live_monetary_total(business_id: int) -> tuple[int, int]:
+def _monetary_total(business_id: int, statuses: tuple[str, ...]) -> tuple[int, int]:
     with session_scope() as session:
         count, total = session.execute(
             select(func.count(Opportunity.id), func.sum(Opportunity.expected_value_rial)).where(
                 Opportunity.business_id == business_id,
-                Opportunity.status.in_(brief_api.LIVE_STATUSES),
+                Opportunity.status.in_(statuses),
                 Opportunity.value_kind != VALUE_RELATIONSHIP,
             )
         ).one()
@@ -124,10 +128,14 @@ def test_brief_forecast_comes_from_live_opportunities_and_is_labelled_non_causal
     body = client.get("/api/v1/daily-brief").json()
     assert body["available"] is True
     assert body["as_of"] and body["data_through"]
-    count, total = _live_monetary_total(business_id)
+    count, total = _monetary_total(business_id, (STATUS_OPEN,))
     assert body["valid_opportunities"] == count
     assert body["forecast"]["count"] == count
     assert body["forecast"]["revenue"]["rial"] == total
+    # همان عددِ صندوق: دو عددِ متفاوت برای «ارزشِ فهرست» روی یک صفحه ممنوع
+    inbox = client.get("/api/v1/opportunities", params={"status": "open", "limit": 1}).json()
+    assert body["forecast"]["revenue"]["rial"] == inbox["open_pipeline"]["rial"]
+    assert body["forecast"]["statuses"] == [STATUS_OPEN]
     assert set(body["forecast"]["revenue"]) == _MONEY_KEYS
     assert "غیرعلّی" in body["forecast"]["label_fa"]
     # سودِ هر فرصت محاسبه نمی‌شود ⇒ «بررسی نشد»، نه صفر
@@ -225,6 +233,52 @@ def test_brief_urgent_block_reports_transitions_and_never_guesses_stock():
             )
 
 
+def test_brief_reads_blocking_codes_the_way_the_importer_writes_them():
+    """`blocked_by` با `check_id` نوشته می‌شود؛ واحدِ نامعلوم = C00، نه رشته‌ای که وجود ندارد."""
+    _analyzed()
+    business_id = _business_id()
+    reasons = posting_block_reasons(None, file_currency="دلار")
+    assert [r["check_id"] for r in reasons] == ["C00"]
+    with session_scope() as session:
+        batch = ImportBatch(
+            business_id=business_id, dataset_key="test", filename="blocked-unit.xlsx", reconcile_status="BLOCKED",
+            notes_json=json.dumps({"posted": False, "blocked_by": reasons}, ensure_ascii=False),
+        )
+        session.add(batch)
+        session.flush()
+        batch_id = batch.id
+    try:
+        body = client.get("/api/v1/daily-brief").json()
+        urgent = body["urgent"]
+        assert urgent["latest_import_blocked"] is True
+        assert urgent["latest_import_blocked_by"] == ["C00"]
+        assert urgent["financial_unit_review_needed"] is True
+        assert "واحدِ مالیِ نامعلوم" in body["text_fa"] and "C00" in body["text_fa"]
+    finally:
+        with session_scope() as session:
+            session.execute(delete(ImportBatch).where(ImportBatch.id == batch_id))
+
+    # C04/C05 مسدود می‌کنند ولی «واحدِ مالی» نیستند — با نامِ خودشان گزارش می‌شوند
+    with session_scope() as session:
+        batch = ImportBatch(
+            business_id=business_id, dataset_key="test", filename="blocked-sign.xlsx", reconcile_status="BLOCKED",
+            notes_json=json.dumps({"posted": False, "blocked_by": [
+                {"check_id": "C04", "title": "علامت", "detail": "وارونه"},
+            ]}, ensure_ascii=False),
+        )
+        session.add(batch)
+        session.flush()
+        batch_id = batch.id
+    try:
+        body = client.get("/api/v1/daily-brief").json()
+        assert body["urgent"]["latest_import_blocked_by"] == ["C04"]
+        assert body["urgent"]["financial_unit_review_needed"] is False
+        assert "خطای مالیِ مسدودکننده" in body["text_fa"] and "C04" in body["text_fa"]
+    finally:
+        with session_scope() as session:
+            session.execute(delete(ImportBatch).where(ImportBatch.id == batch_id))
+
+
 def test_brief_without_an_engine_run_says_so_instead_of_reporting_zeros(monkeypatch):
     _analyzed()
     monkeypatch.setattr(brief_api, "_latest_as_of", lambda session, business_id: None)
@@ -261,7 +315,7 @@ def test_operator_load_buckets_partition_the_live_opportunities():
     try:
         body = client.get("/api/v1/operator-load").json()
         assert body["available"] is True
-        count, _ = _live_monetary_total(business_id)
+        count, _ = _monetary_total(business_id, brief_api.LIVE_STATUSES)
         with session_scope() as session:
             relational = session.scalar(
                 select(func.count(Opportunity.id)).where(

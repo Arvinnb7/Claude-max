@@ -65,9 +65,20 @@ class ScheduledJob:
     # دقیقه‌ی اجرا؛ `None` یعنی زمان‌بند خودش دقیقه‌ها را پخش می‌کند تا چند
     # تراکنشِ سنگین روی یک فایل SQLite هم‌زمان نشوند.
     minute: int | None = None
+    # نامِ تنظیمی که ساعت را می‌دهد (مثلِ `mkt_schedule_hour`) — در لحظه‌ی ثبت
+    # خوانده می‌شود، نه در لحظه‌ی import؛ وگرنه ساعتِ منجمد با تنظیمات واگرا می‌شد.
+    hour_setting: str | None = None
 
     def __call__(self, **kwargs: Any) -> Any:
         return self.run(**kwargs)
+
+    def schedule_hour(self) -> int | None:
+        """ساعتِ اجرا — ثابتِ کار، یا مقدارِ **فعلیِ** تنظیمات اگر به تنظیمی وصل است."""
+        if self.hour_setting is None:
+            return self.hour
+        from mktcore.config import get_settings
+
+        return int(getattr(get_settings(), self.hour_setting))
 
 
 # ------------------------------------------------------------------ کارها
@@ -275,12 +286,6 @@ def _job_retention(*, correlation_id: str | None = None) -> dict:
     return store.run_retention()
 
 
-def _schedule_hour() -> int:
-    from mktcore.config import get_settings
-
-    return int(get_settings().mkt_schedule_hour)
-
-
 SCHEDULED_JOBS: tuple[ScheduledJob, ...] = (
     ScheduledJob(
         name="opportunity_generation",
@@ -331,7 +336,7 @@ SCHEDULED_JOBS: tuple[ScheduledJob, ...] = (
         name="cycle_notification",
         title_fa="اسکنِ روزانه‌ی چرخه‌ی خرید و ثبتِ یادآوری",
         run=_job_cycle_notification,
-        hour=_schedule_hour(),
+        hour_setting="mkt_schedule_hour",
         minute=0,
         # کاری که پیامک می‌فرستد تلاشِ دوباره‌ی خودکار نمی‌گیرد؛ ردیفِ «در حال
         # ارسال»ِ ادعاشده، اجرای فردا را از تکرار بازمی‌دارد و شکست دیده می‌شود.

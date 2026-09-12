@@ -52,18 +52,24 @@ export default function OpsHealth() {
   );
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [load_, setLoad_] = useState<OperatorLoad | null>(null);
+  const [operatorLoad, setOperatorLoad] = useState<OperatorLoad | null>(null);
+  const [operatorError, setOperatorError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
+    // بارِ اپراتورها جدا خوانده می‌شود: خطای یک پنلِ کمکی نباید فهرستِ کارها و
+    // هشدارِ صفِ مرده — نمای ایمنیِ عملیات — را پنهان کند.
+    void getOperatorLoad()
+      .then((ops) => {
+        setOperatorLoad(ops);
+        setOperatorError(null);
+      })
+      .catch((e: unknown) =>
+        setOperatorError(e instanceof Error ? e.message : "خطا در خواندن بارِ اپراتورها"),
+      );
     try {
-      const [list, dlq, ops] = await Promise.all([
-        listJobs(),
-        listDeadLetter(),
-        getOperatorLoad(),
-      ]);
+      const [list, dlq] = await Promise.all([listJobs(), listDeadLetter()]);
       setJobs(list.jobs ?? []);
       setDead(dlq);
-      setLoad_(ops);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "خطا در خواندن وضعیت کارها");
@@ -85,7 +91,8 @@ export default function OpsHealth() {
 
   return (
     <div className="space-y-4">
-      {load_ && <OperatorLoadPanel data={load_} />}
+      {operatorError && <Alert tone="warn">{operatorError}</Alert>}
+      {operatorLoad && <OperatorLoadPanel data={operatorLoad} />}
 
       {dead.count > 0 && (
         <Alert tone="error">
@@ -226,7 +233,14 @@ function alertCount(run: { result: unknown } | null): number {
  * نشان داده نمی‌شود — فقط شمارِ واقعیِ کارهای زنده‌اش.
  */
 function OperatorLoadPanel({ data }: { data: OperatorLoad }) {
-  if (!data.available) return null;
+  if (!data.available) {
+    return (
+      <Card>
+        <SectionTitle title="بارِ اپراتورها" />
+        <Alert tone="info">{data.reason_fa}</Alert>
+      </Card>
+    );
+  }
   return (
     <Card>
       <SectionTitle

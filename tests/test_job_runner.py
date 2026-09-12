@@ -197,7 +197,7 @@ def test_the_six_missing_section_28_jobs_are_registered():
 def test_every_job_has_a_persian_title_and_a_schedule():
     for job in SCHEDULED_JOBS:
         assert job.title_fa.strip(), job.name
-        assert (job.hour is not None) or (job.interval_hours is not None), job.name
+        assert (job.schedule_hour() is not None) or (job.interval_hours is not None), job.name
         assert job.max_attempts >= 1
 
 
@@ -358,7 +358,10 @@ def test_the_two_jobs_that_bypassed_the_runner_are_now_registered():
     from mktcore.config import get_settings
 
     cycle = _job("cycle_notification")
-    assert cycle.hour == get_settings().mkt_schedule_hour
+    assert cycle.schedule_hour() == get_settings().mkt_schedule_hour
+    assert cycle.hour is None and cycle.hour_setting == "mkt_schedule_hour", (
+        "ساعت در لحظه‌ی ثبت از تنظیمات خوانده می‌شود، نه منجمد در import"
+    )
     assert cycle.minute == 0, "ساعتِ مستندِ اسکن HH:00 است؛ پخشِ دقیقه برایش نیست"
     # کاری که پیامک می‌فرستد تلاشِ دوباره‌ی خودکار نمی‌گیرد
     assert cycle.max_attempts == 1
@@ -447,6 +450,8 @@ def test_the_scheduler_registers_every_job_only_through_run_job(monkeypatch):
     fake_module.BackgroundScheduler = _FakeScheduler
     monkeypatch.setitem(sys.modules, "apscheduler.schedulers.background", fake_module)
     monkeypatch.setattr(get_settings(), "mkt_scheduler_enable", True, raising=False)
+    # ساعتِ تنظیمات عوض می‌شود تا معلوم شود ساعتِ ثبت‌شده **زنده** خوانده می‌شود
+    monkeypatch.setattr(get_settings(), "mkt_schedule_hour", 11, raising=False)
     monkeypatch.setattr(scheduler, "_scheduler", None)
 
     assert scheduler.start_scheduler() is True
@@ -456,7 +461,7 @@ def test_the_scheduler_registers_every_job_only_through_run_job(monkeypatch):
         assert "cycle-scan" not in sched.jobs and "session-cleanup" not in sched.jobs
         cycle = sched.jobs["job-cycle_notification"]
         assert cycle["trigger"] == "cron"
-        assert cycle["hour"] == get_settings().mkt_schedule_hour and cycle["minute"] == 0
+        assert cycle["hour"] == 11 and cycle["minute"] == 0
         assert sched.jobs["job-retention"] == {"trigger": "interval", "hours": 6}
         status = scheduler.scheduler_status()
         assert status["running"] is True and "next_run" in status
