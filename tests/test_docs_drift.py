@@ -359,3 +359,60 @@ def test_gap_audit_never_calls_an_existing_required_doc_missing():
         for name in ("OPERATIONS_RUNBOOK", "SECURITY_AND_PRIVACY", "DATA_DICTIONARY",
                      "SOURCE_MAPPING_GUIDE", "API_GUIDE", "EXPERIMENTATION_GUIDE", "MODEL_CARDS"):
             assert not (name in line and (docs_dir / f"{name}.md").exists()), line
+
+
+# ═══════════════════════════════════════ حسابرسی §۵.۱ — هر هفت بند، پین‌شده به کد
+_AUDIT = _ROOT / "docs" / "revenue-intelligence" / "CURRENT_SYSTEM_AUDIT.md"
+
+def test_the_audit_covers_every_item_of_section_5_1():
+    """§۵.۱ هفت بند دارد؛ حسابرسیِ اول چهارتایش را نداشت."""
+    text = _AUDIT.read_text(encoding="utf-8")
+    for heading in (
+        "بک‌اند: ماژول‌ها و جریانِ درخواست",
+        "فرانت‌اند: مسیرها و وضعیت",
+        "پایگاه‌داده: فناوری، طرح‌واره، مهاجرت، ایندکس‌ها، چرخه‌ی اتصال",
+        "کارهای پس‌زمینه، زمان‌بند، صف، Redis، تلاشِ دوباره",
+        "ناظرِ فایل و رفتارِ ورود",
+        "احراز هویت و مجوز",
+        "لاگ، پایش، CI و استقرار",
+    ):
+        assert heading in text, f"بندِ «{heading}» در حسابرسی نیست"
+    # پاسخ‌های صریح، نه سکوت: صف/Redis و ناظرِ فایل «ندارد» گفته می‌شوند
+    assert "صف و Redis: ندارد" in text
+    assert "ناظرِ فایل ندارد" in text
+    assert "از حسابرسیِ اول تغییر کرده" in text
+
+
+def test_the_audit_index_table_matches_the_metadata():
+    """شمارِ ایندکس + قیدِ یکتاییِ هر جدول از `Base.metadata` می‌آید، نه از حافظه."""
+    text = _AUDIT.read_text(encoding="utf-8")
+    documented = {
+        name: fa_count.translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789"))
+        for name, fa_count in re.findall(r"\| `([a-z_]+)` \| ([۰-۹]+) (?=\|)", text)
+    }
+    expected = {}
+    for table in Base.metadata.tables.values():
+        names = {i.name for i in table.indexes} | {
+            c.name or f"uq_{table.name}_{'_'.join(col.name for col in c.columns)}"
+            for c in table.constraints if c.__class__.__name__ == "UniqueConstraint"
+        }
+        expected[table.name] = str(len(names))
+    assert documented == expected, {
+        k: (documented.get(k), expected.get(k))
+        for k in set(documented) | set(expected) if documented.get(k) != expected.get(k)
+    }
+
+
+def test_the_runbook_lists_every_scheduled_job_by_name():
+    from mktcore.jobs import SCHEDULED_JOBS  # noqa: PLC0415
+
+    text = _RUNBOOK.read_text(encoding="utf-8")
+    missing = [job.name for job in SCHEDULED_JOBS if f"`{job.name}`" not in text]
+    assert not missing, f"کارهای زمان‌بندی‌شده‌ی بی‌نام در راهنما: {missing}"
+    assert "daily-brief" in text
+
+
+def test_target_architecture_records_the_phase_6_operational_decisions():
+    text = _TARGET.read_text(encoding="utf-8")
+    for topic in ("ظرفیتِ هر اپراتور", "خروجیِ اجراییِ روزانه", "اسکنِ چرخه و نگه‌داری", "صف/Redis/ناظرِ فایل"):
+        assert topic in text, f"تصمیمِ «{topic}» در معماری هدف ثبت نشده"

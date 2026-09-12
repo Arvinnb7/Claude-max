@@ -134,12 +134,39 @@ curl -s localhost:8000/api/v1/ops/jobs | jq '.jobs[] | {name, last_run: .last_ru
 curl -s localhost:8000/api/v1/ops/jobs/dead-letter | jq '.runs[] | {job_name, attempt, error_first_line, note_fa}'
 ```
 
+کارهای زمان‌بندی‌شده (همه از راهِ `run_job`؛ نام‌ها همان `mktcore.jobs.SCHEDULED_JOBS`):
+
+| نام | چه می‌کند | زمان |
+|---|---|---|
+| `opportunity_generation` | تولیدِ روزانه‌ی فرصت‌ها | ۰۷:۰۰ |
+| `opportunity_expiration` | انقضای فرصت‌ها + بستنِ خریده‌شده‌ها | ۰۶:۰۰ |
+| `outcome_matching` | تطبیقِ نتیجه‌ی کمپین‌ها | ۰۵:۰۰ |
+| `campaign_analysis` | به‌روزرسانیِ جدولِ اثرِ آموخته‌شده | ۰۵:۰۰ |
+| `model_retraining` | بازآموزیِ مدل‌ها (فقط مدعی) | ۰۳:۰۰ |
+| `drift_monitoring` | پایشِ انحرافِ مدل‌های فعال | ۰۴:۰۰ |
+| `retry_sweep` | جاروکشِ تلاش‌ها و هرسِ دفترِ اجرا | هر ۱۵ دقیقه |
+| `cycle_notification` | اسکنِ چرخه‌ی خرید و ثبت/ارسالِ یادآوری (`MKT_SCHEDULE_HOUR`؛ بدون تلاشِ دوباره) | ساعتِ تنظیمات:۰۰ |
+| `retention` | هرسِ فایل‌های سنگینِ نشست‌ها طبق سیاستِ نگه‌داری | هر ۶ ساعت |
+
+دقیقه‌ی کارهای ساعتی عمداً پخش شده است تا چند تراکنشِ سنگین روی یک فایل SQLite
+هم‌زمان نشوند؛ فقط اسکنِ چرخه سرِ دقیقه‌ی صفر می‌ماند (ساعتِ مستند).
+
 کارِ «مرده» خودبه‌خود دوباره اجرا **نمی‌شود**. علت را رفع کنید و بعد:
 
 ```bash
 curl -X POST -H "X-API-Token: $MKT_API_TOKEN" \
   localhost:8000/api/v1/ops/jobs/runs/<run_id>/retry
 ```
+
+### خروجیِ روزانه را از کجا بخوانم
+
+```bash
+curl -s localhost:8000/api/v1/daily-brief | jq -r '.text_fa'
+curl -s localhost:8000/api/v1/operator-load | jq '.operators[] | {assigned_to, count, expiring_soon}'
+```
+
+«پیش‌بینی» و «اثبات‌شده» دو عددِ جدا با دو منبعِ جدا هستند؛ جمعشان نکنید.
+`available: false` یعنی موتورِ فرصت هنوز اجرا نشده — نه اینکه چیزی صفر باشد.
 
 ### یک درخواست کند یا خطادار بود
 
