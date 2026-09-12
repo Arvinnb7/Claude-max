@@ -29,6 +29,7 @@ import {
 import { exportUrl, reportUrl } from "@/lib/api";
 import { CampaignTab, CycleTab, DiagnosticsTab, PerformanceTab, ProductsTab } from "./AdvancedTabs";
 import CampaignImpact from "./CampaignImpact";
+import DailyBrief from "./DailyBrief";
 import CustomerDirectory from "./CustomerDirectory";
 import ModelHealth from "./ModelHealth";
 import OpsHealth from "./OpsHealth";
@@ -269,7 +270,12 @@ export default function Dashboard({
       {tab === "diagnostics" && (
         <DiagnosticsTab data={data} unit={unit} sessionId={sessionId} />
       )}
-      {tab === "opportunities" && <OpportunityInbox />}
+      {tab === "opportunities" && (
+        <div className="space-y-4">
+          <DailyBrief />
+          <OpportunityInbox />
+        </div>
+      )}
       {tab === "campaigns" && <CampaignImpact />}
       {tab === "customers" && <CustomerDirectory />}
       {tab === "models" && <ModelHealth />}

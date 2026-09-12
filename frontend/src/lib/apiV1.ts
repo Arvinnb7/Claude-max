@@ -1035,3 +1035,105 @@ export async function retryJobRun(runId: number): Promise<JobRun> {
     await apiFetch(`${BASE}/api/v1/ops/jobs/runs/${runId}/retry`, { method: "POST" }),
   );
 }
+
+// ------------------------------------------------------------ §۳۸ خروجیِ روزانه
+export type BriefGroup = {
+  kind: string;
+  opportunities: number;
+  customers: number;
+  value_kind: string;
+  forecast_revenue: Money;
+  forecast_gross_profit: Money;
+  gross_profit_note_fa: string;
+};
+
+export type DailyBrief =
+  | { available: false; reason_fa: string }
+  | {
+      available: true;
+      as_of: string;
+      data_through: string | null;
+      generated_at: number;
+      valid_opportunities: number;
+      forecast: {
+        label_fa: string;
+        statuses: string[];
+        count: number;
+        revenue: Money;
+        accepted_count: number;
+        accepted_revenue: Money;
+        relationship_count: number;
+        relationship_value_kind: string;
+        gross_profit: Money;
+        gross_profit_note_fa: string;
+      };
+      proven: {
+        label_fa: string;
+        campaigns_total: number;
+        campaigns_by_verdict: Record<string, { count: number; label_fa: string }>;
+        proven_campaign_ids: number[];
+        incremental_revenue: Money;
+        incremental_gross_profit: Money;
+        gross_profit_note_fa: string | null;
+      };
+      not_validated: {
+        label_fa: string;
+        count: number;
+        revenue: Money;
+        gross_profit: Money;
+        gross_profit_note_fa: string;
+      };
+      groups: BriefGroup[];
+      urgent: {
+        expiring_today: number;
+        expiring_soon: number;
+        expiring_soon_days: number;
+        vip_entered_at_risk: number;
+        vip_entered_at_risk_label_fa: string;
+        quarantine_open_rows: number;
+        latest_import_blocked: boolean;
+        latest_import_blocked_by: string[];
+        financial_unit_review_needed: boolean;
+        dead_letter_runs: number;
+        suppressed_by_stock: number | null;
+        suppressed_by_stock_note_fa: string;
+      };
+      economics_note_fa: string;
+      cost_coverage_bp: number;
+      separation_note_fa: string;
+      text_fa: string;
+    };
+
+export async function getDailyBrief(): Promise<DailyBrief> {
+  return handle(await apiFetch(`${BASE}/api/v1/daily-brief`, { cache: "no-store" }));
+}
+
+export type OperatorBucket = {
+  assigned_to: string | null;
+  unassigned: boolean;
+  count: number;
+  by_status: Record<string, number>;
+  value: Money;
+  expiring_soon: number;
+};
+
+export type OperatorLoad =
+  | { available: false; reason_fa: string; operators: [] }
+  | {
+      available: true;
+      as_of: string | null;
+      statuses: string[];
+      total: number;
+      operators: OperatorBucket[];
+      unassigned_count: number;
+      team_daily_capacity: number | null;
+      team_capacity_note_fa: string | null;
+      per_operator_capacity: null;
+      per_operator_capacity_note_fa: string;
+      display_currency: string;
+      currency_format: string;
+    };
+
+export async function getOperatorLoad(): Promise<OperatorLoad> {
+  return handle(await apiFetch(`${BASE}/api/v1/operator-load`, { cache: "no-store" }));
+}

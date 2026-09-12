@@ -4,11 +4,13 @@ import { AlertTriangle, PlayCircle, RotateCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
 import {
+  getOperatorLoad,
   listDeadLetter,
   listJobs,
   retryJobRun,
   runJobNow,
   type JobRun,
+  type OperatorLoad,
   type ScheduledJob,
 } from "@/lib/apiV1";
 import { toFa } from "@/lib/format";
@@ -50,12 +52,18 @@ export default function OpsHealth() {
   );
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [load_, setLoad_] = useState<OperatorLoad | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const [list, dlq] = await Promise.all([listJobs(), listDeadLetter()]);
+      const [list, dlq, ops] = await Promise.all([
+        listJobs(),
+        listDeadLetter(),
+        getOperatorLoad(),
+      ]);
       setJobs(list.jobs ?? []);
       setDead(dlq);
+      setLoad_(ops);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "خطا در خواندن وضعیت کارها");
@@ -77,6 +85,8 @@ export default function OpsHealth() {
 
   return (
     <div className="space-y-4">
+      {load_ && <OperatorLoadPanel data={load_} />}
+
       {dead.count > 0 && (
         <Alert tone="error">
           <div className="flex items-start gap-2">
@@ -209,4 +219,50 @@ function alertCount(run: { result: unknown } | null): number {
   if (!run || typeof run.result !== "object" || run.result === null) return 0;
   const alerts = (run.result as { alerts?: unknown }).alerts;
   return Array.isArray(alerts) ? alerts.length : 0;
+}
+
+/**
+ * بارِ هر اپراتور (§۲۸). ظرفیت فقط برای تیم تنظیم می‌شود؛ سهمِ هر نفر حدس است و
+ * نشان داده نمی‌شود — فقط شمارِ واقعیِ کارهای زنده‌اش.
+ */
+function OperatorLoadPanel({ data }: { data: OperatorLoad }) {
+  if (!data.available) return null;
+  return (
+    <Card>
+      <SectionTitle
+        title="بارِ اپراتورها"
+        subtitle={`${toFa(String(data.total))} فرصتِ زنده (باز، پذیرفته، به‌تعویق‌افتاده) · ${
+          data.team_daily_capacity !== null
+            ? `ظرفیتِ روزانه‌ی تیم ${toFa(String(data.team_daily_capacity))}`
+            : data.team_capacity_note_fa
+        }`}
+      />
+      <ul className="space-y-2 text-sm">
+        {data.operators.map((b) => (
+          <li
+            key={b.assigned_to ?? "__unassigned__"}
+            className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-ink-200 p-3 dark:border-ink-700"
+          >
+            <div className="flex items-center gap-2">
+              <b>{b.unassigned ? "بدون مسئول" : b.assigned_to}</b>
+              {b.unassigned && <Badge tone="gray">تخصیص‌نیافته</Badge>}
+              {b.expiring_soon > 0 && (
+                <Badge tone="rose">{toFa(String(b.expiring_soon))} نزدیکِ انقضا</Badge>
+              )}
+            </div>
+            <div className="flex items-center gap-3 text-xs tnum" style={{ color: "var(--muted)" }}>
+              <span>{toFa(String(b.count))} فرصت</span>
+              <span>{b.value.display_text}</span>
+            </div>
+          </li>
+        ))}
+        {data.operators.length === 0 && (
+          <li style={{ color: "var(--muted)" }}>فرصتِ زنده‌ای نیست.</li>
+        )}
+      </ul>
+      <p className="mt-2 text-xs" style={{ color: "var(--muted)" }}>
+        {data.per_operator_capacity_note_fa}
+      </p>
+    </Card>
+  );
 }
