@@ -156,3 +156,13 @@ def test_replenishment_fixture_has_personal_cadences_and_no_cost_by_default():
     # آهنگ‌های شخصی حولِ {۲۱، ۳۵، ۶۰، ۹۰}‌اند؛ میانه‌ی همه با آهنگِ اکثرِ جفت‌ها فرق دارد
     assert intervals.between(15, 110).mean() > 0.9
     assert (table["n_gaps"] >= 2).all()
+
+
+def test_time_of_day_on_the_reference_day_is_not_leakage():
+    """فریمِ تحلیل می‌تواند ساعت داشته باشد؛ as_of تاریخِ روز است — مقایسه روی روز."""
+    rows = [("الف", PRODUCT, f"{d} 14:45", 3_200_000, 1)
+            for d in ("2024-01-01", "2024-02-13", "2024-03-31", "2024-05-15")]
+    table = personal_cadence_table(_frame(rows), as_of="2024-05-15")
+    row = table.loc[("الف", PRODUCT)]
+    assert row["elapsed_days"] == 0.0 and row["last_purchase"] == "2024-05-15"
+    assert row["gaps_days"] == [43, 47, 45]

@@ -82,7 +82,7 @@ def personal_cadence_table(
     * `elapsed_days` از آخرین خرید تا **شاملِ** `as_of` (همان قراردادِ قهرمان).
     """
     columns = columns or ANALYSIS_COLUMNS
-    reference = pd.Timestamp(as_of)
+    reference = pd.Timestamp(as_of).normalize()
     if frame is None or frame.empty:
         return _empty()
     needed = [columns.customer, columns.product, columns.date]
@@ -99,7 +99,9 @@ def personal_cadence_table(
     work = work.rename(columns={
         columns.customer: "_customer", columns.product: "_product", columns.date: "_date",
     })
-    work["_date"] = pd.to_datetime(work["_date"], errors="coerce")
+    # مقایسه روی **روز** است: فریمِ تحلیل ممکن است ساعت داشته باشد و `as_of` تاریخِ روز؛
+    # خریدِ ساعت ۱۴ همان روز نشت نیست.
+    work["_date"] = pd.to_datetime(work["_date"], errors="coerce").dt.normalize()
     work = work.dropna(subset=["_customer", "_product", "_date"])
     work = work[work["_product"].astype(str).str.strip() != ""]
     if work.empty:

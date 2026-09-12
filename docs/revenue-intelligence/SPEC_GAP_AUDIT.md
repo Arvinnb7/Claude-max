@@ -119,7 +119,7 @@
 | Expansion-gap baseline (§۱۷) | `done` | `analysis/expansion_gap.py` + مولد اختصاصی. ⚠️ سند «gross profit» می‌خواهد، ما **درآمد**محور ساخته‌ایم (در خود فایل مستند شده) |
 | Opportunity common contract (§۱۲) | `done` | `opportunities/contract.py` |
 | Filters (§۱۲ — ۱۱ مرحله) | `partial` | **۱۰ از ۱۱** فیلتر. `filter_margin_floor` که تا دیروز همیشه `skip` می‌داد حالا واقعاً کار می‌کند: حاشیه از دفتر کل، کف **از کاربر** (`PUT /api/v1/margin-floor`). بدون کفِ تعیین‌شده همچنان `skip` ثبت می‌شود — نبودِ تصمیمِ کاربر «قبول» نیست |
-| Conflict suppression · expiry · EV ranking | `done` | `filter_conflict` (با تقدمِ یادآوریِ تکرار بر مکملِ عمومی در سقف — §۲۳.۳ بند ۲)، `_expire_overdue`، `_close_fulfilled` (خریدِ همان کالا فرصت را می‌بندد — بند ۴)، مرتب‌سازی نزولی بر ارزش. جایگزین‌ها (بند ۵) بدون مدلِ خانواده‌ی کالا ساخته نشد |
+| Conflict suppression · expiry · EV ranking | `done` | `filter_conflict` (با تقدمِ یادآوریِ تکرار بر مکملِ عمومی در سقف — §۲۳.۳ بند ۲)، `_expire_overdue`، `_close_fulfilled` (خریدِ همان کالا فرصت را می‌بندد — بند ۴)، مرتب‌سازی نزولی بر ارزش. بند ۳ (اولویتِ خدمات بر تبلیغ — نوعِ «خدمات/بازیابی» وجود ندارد) و بند ۵ (جایگزین‌ها — بدون مدلِ خانواده‌ی کالا) ساخته نشدند |
 | Opportunity Inbox + Customer 360 UI | `done` | `OpportunityInbox.tsx`، `Customer360.tsx` |
 
 **دروازه‌ی پذیرش فاز ۲** («هر فرصت شواهد دارد و بازتولیدپذیر است»): ✅ می‌گذرد.

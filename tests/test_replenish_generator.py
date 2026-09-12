@@ -94,7 +94,12 @@ from sqlalchemy import select  # noqa: E402
 
 from mktcore.analysis.actions import KIND_CYCLE  # noqa: E402
 from mktcore.db import session_scope  # noqa: E402
-from mktcore.db.models import Opportunity, OpportunityFactor, OpportunityRun  # noqa: E402
+from mktcore.db.models import (  # noqa: E402
+    Opportunity,
+    OpportunityEvent,
+    OpportunityFactor,
+    OpportunityRun,
+)
 from mktcore.ml.registry import promote_run  # noqa: E402
 from mktcore.ml.train import train_model  # noqa: E402
 from mktcore.opportunities.contract import OpportunityCandidate  # noqa: E402
@@ -167,12 +172,12 @@ def test_replace_champion_cycle_only_touches_covered_pairs():
     ]
     challenger = [make(KIND_CYCLE, REPLENISH_GENERATOR, "C1", "P1")]
     merged, replaced = replace_champion_cycle(champion, challenger)
-    assert replaced == 1
+    assert replaced == {champion[0].dedupe_key(): challenger[0].dedupe_key()}
     assert [(c.generator, c.customer_key, c.kind) for c in merged] == [
         (ACTION_GENERATOR, "C2", KIND_CYCLE), (ACTION_GENERATOR, "C1", "تکمیل الگوی خرید"),
         (REPLENISH_GENERATOR, "C1", KIND_CYCLE),
     ]
-    assert replace_champion_cycle(champion, []) == (champion, 0)
+    assert replace_champion_cycle(champion, []) == (champion, {})
 
 
 def test_promoted_model_emits_personal_reminders_with_evidence_and_replaces_the_champion(replenish_world):
@@ -194,9 +199,33 @@ def test_promoted_model_emits_personal_reminders_with_evidence_and_replaces_the_
         assert 0 < candidate.probability <= 1 and candidate.expected_value_display > 0
         assert candidate.due_date and candidate.expires_at > as_of
 
+    # یک کارتِ قهرمانِ جفتِ پوشش‌داده‌شده را تیم پذیرفته است — نباید کنارِ کارتِ مدعی زنده بماند
+    from mktcore.db.models import Customer, Product
+
+    with session_scope(db) as session:
+        key_of = {c.id: c.canonical_key for c in session.scalars(select(Customer)).all()}
+        name_of = {p.id: p.display_name for p in session.scalars(select(Product)).all()}
+        champion_cards = session.scalars(select(Opportunity).where(
+            Opportunity.generator == ACTION_GENERATOR, Opportunity.kind == KIND_CYCLE,
+            Opportunity.status == "open",
+        )).all()
+        accepted_card = next(
+            o for o in champion_cards if (key_of.get(o.customer_id), name_of.get(o.product_id)) in covered
+        )
+        accepted_card.status = "accepted"
+        accepted_id = accepted_card.id
+
     result = run_opportunity_engine(bundle, clean, db_path=db)
     with session_scope(db) as session:
         notes = json.loads(session.get(OpportunityRun, result.run_id).notes_json)
+        handed = session.get(Opportunity, accepted_id)
+        assert handed.status == "superseded" and "جایگزین" in handed.status_reason_fa
+        replaced_event = session.scalars(select(OpportunityEvent).where(
+            OpportunityEvent.opportunity_id == accepted_id, OpportunityEvent.event_type == "replaced",
+        )).one()
+        assert replaced_event.from_status == "accepted"
+        replacement_key = json.loads(replaced_event.payload_json)["replacement_key"]
+        assert replacement_key in {c.dedupe_key() for c in challenger}, "پیوند به کارتِ جانشینِ همان جفت"
         live = session.scalars(select(Opportunity).where(Opportunity.status == "open")).all()
         personal = [o for o in live if o.generator == REPLENISH_GENERATOR]
         assert personal, "یادآورهای شخصی در صندوق نشسته‌اند"
@@ -219,6 +248,7 @@ def test_promoted_model_emits_personal_reminders_with_evidence_and_replaces_the_
         ]
     assert notes["replenish_challenger"]["emitted"] == len(challenger)
     assert notes["replenish_challenger"]["replaced"] >= 1
+    assert notes["replenish_challenger"]["model_version"] == run["model_version"]
     assert overlap == [], "یادآورِ قهرمان برای جفتِ پوشش‌داده‌شده باز نمی‌ماند"
     assert _actions_snapshot(bundle) == before, "فهرستِ اقدامِ داشبورد (قهرمان) دست نمی‌خورد"
 

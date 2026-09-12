@@ -301,6 +301,8 @@ RELATIONSHIP_CAP = 1
 # که به رفتارِ واقعیِ خودِ مشتری تکیه دارد، به‌خاطر چند ریال اختلاف رد شود.
 REPLENISHMENT_KINDS: tuple[str, ...] = ("یادآوری چرخه‌ی مصرف",)
 CROSS_SELL_KINDS: tuple[str, ...] = ("معرفی کالای مکمل", "تکمیل الگوی خرید", "توسعه‌ی سبد خرید")
+# نشانِ روی یادداشتِ تداخلِ نامزدی که جا داده — تا موتور دلیلِ درست را روی فرصتِ بازِ قبلی بنویسد
+YIELDED = "yielded"
 
 
 def _yield_slot(holder: OpportunityCandidate, newcomer: OpportunityCandidate, ctx: dict) -> None:
@@ -311,6 +313,7 @@ def _yield_slot(holder: OpportunityCandidate, newcomer: OpportunityCandidate, ct
                 "conflict", FILTER_CODES["conflict"], OUTCOME_BLOCK,
                 f"جای خود را به یادآوری چرخه‌ی «{newcomer.product_name or ''}» داد "
                 "(§۲۳.۳: یادآوریِ تکرارِ خرید بر فروشِ مکملِ عمومی مقدم است).",
+                value_text=YIELDED,
             )
             break
     # اگر ظرفیتِ تیم را گرفته بود، پسش می‌دهد؛ وگرنه یک تماسِ واقعی گم می‌شد
@@ -336,7 +339,9 @@ def filter_conflict(candidate: OpportunityCandidate, ctx: dict) -> OpportunityFa
     used = counts.get(key, 0)
     if used >= cap:
         holders = slots.get(key, [])
-        yielding = [h for h in holders if h.kind in CROSS_SELL_KINDS]
+        # فقط دارنده‌ی **واقعی** جا می‌دهد: مکملی که بعداً در فیلترِ دیگری (مثلاً ظرفیت)
+        # رد شده، جایی ندارد که بدهد — انتخابش یعنی یادآوری بی‌جهت به ظرفیت می‌خورد.
+        yielding = [h for h in holders if h.kind in CROSS_SELL_KINDS and not h.blocked_by]
         if candidate.kind in REPLENISHMENT_KINDS and yielding:
             loser = min(yielding, key=lambda h: h.expected_value_display)
             holders.remove(loser)

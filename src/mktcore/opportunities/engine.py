@@ -53,6 +53,7 @@ from .contract import (
 from .filters import apply_filters
 from .generators import (
     WHALE_MAX_PER_RUN,
+    active_replenish_version,
     generate_candidates,
     generate_replenishment_personal,
     generate_whale_relationship,
@@ -358,8 +359,10 @@ def _run_engine_locked(
         bundle, clean, as_of=as_of, business_slug=business_slug, db_path=db_path,
     )
     candidates, replaced = replace_champion_cycle(candidates, challenger)
+    replenish_version = active_replenish_version(business_slug=business_slug, db_path=db_path)
     replenish_notes = (
-        {"emitted": len(challenger), "replaced": replaced} if challenger else None
+        None if replenish_version is None else
+        {"model_version": replenish_version, "emitted": len(challenger), "replaced": len(replaced)}
     )
     uplift_table = _load_uplift_table(db_path)
     floor_bp, margins, capacity = _policy_settings(business_slug, db_path)
@@ -465,8 +468,17 @@ def _run_engine_locked(
         closed_by_purchase = _close_fulfilled(
             session, business.id, run.id, as_of, skip_keys=seen_keys | still_valid,
         )
+        handover = {
+            old_key: (
+                f"جایگزین شد: یادآورِ شخصیِ مدلِ replenish (نسخه {replenish_version}) برای همین "
+                "جفتِ مشتری/کالا ساخته شد (قهرمان/مدعی با holdout)."
+            )
+            for old_key in replaced
+        }
         superseded = _supersede_missing(
             session, business.id, run.id, seen_keys | still_valid,
+            reasons={**_yield_reasons(rejected), **handover},
+            force_keys=set(replaced), links=replaced,
         )
         expired = _expire_overdue(session, business.id, as_of)
 
@@ -853,30 +865,58 @@ def _replace_factors(
         ))
 
 
+def _yield_reasons(rejected: list[OpportunityCandidate]) -> dict[str, str]:
+    """دلیلِ نامزدهایی که در تداخل جا داده‌اند (§۲۳.۳) — برای فرصتِ بازِ قبلیِ همان کلید."""
+    from .filters import YIELDED
+
+    out: dict[str, str] = {}
+    for candidate in rejected:
+        note = candidate.blocked_by
+        if note is not None and note.code == "conflict" and note.value_text == YIELDED:
+            out[candidate.dedupe_key()] = note.detail_fa or ""
+    return out
+
+
 def _supersede_missing(
     session: Session, business_id: int, run_id: int, seen_keys: set[str],
+    *, reasons: dict[str, str] | None = None, force_keys: set[str] | None = None,
+    links: dict[str, str] | None = None,
 ) -> int:
     """فرصت‌های بازی که این بار تولید نشدند → «دیگر مصداق ندارد».
 
     فرصتی که انسان پذیرفته یا اسنوز کرده دست‌نخورده می‌ماند: ممکن است تیم فروش
     روی آن کار کند و ناپدیدشدنش از خروجی مدل، دلیل لغو کارِ در جریان نیست.
+    `reasons`: دلیلِ دقیق‌تر برای کلیدهایی که در تداخل جا داده‌اند یا جایگزین شده‌اند.
+    `force_keys`: کارتِ قهرمانی که کارتِ جانشین (مدعی) گرفته، حتی اگر پذیرفته/اسنوز باشد
+    بسته می‌شود — دو یادآوریِ زنده برای یک جفت یعنی دو تماس. `links`: کلیدِ جانشین.
     """
     live = session.scalars(
         select(Opportunity).where(
             Opportunity.business_id == business_id,
-            Opportunity.status == STATUS_OPEN,
+            Opportunity.status.in_(sorted(_LIVE_STATUSES)),
         )
     ).all()
+    forced = force_keys or set()
     count = 0
     for opportunity in live:
-        if opportunity.dedupe_key in seen_keys:
+        key = opportunity.dedupe_key
+        if key in seen_keys:
             continue
+        if opportunity.status != STATUS_OPEN and key not in forced:
+            continue
+        previous = opportunity.status
+        reason = (reasons or {}).get(key)
         opportunity.status = STATUS_SUPERSEDED
-        opportunity.status_reason_fa = "در تحلیل تازه دیگر مصداق ندارد."
+        opportunity.status_reason_fa = reason or "در تحلیل تازه دیگر مصداق ندارد."
         opportunity.updated_at = now_ts()
         opportunity.last_seen_run_id = run_id
-        _add_event(session, opportunity.id, "superseded", STATUS_OPEN, STATUS_SUPERSEDED,
-                   note="تحلیل تازه این فرصت را دیگر تولید نکرد.")
+        replacement = (links or {}).get(key)
+        _add_event(
+            session, opportunity.id, "replaced" if replacement else "superseded",
+            previous, STATUS_SUPERSEDED,
+            note=reason or "تحلیل تازه این فرصت را دیگر تولید نکرد.",
+            payload={"replacement_key": replacement} if replacement else None,
+        )
         count += 1
     return count
 
@@ -887,16 +927,21 @@ def _close_fulfilled(
     """§۲۳.۳ بند ۴: خریدِ همان کالا پس از ساختِ فرصت، فرصت را می‌بندد.
 
     فقط فرصت‌های **زنده‌ی کالادار** (باز/پذیرفته/اسنوز) که در این اجرا تولید نشده‌اند؛
-    خطِ خرید باید غیربرگشتی و **پس از** تاریخِ اجرای نخستینِ فرصت و تا `as_of` باشد
+    خطِ خرید باید غیربرگشتی و **پس از** تاریخِ آخرین اجرایی که کارت را زنده دانست و تا `as_of` باشد
     (`<` اکید: خریدِ همان روزِ ساخت، «پاسخ به یادآوری» نیست). مثلِ `_expire_overdue`،
     وضعیتِ پذیرفته هم بسته می‌شود — مشتری خودش خریده، کارِ تیم تمام است.
     """
     from sqlalchemy.orm import aliased
 
-    first_run = aliased(OpportunityRun)
+    # لنگر = **آخرین** اجرایی که کارت را زنده دانست (ساخت/تازه‌سازی/بازگشایی)، نه اجرای
+    # نخستین: کارتی که بسته و بعداً دوباره باز شده، با خریدِ قدیمی‌اش دوباره بسته نمی‌شود.
+    anchor_run = aliased(OpportunityRun)
     live = session.execute(
-        select(Opportunity, first_run.as_of_date)
-        .join(first_run, first_run.id == Opportunity.first_seen_run_id)
+        select(Opportunity, anchor_run.as_of_date)
+        .join(
+            anchor_run,
+            anchor_run.id == func.coalesce(Opportunity.last_seen_run_id, Opportunity.first_seen_run_id),
+        )
         .where(
             Opportunity.business_id == business_id,
             Opportunity.status.in_(sorted(_LIVE_STATUSES)),
@@ -905,8 +950,8 @@ def _close_fulfilled(
         )
     ).all()
     count = 0
-    for opportunity, first_as_of in live:
-        if opportunity.dedupe_key in skip_keys or not first_as_of:
+    for opportunity, anchor_as_of in live:
+        if opportunity.dedupe_key in skip_keys or not anchor_as_of:
             continue
         purchase = session.execute(
             select(OrderLine.line_date)
@@ -915,7 +960,7 @@ def _close_fulfilled(
                 OrderLine.customer_id == opportunity.customer_id,
                 OrderLine.product_id == opportunity.product_id,
                 OrderLine.is_return.is_(False),
-                OrderLine.line_date > str(first_as_of),
+                OrderLine.line_date > str(anchor_as_of),
                 OrderLine.line_date <= as_of,
             )
             .order_by(OrderLine.line_date)

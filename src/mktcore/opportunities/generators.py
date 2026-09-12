@@ -473,27 +473,44 @@ def generate_replenishment_personal(
 
 def replace_champion_cycle(
     candidates: list[OpportunityCandidate], challenger: list[OpportunityCandidate],
-) -> tuple[list[OpportunityCandidate], int]:
+) -> tuple[list[OpportunityCandidate], dict[str, str]]:
     """یادآورِ قهرمان (`action_list` × `KIND_CYCLE`) برای جفت‌های پوشش‌داده‌شده حذف می‌شود.
 
     بدونِ مدعی هیچ‌چیز حذف نمی‌شود؛ جفت‌های بی‌پوشش یادآورِ قهرمان (پله‌ی ۵) را نگه می‌دارند.
+    برمی‌گرداند (نامزدهای نهایی، نگاشتِ کلیدِ کارتِ قهرمانِ حذف‌شده → کلیدِ کارتِ جایگزین) تا
+    موتور کارتِ بازِ قبلی را با دلیلِ «جایگزین شد» و پیوند به جانشین ببندد، نه «دیگر مصداق ندارد».
     """
     if not challenger:
-        return candidates, 0
+        return candidates, {}
     from mktcore.analysis.actions import KIND_CYCLE
 
-    covered = {(c.customer_key, c.product_name) for c in challenger}
+    covered = {(c.customer_key, c.product_name): c.dedupe_key() for c in challenger}
     kept: list[OpportunityCandidate] = []
-    replaced = 0
+    replaced: dict[str, str] = {}
     for candidate in candidates:
-        if (
-            candidate.generator == ACTION_GENERATOR and candidate.kind == KIND_CYCLE
-            and (candidate.customer_key, candidate.product_name) in covered
-        ):
-            replaced += 1
+        pair = (candidate.customer_key, candidate.product_name)
+        if candidate.generator == ACTION_GENERATOR and candidate.kind == KIND_CYCLE and pair in covered:
+            replaced[candidate.dedupe_key()] = covered[pair]
             continue
         kept.append(candidate)
     return kept + challenger, replaced
+
+
+def active_replenish_version(*, business_slug: str = "default", db_path: Any = None) -> int | None:
+    """نسخه‌ی اجرای فعالِ `replenish`، یا `None` — برای یادداشتِ اجرا (فعال ولی بی‌کارت ≠ غیرفعال)."""
+    try:
+        from mktcore.db.engine import session_scope
+        from mktcore.db.lookup import resolve_business_id
+        from mktcore.ml.replenish import promoted_due_table
+
+        with session_scope(db_path) as session:
+            business_id = resolve_business_id(session, business_slug)
+            if business_id is None:
+                return None
+            active = promoted_due_table(session, business_id)
+            return None if active is None else int(active[0].model_version)
+    except Exception:  # noqa: BLE001 - نبودِ رجیستری نباید موتور را بخواباند
+        return None
 
 
 # فهرست مولدهای فعال. افزودن مولد تازه یعنی افزودن یک تابع به این تاپل؛

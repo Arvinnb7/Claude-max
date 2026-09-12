@@ -95,6 +95,19 @@ def test_yielding_returns_the_operator_capacity_slot():
     assert capacity_note.outcome == "filter_pass"
 
 
+def test_a_cross_sell_already_blocked_by_capacity_is_not_a_holder():
+    """مکملِ ردشده در ظرفیت جایی ندارد که بدهد؛ دارنده‌ی واقعی (پرارزش‌تر) جا می‌دهد و ظرفیتش پس داده می‌شود."""
+    x1 = _candidate(KIND_ONETIME, 90_000, "مکمل")
+    x2 = _candidate(KIND_SEQUENCE, 80_000, "الگو")
+    r1 = _candidate(KIND_CYCLE, 70_000, "غذا")
+    ctx = _ctx(daily_capacity=1)
+    accepted, rejected = apply_filters([x1, x2, r1], ctx)
+    assert accepted == [r1], "یادآوری جای دارنده‌ی واقعی (x1) را می‌گیرد، نه جای شبحِ x2"
+    assert "جای خود را" in x1.blocked_by.detail_fa and x1.blocked_by.value_text == "yielded"
+    assert x2.blocked_by.code == "operator_capacity", "دلیلِ واقعیِ x2 بازنویسی نشد"
+    assert ctx["_capacity_used"]["money"] == 1
+
+
 def test_other_customers_are_untouched():
     c1_onetime = _candidate(KIND_ONETIME, 90_000, "مکمل", customer="C1")
     c1_seq = _candidate(KIND_SEQUENCE, 80_000, "الگو", customer="C1")
@@ -237,3 +250,53 @@ def test_standalone_close_is_idempotent_and_the_expiration_job_reports_it(tmp_pa
     finally:
         get_settings.cache_clear()
         reset_ensure_cache()
+
+
+def test_yield_reason_reaches_the_previously_open_card(tmp_path):
+    """کارتِ بازِ اجرای قبلی که نامزدش این بار در تداخل «جا داد»، با همان دلیل بسته می‌شود."""
+    from mktcore.db.lookup import resolve_business_id
+    from mktcore.opportunities.engine import _supersede_missing, _yield_reasons
+    from mktcore.opportunities.filters import YIELDED
+
+    db = tmp_path / "app.db"
+    first = _run(_regular_rows(), db, "m1")
+    card = _cycle_card(db)
+    loser = _candidate(KIND_ONETIME, 1.0, "x")
+    loser.factors.append(__import__("mktcore.opportunities.contract", fromlist=["OpportunityFactorNote"])
+                         .OpportunityFactorNote("conflict", "تداخل", "filter_block",
+                                                "جای خود را به یادآوری چرخه‌ی «غذا» داد", value_text=YIELDED))
+    reasons = _yield_reasons([loser, _candidate(KIND_SEQUENCE, 1.0, "y")])
+    assert reasons == {loser.dedupe_key(): "جای خود را به یادآوری چرخه‌ی «غذا» داد"}
+
+    with session_scope(db) as session:
+        business_id = resolve_business_id(session, "default")
+        closed = _supersede_missing(
+            session, business_id, first.run_id, set(),
+            reasons={card.dedupe_key: "جای خود را به یادآوری چرخه‌ی «غذا» داد"},
+        )
+        assert closed >= 1
+        assert session.get(Opportunity, card.id).status_reason_fa == "جای خود را به یادآوری چرخه‌ی «غذا» داد"
+
+
+def test_a_reopened_card_is_not_closed_by_the_old_purchase(tmp_path):
+    """ساخت → خرید (بسته) → دوباره عقب‌افتاده و بازگشایی ⇒ کارِ شبانه با خریدِ قدیمی نمی‌بندد."""
+    db = tmp_path / "app.db"
+    base = _regular_rows()
+    _run(base, db, "m1")
+    card = _cycle_card(db)
+    with_purchase = base + [("1402/11/05", 500_000, 1, "منظم", "F9", PRODUCT, "09121110000")]
+    second = _run(with_purchase, db, "m2")
+    assert second.closed_by_purchase == 1
+
+    # ماه‌ها بعد، بدونِ خریدِ تازه‌ی «منظم» ⇒ دوباره عقب‌افتاده و همان کارت باز می‌شود
+    later = with_purchase + [("1403/03/15", 150_000, 1, "C_last", "GL2", PRODUCT, "")]
+    third = _run(later, db, "m3")
+    as_of = str(_clean(later)["date"].max().date())
+    with session_scope(db) as session:
+        reopened = session.get(Opportunity, card.id)
+        assert reopened.status == "open", "کارت با تحلیلِ تازه دوباره باز شده"
+        assert reopened.last_seen_run_id == third.run_id
+    assert third.closed_by_purchase == 0
+    assert close_fulfilled_opportunities(as_of=as_of, db_path=db)["closed_by_purchase"] == 0
+    with session_scope(db) as session:
+        assert session.get(Opportunity, card.id).status == "open", "خریدِ قدیمی لنگرِ تازه را نمی‌بندد"
