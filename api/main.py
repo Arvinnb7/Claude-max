@@ -70,6 +70,7 @@ from mktcore.security import (  # noqa: E402
 from mktcore.synthetic import generate_synthetic_sales  # noqa: E402
 
 from .audit_context import actor_fa, client_ip  # noqa: E402
+from .brief_api import router as brief_router  # noqa: E402
 from .campaigns_api import router as campaigns_router  # noqa: E402
 from .canonical_hook import canonical_enabled, record_analysis  # noqa: E402
 from .export import EXPORT_FA_NAMES, EXPORT_SECTIONS, EmptySection, build_export  # noqa: E402
@@ -163,6 +164,7 @@ app.include_router(v1_router)
 app.include_router(campaigns_router)
 app.include_router(models_router)
 app.include_router(ops_router)
+app.include_router(brief_router)
 
 
 def _columns_payload(df) -> dict:
