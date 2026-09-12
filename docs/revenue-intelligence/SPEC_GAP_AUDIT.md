@@ -40,7 +40,7 @@
 | ۳ | Closed-loop campaigns and experiments | ✅ کامل | ✅ **دروازه‌ی پذیرش پاس شد** — سود افزوده گزارش می‌شود (۱۰ از ۱۳ سنجه) |
 | ۴ | Predictive models | ✅ | ✅ **دروازه‌ی پذیرش پاس شد** — دو مدل promote‌شدنی با holdout زمانی |
 | ۵ | Causal offer optimization and pricing | ❌ صفر | 🔶 **~۲۰٪** |
-| ۶ | Operational optimization | ❌ شروع نشده | 🔶 **~۲۰٪** |
+| ۶ | Operational optimization | ❌ شروع نشده | 🔶 **~۲۰٪** — پس از D1–D5: ~۷۵٪ (به‌جز شعبه‌آگاهی/موجودی: بی‌داده) |
 
 ### دو خطای بزرگ در ادعاهای قبلی
 
@@ -64,6 +64,7 @@
 | Implementation status checklist | `done` | `IMPLEMENTATION_STATUS.md` |
 | Baseline test suite around current imports | `done` | `tests/test_baseline_imports.py` |
 | Backup/rollback instructions | `done` | `ROLLBACK.md` |
+| §۵.۱ architecture inventory (هفت بند) | ✅ **بسته شد (D5)** | حسابرسیِ اول چهار بند (ایندکس/اتصال، صف/retry، ناظرِ فایل، لاگ/پایش) را نداشت؛ بخش ۷ `CURRENT_SYSTEM_AUDIT.md` هر هفت بند را از روی کد می‌نویسد و با `test_docs_drift` پین شده |
 
 **دروازه‌ی پذیرش:** ندارد. ✅ کامل.
 
@@ -214,9 +215,11 @@ top-K economic metrics.»*
 
 | قلم سند | وضعیت | شاهد / آنچه کم است |
 |---|---|---|
-| operator assignment / capacity | 🔶 **نیمه‌بسته (S3)** | فیلترِ ظرفیتِ روزانه اضافه شد (تنظیم‌نشده ⇒ «بررسی نشد»). نوبت‌دهی و بارِ هر مسئول همچنان نیست |
+| operator assignment / capacity | 🔶 **نیمه‌بسته (S3، D3)** | فیلترِ ظرفیتِ روزانه‌ی تیم (تنظیم‌نشده ⇒ «بررسی نشد») + `GET /api/v1/operator-load`: بارِ واقعیِ هر مسئول با سطلِ بی‌مسئول. ظرفیتِ **هر اپراتور** تنظیمی ندارد و «تنظیم نشد» گزارش می‌شود؛ نوبت‌دهیِ خودکار همچنان نیست |
 | branch-aware fulfillment (§۲۴.۵) | 🔶 **نیمه‌بسته (S3)** | «شعبه‌ی محتملِ مشتری» با سهم و درجه‌ی اتکا در پرونده‌ی مشتری. تخصیصِ موجودیِ شعبه‌ای همچنان بدونِ داده‌ی موجودی ممکن نیست |
-| notification and scheduled workflows | `done` | APScheduler، اسکن روزانه، جبران اجرای ازدست‌رفته، گاردِ مجوز تماس |
+| notification and scheduled workflows | `done` (D2) | APScheduler، اسکن روزانه، جبران اجرای ازدست‌رفته، گاردِ مجوز تماس؛ از D2 اسکنِ چرخه و نگه‌داری هم زیرِ `run_job` (ردیفِ اجرا، صفِ مرده) |
+| background jobs (§۲۸، ۱۲ کار) | 🔶 **۷ کارِ زمان‌بندی‌شده + ۵ درون‌جریان** | کارهای ۶–۱۲ زمان‌بندی‌شده زیرِ `run_job`؛ کارهای ۱–۵ (کشفِ فایل، parse، ثبتِ canonical، حلِ هویت، بازمحاسبه‌ی ویژگی) در همان jobِ upload→analyze اجرا می‌شوند (وضعیت، شناسه‌ی همبستگی، ضربان) نه به‌صورت زمان‌بندی‌شده؛ **ناظرِ فایل عمداً ساخته نشد** (تصمیمِ معماری) |
+| daily executive output (§۳۸) | ✅ **بسته شد (D1، D4)** | `GET /api/v1/daily-brief` + کارتِ اتاق فرمان: پیش‌بینی (فرصت‌های زنده) و اثبات‌شده (کمپین‌های proven) دو بلوکِ جدا؛ سودِ هر فرصت و سرکوبِ موجودی «بررسی نشد»؛ گروه‌ها، انقضا، گذارِ ویژه→در خطر، قرنطینه/واحدِ مالی، صفِ مرده؛ متنِ فارسی |
 | performance tuning (§۳۳) | `partial` | ایندکس‌ها و صفحه‌بندی هست؛ تنظیم عامدانه‌ی کارایی انجام نشده |
 | advanced monitoring (§۳۲) | ✅ **بسته شد (S2)** | `X-Request-Id` (با انتقال به jobها)، لاگِ ساختاریافته، `/api/v1/ops/metrics`، و healthی که واقعاً دیتابیس را می‌زند |
 | documented deployment/runbook | ✅ **بسته شد (S6)** | `OPERATIONS_RUNBOOK.md` — با `test_docs_drift` پین شده |
